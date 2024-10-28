@@ -1,6 +1,6 @@
+// New Version
+
 #include <NewPing.h>
-
-
 #include "Arduino.h"
 #include <Timer.h>
 #include <PCF8563TimeManager.h>
@@ -16,6 +16,7 @@
 #include <sha1.h>
 #include <totp.h>
 
+#include <LoRa.h>
 #include "ADS1X15.h"
 
 #include <FastLED.h>
@@ -37,7 +38,12 @@ CRGB leds[NUM_LEDS];
 
 NewPing sonar(TRIGGER_PIN, ECHO_PIN, MAX_DISTANCE); // NewPing setup of pins and maximum distance.
 
-
+#define SCK 14
+#define MOSI 13
+#define MISO 12
+#define LoRa_SS 15
+#define LORA_RESET 16
+#define LORA_DI0 17
 CHT8305 CHT(0x40);
 
 #define SENSOR_INPUT_2 33
@@ -73,6 +79,8 @@ static volatile int flowMeterPulseCount2;
 #define FUN_2_TANK 5
 #define DAFFODIL_SCEPTIC_TANK 6
 #define DAFFODIL_WATER_TROUGH 7
+#define DAFFODILE_TEMP_SOILMOISTURE 8
+
 
 uint8_t displayStatus=0;
 #define SHOW_TEMPERATURE 0
@@ -84,9 +92,9 @@ uint8_t displayStatus=0;
 //
 float sleepingVoltage = 3.5;
 float wakingUpVoltage = 3.7;
-uint8_t numberSecondsWithMinimumWifiVoltageForStartWifi=90;
+uint8_t numberSecondsWithMinimumWifiVoltageForStartWifi=30;
 uint8_t currentSecondsWithWifiVoltage=0;
-float minimumInitWifiVoltage=5;
+float minimumInitWifiVoltage=4.5;
 
 uint8_t sleepingTime = 1;
 #define MINIMUM_LED_VOLTAGE 4250
@@ -99,6 +107,7 @@ uint8_t delayTime = 10;
 bool loraActive = false;
 DaffodilConfigData daffodilConfigData;
 DaffodilData daffodilData;
+DaffodilCommandData daffodilCommandData;
 
 PCF8563TimeManager timeManager(Serial);
 GeneralFunctions generalFunctions;
@@ -167,6 +176,62 @@ void IRAM_ATTR clockTick()
   portEXIT_CRITICAL_ISR(&mux);
 }
 
+//
+// Lora Functions
+//
+void onReceive(int packetSize) {
+  if (packetSize == 0) return;  // if there's no packet, return
+  if (packetSize == sizeof(PanchoCommandData)) {
+    LoRa.readBytes((uint8_t*)&daffodilCommandData, sizeof(PanchoCommandData));
+    long commandcode = daffodilCommandData.commandcode;
+    bool validCode = secretManager.checkCode(commandcode);
+    if (validCode) {
+
+      //secretManager.saveSleepPingMinutes(rosieConfigData.sleepPingMinutes);
+      //secretManager.saveConfigData(rosieConfigData.fieldId,  stationName );
+
+      int rssi = LoRa.packetRssi();
+      float Snr = LoRa.packetSnr();
+      Serial.println(" Receive DaffodilCommandData: ");
+      Serial.print(" Field Id: ");
+      Serial.print(daffodilCommandData.fieldId);
+      Serial.print(" commandcode: ");
+      Serial.print(daffodilCommandData.commandcode);
+
+    } else {
+      Serial.print(" Receive PanchoCommandData but invalid code: ");
+      Serial.println(commandcode);
+      Serial.print(daffodilCommandData.fieldId);
+    }
+  } else {
+    badPacketCount++;
+    Serial.print("Received  invalid data daffodilCommandData data, expected: ");
+    Serial.print(sizeof(PanchoCommandData));
+    Serial.print("  received");
+    Serial.println(packetSize);
+  }
+}
+void LoRa_txMode() {
+  LoRa.idle();             // set standby mode
+  LoRa.disableInvertIQ();  // normal mode
+}
+void LoRa_rxMode() {
+  LoRa.disableInvertIQ();  // normal mode
+  LoRa.receive();          // set receive mode
+}
+void sendMessage() {
+  LoRa_txMode();
+  LoRa.beginPacket();  // start packet
+
+  LoRa.write((uint8_t*)&daffodilData, sizeof(DaffodilData));
+  LoRa.endPacket(true);  // finish packet and send it
+  LoRa_rxMode();
+  msgCount++;        // increment message ID
+}
+
+//
+// End of Lora Functions
+//
 void setup()
 {
   Serial.begin(115200); 
@@ -259,6 +324,34 @@ void setup()
   Serial.print("serial number:");
   Serial.println(serialNumber);
 
+ SPI.begin(SCK, MISO, MOSI);
+  pinMode(LoRa_SS, OUTPUT);
+  pinMode(LORA_RESET, OUTPUT);
+  pinMode(LORA_DI0, INPUT);
+  digitalWrite(LoRa_SS, HIGH);
+  LoRa.setPins(LoRa_SS, LORA_RESET, LORA_DI0);
+  // for (int i = 0; i < NUM_LEDS; i++) {
+  //   leds[i] = CRGB(0, 0, 0);
+  // }
+  // FastLED.show();
+ if (!LoRa.begin(433E6)) {
+    Serial.println("Starting LoRa failed!");
+    drawLora(false);
+    while (1);
+    leds[1] = CRGB(255, 0, 0);
+  } else {
+    Serial.println("Starting LoRa worked!");
+   drawLora(true);
+    loraActive = true;
+  }
+
+  delay(2000);
+
+for (int i = 0; i < NUM_LEDS; i++)
+    {
+      leds[i] = CRGB(0, 0, 0);
+    }
+    FastLED.show(); 
   ADS.setGain(1);
   // Config Switch
   Serial.print("voltage factor=");
@@ -295,7 +388,7 @@ Serial.print("corrected cswOutput=");
   // 0010 = 5663  TT
   // 1010 = 5212  Daffodil Sceptic
   // 0110 > 4774 Daffodil Water Trough
-  // 1110 > 4394
+  // 1110 > 4394 DAFFODILE_TEMP_SOILMOISTURE
   // 0001 > 3471
   // 1001 = 3198
   // 1101 = 2181
@@ -335,6 +428,8 @@ Serial.print("corrected cswOutput=");
   }else if (cswOutput>=5100 && cswOutput<5500){
     daffodilData.currentFunctionValue = DAFFODIL_SCEPTIC_TANK;
   }else if (cswOutput>=4600 && cswOutput<5100){
+    daffodilData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
+  }else if (cswOutput>=4300 && cswOutput<4600){
     daffodilData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
   }else{
      daffodilData.currentFunctionValue = DAFFODIL_SCEPTIC_TANK;
@@ -429,7 +524,7 @@ Serial.print("corrected cswOutput=");
   lastswitchmillis = millis();
 
   viewTimer.start();
-
+ LoRa.setSyncWord(0xF3);
   Serial.println(F("Finished Setup"));
   pinMode(WATCHDOG_WDI, OUTPUT);
   digitalWrite(WATCHDOG_WDI, LOW);
@@ -441,6 +536,10 @@ void restartWifi(){
     digitalWrite(WATCHDOG_WDI, HIGH);
     delay(2);
     digitalWrite(WATCHDOG_WDI, LOW);
+     for (int i = 0; i < NUM_LEDS; i++){
+      leds[i] = CRGB(0, 0, 0);
+    }
+    FastLED.show();
     Serial.print(F("Before Starting Wifi cap="));
     Serial.println(daffodilData.capacitorVoltage);
     wifiManager.start(); 
@@ -518,7 +617,29 @@ void restartWifi(){
     Serial.println("in ino Done starting wifi");
 }
 
+void drawLora( boolean active)
+{
+  for (int i = 0; i < NUM_LEDS; i++)
+  {
+    leds[i] = CRGB(0, 0, 0);
+  }
+  FastLED.show();
+  if(active){
+    leds[1] = CRGB(0, 255, 0);
+    leds[6] = CRGB(0, 255, 0);
+    leds[11] = CRGB(0, 255, 0);
+    leds[12] = CRGB(0, 255, 0);
+   // leds[13] = CRGB(0, 255, 0);
+  }else{
+    leds[1] = CRGB( 255,0, 0);
+    leds[6] = CRGB( 255, 0, 0);
+    leds[11] = CRGB( 255,0, 0);
+    leds[12] = CRGB( 255,0, 0);
+   // leds[13] = CRGB( 255,0, 0);
+  }
+  FastLED.show();
 
+}
 
 void drawTemperature( uint8_t red, uint8_t green, uint8_t blue)
 {
@@ -747,11 +868,14 @@ void loop()
     currentSecondsWithWifiVoltage=0;
    }
    
-  lcd.print("loop cap ");
-   lcd.print(daffodilData.capacitorVoltage);
-  lcd.print(" ");
-   lcd.print(currentSecondsWithWifiVoltage);
-
+  Serial.print("loop cap ");
+   Serial.print(daffodilData.capacitorVoltage);
+  Serial.print(" currentssec=");
+   Serial.println(currentSecondsWithWifiVoltage);
+ Serial.print("wifiManager.getAPStatus()=");
+      Serial.print(wifiManager.getAPStatus());
+      Serial.print(" wifiManager.getWifiStatus()=");
+      Serial.println(wifiManager.getWifiStatus());
     if (daffodilData.internetAvailable)dsUploadTimer.tick();
     currentTimerRecord = timeManager.now();
     if (currentTimerRecord.second == 0){
@@ -821,10 +945,9 @@ void loop()
     
     
   }else{
-   
+     
+
         if(currentSecondsWithWifiVoltage>=numberSecondsWithMinimumWifiVoltageForStartWifi && !wifiManager.getWifiStatus() && !wifiManager.getAPStatus()){
-          
-          
            Serial.print("turning on  wifi");
           restartWifi();
         }else if( !wifiManager.getAPStatus() && wifiManager.getWifiStatus()){
@@ -952,16 +1075,6 @@ void loop()
               Serial.println(wifiManager.getAPStatus());
             if(daffodilData.internetAvailable){
               if(wifiManager.getAPStatus()){
-                leds[1] = CRGB(255, 255, 0);
-                leds[2] = CRGB(255, 255, 0);
-                leds[3] = CRGB(255, 255, 0);
-                leds[5] = CRGB(255, 255, 0);
-                leds[9] = CRGB(255, 255, 0);
-                leds[11] = CRGB(255, 255, 0);
-                leds[12] = CRGB(255, 255, 0);
-                leds[13] = CRGB(255, 255, 0);
-                FastLED.show();
-              }else{
                 leds[1] = CRGB(0, 255, 0);
                 leds[2] = CRGB(0, 255, 0);
                 leds[3] = CRGB(0, 255, 0);
@@ -970,6 +1083,16 @@ void loop()
                 leds[11] = CRGB(0, 255, 0);
                 leds[12] = CRGB(0, 255, 0);
                 leds[13] = CRGB(0, 255, 0);
+                FastLED.show();
+              }else{
+                leds[1] = CRGB(0, 0, 255);
+                leds[2] = CRGB(0, 0, 255);
+                leds[3] = CRGB(0, 0, 255);
+                leds[5] = CRGB(0, 0, 255);
+                leds[9] = CRGB(0, 0, 255);
+                leds[11] = CRGB(0, 0, 255);
+                leds[12] = CRGB(0, 0, 255);
+                leds[13] = CRGB(0, 255, 255);
                 FastLED.show();
               }
             }else{
@@ -994,6 +1117,13 @@ void loop()
         viewTimer.reset();
      }
   }
+
+  if (loraActive) {
+      //      Serial.print(F("Seconds time:"));
+      //      Serial.println(daffodilTankFlowData.secondsTime);
+      sendMessage();
+     
+    }
 
   if (Serial.available() != 0)
   {
