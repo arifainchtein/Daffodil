@@ -86,7 +86,7 @@ uint8_t displayStatus=0;
 #define SHOW_TEMPERATURE 0
 #define SHOW_SCEPTIC 1
 #define SHOW_INTERNET_STATUS 2
-          
+#define SEND_LORA_STATUS 3          
 //
 // sleeping parameters
 //
@@ -152,6 +152,10 @@ float temp=-99;
 float hum=-99;
   
 } tempHum;
+
+const float R1 = 1000000.0; // Resistance of R1 in ohms (1 MΩ)
+const float R2 = 2000000.0; // Resistance of R2 in ohms (2 MΩ)
+const float Vref = 3.3; // Reference voltage of the ESP32
 
 int view_milliseconds = 5000;
 long lastswitchmillis = 0;
@@ -222,7 +226,8 @@ void LoRa_rxMode() {
 void sendMessage() {
   LoRa_txMode();
   LoRa.beginPacket();  // start packet
-
+  Serial.print("sending lora sn=");
+  Serial.println(serialNumber);
   LoRa.write((uint8_t*)&daffodilData, sizeof(DaffodilData));
   LoRa.endPacket(true);  // finish packet and send it
   LoRa_rxMode();
@@ -868,6 +873,24 @@ void loop()
     currentSecondsWithWifiVoltage=0;
    }
    
+   tempSensor.requestTemperatures();
+    float tempC = tempSensor.getTempCByIndex(0);
+    daffodilData.temperature=tempC;
+
+ //
+    //RTC_BATT_VOLT Voltage
+    //
+    float total = 0;
+    uint8_t samples=10;
+    for (int x = 0; x < samples; x++) {           // multiple analogue readings for averaging
+      total = total + analogRead(RTC_BATT_VOLT);  // add each value to a total
+    }
+    float average = total / samples;
+    float voltage = (average / 4095.0) * Vref;
+    // Calculate the actual voltage using the voltage divider formula
+    float rtcBatVoltage = (voltage * (R1 + R2)) / R2;
+    daffodilData.rtcBatVolt = rtcBatVoltage;
+ 
   Serial.print("loop cap ");
    Serial.print(daffodilData.capacitorVoltage);
   Serial.print(" currentssec=");
@@ -887,7 +910,8 @@ void loop()
       }
     }
   }
- 
+ daffodilData.secondsTime = timeManager.getCurrentTimeInSeconds(currentTimerRecord);
+
       
   //
   // check to see if we need to go to sleep
@@ -1107,23 +1131,23 @@ void loop()
                 FastLED.show();
             }
              
+          }else if(displayStatus==SEND_LORA_STATUS){
+             if (loraActive) {
+                //      Serial.print(F("Seconds time:"));
+                //      Serial.println(daffodilTankFlowData.secondsTime);
+                drawLora(true);
+                sendMessage();
+             }else{
+               drawLora(false);
+             }
           }
-
           displayStatus++;
-          if(displayStatus>2)displayStatus=0;
-          
-        
-     
+          if(displayStatus>3)displayStatus=0;
         viewTimer.reset();
      }
   }
 
-  if (loraActive) {
-      //      Serial.print(F("Seconds time:"));
-      //      Serial.println(daffodilTankFlowData.secondsTime);
-      sendMessage();
-     
-    }
+ 
 
   if (Serial.available() != 0)
   {
