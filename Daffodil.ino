@@ -95,7 +95,7 @@ float wakingUpVoltage = 3.7;
 uint8_t numberSecondsWithMinimumWifiVoltageForStartWifi=30;
 uint8_t currentSecondsWithWifiVoltage=0;
 float minimumInitWifiVoltage=4.5;
-
+float minimumLoraVoltage=4.2;
 uint8_t sleepingTime = 1;
 #define MINIMUM_LED_VOLTAGE 4250
 #define MAXIMUM_LED_VOLTAGE 4658
@@ -548,6 +548,9 @@ void restartWifi(){
     Serial.print(F("Before Starting Wifi cap="));
     Serial.println(daffodilData.capacitorVoltage);
     wifiManager.start(); 
+     digitalWrite(WATCHDOG_WDI, HIGH);
+    delay(2);
+    digitalWrite(WATCHDOG_WDI, LOW);
     Serial.print(F("After Starting Wifi cap="));
     Serial.println(daffodilData.capacitorVoltage);
     initiatedWifi=true;
@@ -575,7 +578,11 @@ void restartWifi(){
       digitalWrite(WATCHDOG_WDI, HIGH);
     delay(2);
     digitalWrite(WATCHDOG_WDI, LOW);
+     Serial.print("getting  stationmode=");
     bool stationmode = wifiManager.getStationMode();
+     digitalWrite(WATCHDOG_WDI, HIGH);
+    delay(2);
+    digitalWrite(WATCHDOG_WDI, LOW);
     Serial.print("Starting wifi stationmode=");
     Serial.println(stationmode);
   
@@ -867,7 +874,7 @@ void loop()
    lcd.setCursor(0, 3);
   
    
-   if(daffodilData.capacitorVoltage> minimumInitWifiVoltage){
+   if(daffodilData.capacitorVoltage> minimumInitWifiVoltage && !wifiManager.getWifiStatus()){
     currentSecondsWithWifiVoltage++;
    }else{
     currentSecondsWithWifiVoltage=0;
@@ -975,14 +982,19 @@ void loop()
            Serial.print("turning on  wifi");
           restartWifi();
         }else if( !wifiManager.getAPStatus() && wifiManager.getWifiStatus()){
-            Serial.print("turning off  wifi");
-            Serial.print("capacitor voltage=");
-          Serial.println(daffodilData.capacitorVoltage);
-          Serial.print("wifiManager.getWifiStatus(=");
-          Serial.println(wifiManager.getWifiStatus());
-          Serial.print("wifiManager.getAPStatus()=");
-          Serial.println(wifiManager.getAPStatus());
-            wifiManager.stop();
+          //
+          // if we are here is because we are connected to a router
+           
+//       //   Serial.println(daffodilData.capacitorVoltage);
+//          Serial.print("   wifiManager.getWifiStatus(=");
+//          Serial.print(wifiManager.getWifiStatus());
+//          Serial.print("   wifiManager.ipAddress=");
+//          Serial.print(wifiManager.getIpAddress());
+//          Serial.print("   wifiManager.getInternetAvailable=");
+//          Serial.print(wifiManager.getInternetAvailable());
+//          Serial.print("   wifiManager.getAPStatus()=");
+//          Serial.println(wifiManager.getAPStatus());
+           // wifiManager.stop();
             
            
         }
@@ -1133,10 +1145,12 @@ void loop()
              
           }else if(displayStatus==SEND_LORA_STATUS){
              if (loraActive) {
-                //      Serial.print(F("Seconds time:"));
-                //      Serial.println(daffodilTankFlowData.secondsTime);
-                drawLora(true);
-                sendMessage();
+               if(daffodilData.capacitorVoltage>=minimumLoraVoltage){
+                  drawLora(true);
+                  sendMessage();
+               }else{
+                drawLora(false);
+               }
              }else{
                drawLora(false);
              }
@@ -1217,7 +1231,7 @@ void loop()
     else if (command.startsWith("ConfigWifiSTA"))
     {
       // ConfigWifiSTA#ssid#password
-      // ConfigWifiSTA#MainRouter24##Build4SolarPowerVisualizer#
+      // ConfigWifiSTA#MainRouter24##OfficeDaffodil#
       String ssid = generalFunctions.getValue(command, '#', 1);
       String password = generalFunctions.getValue(command, '#', 2);
       String hostname = generalFunctions.getValue(command, '#', 3);
