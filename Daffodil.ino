@@ -702,7 +702,7 @@ void watchdogTaskFunction(void *pvParameters)
 
 void restartWifi()
 {
-  FastLED.setBrightness(50);
+  //FastLED.setBrightness(50);
   for (int i = 0; i < NUM_LEDS; i++)
   {
     leds[i] = CRGB(0, 0, 0);
@@ -1059,14 +1059,8 @@ void loop()
     // Capacitor Voltage
     int16_t val_3 = ADS.readADC(3);
     float f = ADS.toVoltage(1); //  voltage factor
-    digitalStablesData.capacitorVoltage = val_3 * f;
-//    Serial.print("line 1061 val_3=");
-//     Serial.print(val_3);
-//     Serial.print("  digitalStablesData.capacitorVoltage=");
-//     Serial.println(digitalStablesData.capacitorVoltage);
-     
+    digitalStablesData.capacitorVoltage = val_3 * f;     
     lcd.setCursor(0, 3);
-
     if (digitalStablesData.capacitorVoltage > minimumInitWifiVoltage && !wifiManager.getWifiStatus())
     {
       currentSecondsWithWifiVoltage++;
@@ -1079,7 +1073,9 @@ void loop()
     tempSensor.requestTemperatures();
     float tempC = tempSensor.getTempCByIndex(0);
     digitalStablesData.temperature = tempC;
-
+    digitalStablesData.secondsTime = timeManager.getCurrentTimeInSeconds(currentTimerRecord);
+    digitalStablesData.sleepTime = powerManager->calculateOptimalSleepTime(currentTimerRecord);
+  
     //
     // RTC_BATT_VOLT Voltage
     //
@@ -1100,14 +1096,20 @@ void loop()
       if(hourlySolarPowerData.efficiency>minimumEfficiencyForLed){
         digitalWrite(LED_CONTROL, HIGH);
       }else{
+        FastLED.clear(true);
+        for (int i = 0; i < NUM_LEDS; i++)
+        {
+          leds[i] = CRGB(0, 0, 0);
+        }
+        FastLED.show();
+        
         digitalWrite(LED_CONTROL, LOW);
       }
     }else{
       digitalWrite(LED_CONTROL, HIGH);
     }
   }
-  digitalStablesData.secondsTime = timeManager.getCurrentTimeInSeconds(currentTimerRecord);
-  digitalStablesData.sleepTime = powerManager->calculateOptimalSleepTime(currentTimerRecord);
+
   //
   // check to see if we need to go to sleep
   //
@@ -1116,12 +1118,13 @@ void loop()
     Serial.print("Voltage is ");
     Serial.print(digitalStablesData.capacitorVoltage);
     Serial.println(", going to sleep...");
-    for (int i = 0; i < 5; i++)
-    {
-      leds[i] = CRGB(255, 255, 0);
-    }
-    FastLED.show();
+//    for (int i = 0; i < 5; i++)
+//    {
+//      leds[i] = CRGB(255, 255, 0);
+//    }
+//    FastLED.show();
     delay(100);
+    FastLED.clear(true);
     for (int i = 0; i < NUM_LEDS; i++)
     {
       leds[i] = CRGB(0, 0, 0);
@@ -1138,6 +1141,7 @@ void loop()
 
     Serial.print("line 967 turning off leds, cap=");
     Serial.println(digitalStablesData.capacitorVoltage);
+    FastLED.clear(true);
     for (int i = 0; i < NUM_LEDS; i++)
     {
       leds[i] = CRGB(0, 0, 0);
@@ -1152,10 +1156,12 @@ void loop()
     wifiManager.stop();
     digitalStablesData.internetAvailable = false;
     currentSecondsWithWifiVoltage = 0;
+    FastLED.clear(true);
     for (int i = 0; i < NUM_LEDS; i++)
     {
       leds[i] = CRGB(0, 0, 0);
     }
+    FastLED.show();
     leds[1] = CRGB(255, 0, 0);
     leds[2] = CRGB(255, 0, 0);
     leds[3] = CRGB(255, 0, 0);
@@ -1183,29 +1189,31 @@ void loop()
     {
       Serial.print("turning on  wifi");
       restartWifi();
-      boolean downloadOk = weatherForecastManager->downloadWeatherData(solarInfo, Serial);
-      Serial.print("line 1343 downloadWeatherData returnxs=");
-      Serial.println(downloadOk);
-
-      
-      WeatherForecast *forecasts;
-      weatherForecastManager->loadForecasts(Serial);
       boolean staledata = weatherForecastManager->isWeatherDataStale(currentTimerRecord);
       if(staledata){
-          forecasts = weatherForecastManager->getForecasts();
-          if (forecasts != nullptr)
-          {
-            for (int i = 0; i < 8; i++)
-            {
-              Serial.print("line 1168 downloadWeatherData secondsTime=");
-              Serial.print(forecasts[i].secondsTime);
-              Serial.print("  temperature=");
-              Serial.println(forecasts[i].temperature);
-              Serial.print("  cloudiness=");
-              Serial.println(forecasts[i].cloudiness);
-            }
-          }
+        boolean downloadOk = weatherForecastManager->downloadWeatherData(solarInfo, Serial);
+        Serial.print("line 1343 downloadWeatherData returnxs=");
+        Serial.println(downloadOk);        
       }
+      
+//      WeatherForecast *forecasts;
+//      weatherForecastManager->loadForecasts(Serial);
+//      boolean staledata = weatherForecastManager->isWeatherDataStale(currentTimerRecord);
+//      if(staledata){
+//          forecasts = weatherForecastManager->getForecasts();
+//          if (forecasts != nullptr)
+//          {
+//            for (int i = 0; i < 8; i++)
+//            {
+//              Serial.print("line 1168 downloadWeatherData secondsTime=");
+//              Serial.print(forecasts[i].secondsTime);
+//              Serial.print("  temperature=");
+//              Serial.println(forecasts[i].temperature);
+//              Serial.print("  cloudiness=");
+//              Serial.println(forecasts[i].cloudiness);
+//            }
+//          }
+//      }
      
 
     }
@@ -1282,15 +1290,12 @@ void loop()
       Serial.print("  digitalRead(LED_CONTROL)=");
       Serial.println(digitalRead(LED_CONTROL));
 
-      Serial.print("  digitalRead(LED_CONTROL)=");
-      Serial.println(digitalRead(LED_CONTROL));
-      
       if(brightness1==powerManager->LORA_TX_NOT_ALLOWED){
         loraTxOk=false;
       }else {
         loraTxOk=true; 
       }
-    //   if(brightness1<2)brightness1=100;
+    
       FastLED.setBrightness(brightness1); 
       
       if (displayStatus == SHOW_TEMPERATURE)
@@ -1796,6 +1801,17 @@ void loop()
     {
       Serial.println("Ok-GetWPSSensorData");
       Serial.flush();
+    }else if (command.startsWith("GetHourlySolarPowerData"))
+    {
+      HourlySolarPowerData hourlySolarPowerData = solarInfo->calculateActualPower(currentTimerRecord);
+      Serial.print(" line 1807 efficiency=");
+      Serial.println(hourlySolarPowerData.efficiency);
+      Serial.print("actualPower=");
+      Serial.println(hourlySolarPowerData.actualPower);
+      Serial.print("irradiance=");
+      Serial.println(hourlySolarPowerData.irradiance);
+      Serial.print("temperature=");
+      Serial.println(hourlySolarPowerData.temperature);
     }
     else if (command.startsWith("GetDailySolarPowerSchedule"))
     {
