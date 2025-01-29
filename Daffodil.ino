@@ -694,6 +694,14 @@ void watchdogTaskFunction(void *pvParameters)
 
 
 void readSensorData(){
+    //
+    // Capacitor Voltage
+    //
+    ADS.setGain(0);
+    int16_t val_3 = ADS.readADC(3);
+    float f = ADS.toVoltage(1); //  voltage factor
+    digitalStablesData.capacitorVoltage = val_3 * f; 
+    
     tempSensor.requestTemperatures();
     float tempC = tempSensor.getTempCByIndex(0);
     digitalStablesData.temperature = tempC;
@@ -1085,13 +1093,7 @@ void loop()
     // read the sensors
     //
     
-    //
-    // Capacitor Voltage
-    //
-    ADS.setGain(0);
-    int16_t val_3 = ADS.readADC(3);
-    float f = ADS.toVoltage(1); //  voltage factor
-    digitalStablesData.capacitorVoltage = val_3 * f;     
+    readSensorData();    
     lcd.setCursor(0, 3);
     if (digitalStablesData.capacitorVoltage > minimumInitWifiVoltage && !wifiManager.getWifiStatus())
     {
@@ -1102,7 +1104,6 @@ void loop()
       currentSecondsWithWifiVoltage = 0;
     }
     
-    readSensorData();
     dscount = dsUploadTimer.tick();
     HourlySolarPowerData hourlySolarPowerData = solarInfo->calculateActualPower(currentTimerRecord);
     if(usingSolarPower){
@@ -1123,9 +1124,9 @@ void loop()
     }
 
       turnOffWifi= (hourlySolarPowerData.efficiency<minimumEfficiencyForWifi ) && wifiManager.getWifiStatus();
-    // char buffer[100];
-    //  sprintf(buffer, "wifistatus=%d minimumEfficiencyForWifi=%.2f hourly effi=%.2f  capVolta=%.2f", wifiManager.getWifiStatus(),minimumEfficiencyForWifi, hourlySolarPowerData.efficiency,digitalStablesData.capacitorVoltage);
-   //  Serial.println(buffer);
+     char buffer[100];
+      sprintf(buffer, "wifistatus=%d minimumEfficiencyForWifi=%.2f hourly effi=%.2f  capVolta=%.2f", wifiManager.getWifiStatus(),minimumEfficiencyForWifi, hourlySolarPowerData.efficiency,digitalStablesData.capacitorVoltage);
+     Serial.println(buffer);
 
 
   } // end of the tick block
