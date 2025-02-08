@@ -7,7 +7,7 @@
 #include <Timer.h>
 #include <PCF8563TimeManager.h>
 #include <SPI.h>
-#include <LoRa.h>
+#include <LoRa.h>s
 #include <Esp32SecretManager.h>
 #include <FastLED.h>
 #include <DaffodilWifiManager.h>
@@ -264,6 +264,7 @@ void LoRa_rxMode()
   LoRa.disableInvertIQ(); // normal mode
   LoRa.receive();         // set receive mode
 }
+  
 void sendMessage()
 {
   lcd.setCursor(0, 0);
