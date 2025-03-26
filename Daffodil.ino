@@ -908,7 +908,7 @@ dataManager.start();
     Serial.println(hourlySolarPowerData.efficiency);
     isSleepMode=true;
     digitalStablesData.operatingStatus=OPERATING_STATUS_SLEEP;
-  }
+  }gotosl
 
  
   if(isSleepMode){
