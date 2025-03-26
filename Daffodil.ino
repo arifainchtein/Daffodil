@@ -17,19 +17,30 @@
 #include <Wire.h>
 #include <sha1.h>
 #include <totp.h>
-#include <SolarPowerData.h>
+#include <SolarPowerData.h>`
 #include <DigitalStablesData.h>
 #include <WeatherForecastManager.h>
 #include <BH1750.h>
 #include <DigitalStablesDataSerializer.h>
 #include "ADS1X15.h"
-#include <FastLED.h>
 #include "CHT8305.h"
 #include "rgb_lcd.h"
 #include <ErrorManager.h>
 #include <ErrorDefinitions.h>
 #include <DataManager.h>
 #include <LittleFS.h>
+//#include <driver/adc.h>
+#include <BH1750.h>
+
+#include <Adafruit_INA219.h>
+#define SHUNT_RESISTANCE 0.050 // Shunt resistor value in Ohms
+
+ Adafruit_INA219 ina219(0x41);  
+ float SHUNT_OHMS= 0.05;    // Your shunt resistor value in ohms
+#define MAX_CURRENT     1.0     // Maximum expected current in Amps
+#define CURRENT_LSB     0.00003 // Current LSB in A/bit (10µA per bit for higher precision)
+
+static volatile bool runWatchdog = true;
 
 String currentSSID;
 String ipAddress = "";
@@ -53,7 +64,7 @@ CRGB leds[NUM_LEDS];
 #define ECHO_PIN 33     // Arduino pin tied to echo pin on the ultrasonic sensor.
 #define MAX_DISTANCE 90 // Maximum distance we want to ping for (in centimeters). Maximum sensor distance is rated at 400-500cm.
 
-
+#define SLEEP_SWITCH_26 26
 #define OPERATING_STATUS_SLEEP 1
 #define OPERATING_STATUS_NO_LED 2
 #define OPERATING_STATUS_FULL_MODE 3
@@ -139,8 +150,8 @@ float avgRssi=0;
 //
 // sleeping parameters
 //
-float sleepingVoltage = 3.5;
-float wakingUpVoltage = 3.7;
+float sleepingVoltage = 4.0;
+
 uint8_t numberSecondsWithMinimumWifiVoltageForStartWifi = 30;
 uint8_t currentSecondsWithWifiVoltage = 0;
 float minimumInitWifiVoltage = 4.5;
@@ -203,6 +214,7 @@ bool foundlcd = false;
  bool foundtemp = false;
  bool foundADS = false;
  bool foundBH1750=false;
+ bool foundINA219=false;
  bool PCF8563T=false;
 
  
@@ -248,8 +260,11 @@ void IRAM_ATTR clockTick()
 //
 void onReceive(int packetSize)
 {
-  if (packetSize == 0)
-    return; // if there's no packet, return
+   Serial.print(" Receive lora: ");
+      Serial.println(packetSize);
+  if (packetSize == 0) return; // if there's no packet, return
+
+    
   if (packetSize == sizeof(PanchoCommandData))
   {
     LoRa.readBytes((uint8_t *)&daffodilCommandData, sizeof(PanchoCommandData));
@@ -485,6 +500,26 @@ int sendMessage()
  return result;
 }
 
+void print_wakeup_reason() {
+  esp_sleep_wakeup_cause_t wakeup_reason;
+  wakeup_reason = esp_sleep_get_wakeup_cause();
+
+  switch(wakeup_reason) {
+    case ESP_SLEEP_WAKEUP_EXT0:
+      Serial.println("Wakeup caused by button press");
+      // Do something specific when button wakes the device
+      break;
+    case ESP_SLEEP_WAKEUP_TIMER:
+      Serial.println("Wakeup caused by timer");
+      // Do something specific when timer wakes the device
+      break;
+    default:
+      Serial.println("First boot or reset");
+      break;
+  }
+}
+
+
 //
 // End of Lora Functions
 //
@@ -494,14 +529,27 @@ void setup()
   Wire.begin();
   Wire.setClock(400000);
 
-if(!LittleFS.begin(true)) {
-    Serial.println("LittleFS Mount Failed");
-    return;
-}
+  pinMode(SLEEP_SWITCH_26, OUTPUT);
+  digitalWrite(SLEEP_SWITCH_26, HIGH);
+
+  
+if(!LittleFS.begin(false)) { 
+  Serial.println("LittleFS Mount Failed, formatting..."); 
+  LittleFS.format(); 
+  if(!LittleFS.begin(false)) { 
+    Serial.println("LittleFS Mount Failed even after formatting"); 
+    return; 
+  } 
+ }
+
+print_wakeup_reason();
 dataManager.start();
 
   pinMode(LED_CONTROL, OUTPUT);
   digitalWrite(LED_CONTROL, LOW);
+
+  
+
 
   lightMeter.setMTreg(32);// 
   lightMeter.begin(BH1750::ONE_TIME_HIGH_RES_MODE);
@@ -622,14 +670,21 @@ dataManager.start();
       Serial.println(address);
       if (address == 3){
         foundlcd = true;
-      }else if (address == 40){
+      }else if (address == 64){ // 0x40
         foundtemp = true;
-      }else if (address == 48){
+         Serial.println("foundtemp");
+      }else if (address == 72){ // 0x48
         foundADS = true;
-      }else if (address == 51){
+         Serial.println("foundADS");
+      }else if (address == 65){ // 0x41
+        foundINA219 = true;
+         Serial.println("foundINA219");
+      }else if (address == 81){ // 0x51;
         PCF8563T = true;
-      }else if (address == 0X23){  // 0x23
+         Serial.println("found PCF8563T");
+      }else if (address == 35){  // 0x23
         foundBH1750=true;
+         Serial.println("foundBH1750");
       }
         
       nDevices++;
@@ -640,11 +695,14 @@ dataManager.start();
     }
   }
 
-  if(!foundlcd)errorManager.setI2CError(I2C_DEVICE0_ERROR);
+  if(!foundlcd){
+    errorManager.setI2CError(I2C_DEVICE0_ERROR);
+  }
   if(!foundtemp)errorManager.setI2CError(I2C_DEVICE1_ERROR);
   if(!foundADS)errorManager.setI2CError(I2C_DEVICE2_ERROR);
   if(!PCF8563T)errorManager.setI2CError(I2C_DEVICE3_ERROR);
   if(!foundBH1750)errorManager.setI2CError(I2C_DEVICE4_ERROR);
+  if(!foundINA219)errorManager.setI2CError(I2C_DEVICE5_ERROR);
   
 
   if (!foundtemp)
@@ -675,6 +733,69 @@ dataManager.start();
     foundADS=true;
   }
 
+
+ if (! ina219.begin()) {
+    Serial.println("Failed to find INA219 chip");
+    foundINA219=false;
+  }else{
+     foundINA219=true;
+    Serial.println("initialized INA219");
+  // To use a slightly lower 32V, 1A range (higher precision on amps):
+  //ina219.setCalibration_32V_1A();
+  // Or to use a lower 16V, 400mA range (higher precision on volts and amps):
+ // ina219.setCalibration_16V_400mA();
+ // Reset the device
+  Wire.beginTransmission(0x40);
+  Wire.write(0x00); // Config register
+  Wire.write(0x80); // Reset bit
+  Wire.write(0x00);
+  Wire.endTransmission();
+  delay(50); // Wait for reset
+  
+  // Custom calibration for 0.05 ohm shunt and 1A max current
+ // uint16_t calibrationValue = 10240; // As calculated for 0.05 ohm shunt
+  float SHUNT_OHMS=0.05;
+  //float Current_LSB = MAX_CURRENT/2^15;
+  //float Current_LSB = MAX_CURRENT/32768.0;
+  
+   uint16_t calibrationValue = (uint16_t)(0.04096 / (CURRENT_LSB * SHUNT_OHMS));
+  
+  Serial.print("Calculated calibration value: ");
+  Serial.println(calibrationValue);
+
+  
+  // Set configuration register - try with different gain settings
+  uint16_t config = INA219_CONFIG_BVOLTAGERANGE_32V |
+                   INA219_CONFIG_GAIN_8_320MV |  // Higher gain for better resolution
+                   INA219_CONFIG_BADCRES_12BIT |
+                   INA219_CONFIG_SADCRES_12BIT_1S_532US |
+                   INA219_CONFIG_MODE_SANDBVOLT_CONTINUOUS;
+  
+  // Write configuration
+  Wire.beginTransmission(0x40);
+  Wire.write(0x00); // Config register
+  Wire.write((config >> 8) & 0xFF);
+  Wire.write(config & 0xFF);
+  Wire.endTransmission();
+  
+  // Write calibration
+  Wire.beginTransmission(0x40);
+  Wire.write(0x05); // Calibration register
+  Wire.write((calibrationValue >> 8) & 0xFF);
+  Wire.write(calibrationValue & 0xFF);
+  Wire.endTransmission();
+  }
+  
+  
+
+
+
+
+
+
+
+
+
   Serial.println(CHT.getManufacturer(), HEX);
   Serial.println(CHT.getVersionID(), HEX);
   Serial.println(CHT.getVoltage());
@@ -688,7 +809,8 @@ dataManager.start();
   lcd.setCursor(0, 0);
   lcd.print("cap=");
   lcd.print(digitalStablesData.capacitorVoltage);
-
+  Serial.print("i setup cap=");
+  Serial.println(digitalStablesData.capacitorVoltage);
  
 
   tempSensor.begin();
@@ -903,7 +1025,7 @@ dataManager.start();
     Serial.print("setting sleepmode in setup because of efficiency=");
     Serial.println(hourlySolarPowerData.efficiency);
   }
-  if (digitalStablesData.capacitorVoltage > 1 && digitalStablesData.capacitorVoltage < wakingUpVoltage){
+  if (digitalStablesData.capacitorVoltage > 1 && digitalStablesData.capacitorVoltage < sleepingVoltage){
     Serial.print("setting sleepmode in setup because of low voltage=");
     Serial.println(hourlySolarPowerData.efficiency);
     isSleepMode=true;
@@ -915,6 +1037,15 @@ dataManager.start();
     goToSleep();
   }else{
     digitalStablesData.operatingStatus=OPERATING_STATUS_NO_LED;
+  }
+  if (loraActive) {
+    
+    // LoRa_rxMode();
+    // LoRa.setSyncWord(0xF3);
+    LoRa.onReceive(onReceive);
+    // put the radio into receive mode
+    LoRa.receive();
+
   }
    Serial.println(F("Finished Setup"));
 }
@@ -930,9 +1061,13 @@ void sleepDS18B20() { // Put OneWire bus in high impedance state pinMode(ONE_WIR
 
 
 
-void  goToSleep(){
+void goToSleep(){
    
      long seconds_sleep= powerManager->calculateOptimalSleepTime(currentTimerRecord);
+     uint64_t sleep_time_us = (uint64_t)(seconds_sleep * 1000000ULL);
+    Serial.print("sleep_time_us=");
+    Serial.print(sleep_time_us);
+   
      digitalStablesData.sleepTime=seconds_sleep;
     readSensorData();
     digitalStablesData.ledBrightness=powerManager->isLoraTxSafe(0,currentTimerRecord);
@@ -944,20 +1079,57 @@ void  goToSleep(){
     
     Serial.print("  digitalStablesData.sleepTime=");
     Serial.println(digitalStablesData.sleepTime);
-    
+    //  adc_power_off();
     digitalWrite(LED_CONTROL, LOW);
-    LoRa.sleep();;
+     WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
+  // Disable Bluetooth
+  btStop();
+ // adc_power_off();
       sleepDS18B20();
     if(digitalStablesData.ledBrightness!=powerManager->LORA_TX_NOT_ALLOWED){
       sendMessage();
       delay(500);
       sendMessage();
     }
+     LoRa.sleep();
+    
+      pinMode(LORA_RESET, INPUT);
+   ;
+    
+//Serial.print("about to set runwadopg to false");
+//     runWatchdog=false;
+     
+     const int gpioOutputPins[] = {
+         4, 5, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 23, 25, 27, 32, 33
+      };
+      const int numPins = sizeof(gpioOutputPins) / sizeof(gpioOutputPins[0]);
+     for(int i = 0; i < numPins; i++) {
+      pinMode(gpioOutputPins[i], INPUT);
+    //  digitalWrite(gpioOutputPins[i], LOW);
+    }
+ // disabling task
+ 
+//  // Try explicitly stopping the watchdog task
+//   Serial.println(" about to disable task");
+//    if(watchdogTask != NULL) {
+//        vTaskDelete(watchdogTask);
+//        watchdogTask = NULL;
+//    }
+    Serial.println(" about to put ads1115 to sleep ");
+    ADS.setMode(1);   
+    
      Serial.println("  going to sleep");
     // Convert seconds_sleep from seconds to microseconds for deep sleep
-    esp_sleep_enable_timer_wakeup( seconds_sleep * 1000000);
+    esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_OFF);
+    esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_SLOW_MEM, ESP_PD_OPTION_OFF);
+    esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_FAST_MEM, ESP_PD_OPTION_OFF);
+    esp_sleep_enable_timer_wakeup(sleep_time_us);
+    digitalWrite(SLEEP_SWITCH_26, LOW);
+    delay(100);
+    pinMode(SLEEP_SWITCH_26, INPUT);
+    delay(50);
     esp_deep_sleep_start();
- 
 }
 
 void watchdogTaskFunction(void *pvParameters)
@@ -967,13 +1139,18 @@ void watchdogTaskFunction(void *pvParameters)
   TickType_t xLastWakeTime = xTaskGetTickCount();
   const TickType_t xFrequency = pdMS_TO_TICKS(900);
     
-  for (;;)
-  {
+//  for (;;)
+//  {
+ while (runWatchdog) // Changed from for(;;) to while(runWatchdog)
+    {
     digitalWrite(WATCHDOG_WDI, HIGH);
       vTaskDelay(pdMS_TO_TICKS(2));  
     digitalWrite(WATCHDOG_WDI, LOW);
+   // Serial.print("watchdogTask reset ");
    vTaskDelayUntil(&xLastWakeTime, xFrequency);
   }
+   digitalWrite(WATCHDOG_WDI, LOW);  // Ensure WDI is low before ending task
+    vTaskDelete(NULL);  // Delete this task
 }
 
 
@@ -1025,6 +1202,101 @@ void readSensorData(){
     // Calculate the actual voltage using the voltage divider formula
     float rtcBatVoltage = (voltage * (R1 + R2)) / R2;
     digitalStablesData.rtcBatVolt = rtcBatVoltage;
+
+//
+// current
+//
+
+ 
+
+// Read raw shunt voltage register for debugging
+if(foundINA219){
+   Wire.beginTransmission(0x40);
+  Wire.write(0x01); // Shunt voltage register
+  Wire.endTransmission();
+  Wire.requestFrom(0x40, 2);
+  int16_t rawShunt = (Wire.read() << 8) | Wire.read();
+  
+  Wire.beginTransmission(0x40);
+  Wire.write(0x04); // Current register
+  Wire.endTransmission();
+  Wire.requestFrom(0x40, 2);
+  int16_t rawCurrent = (Wire.read() << 8) | Wire.read();
+  
+  // Get readings using library functions
+  float shuntvoltage = ina219.getShuntVoltage_mV();
+  float busvoltage = ina219.getBusVoltage_V();
+  float current_mA = ina219.getCurrent_mA();
+  float power_mW = ina219.getPower_mW();
+  
+  // Calculate current directly from shunt voltage for comparison
+  // I = V/R (Ohm's Law)
+  float calculated_current_mA = shuntvoltage / SHUNT_OHMS;
+  // Calculate current from raw register and calibration
+  float direct_current_mA = rawCurrent * CURRENT_LSB * 1000;
+  
+//  Serial.println("--- MEASUREMENTS ---");
+//  Serial.print("Raw Shunt Register: 0x"); Serial.print(rawShunt, HEX);
+//  Serial.print(" ("); Serial.print(rawShunt); Serial.println(")");
+//  Serial.print("Raw Current Register: 0x"); Serial.print(rawCurrent, HEX);
+//  Serial.print(" ("); Serial.print(rawCurrent); Serial.println(")");
+//  
+//  Serial.print("Bus Voltage: "); Serial.print(busvoltage); Serial.println(" V");
+//  Serial.print("Shunt Voltage: "); Serial.print(shuntvoltage); Serial.println(" mV");
+//  
+//  Serial.print("Library Current: "); Serial.print(current_mA); Serial.println(" mA");
+//  Serial.print("Calculated Current (V/R): "); Serial.print(calculated_current_mA); Serial.println(" mA");
+//  Serial.print("Direct Register Current: "); Serial.print(direct_current_mA); Serial.println(" mA");
+//  
+//  Serial.print("Power: "); Serial.print(power_mW); Serial.println(" mW");
+//  Serial.println("");
+  
+  digitalStablesData.solarVoltage = busvoltage; 
+  digitalStablesData.capacitorCurrent = calculated_current_mA;
+}else{
+  digitalStablesData.solarVoltage = -99; 
+  digitalStablesData.capacitorCurrent = -99;
+}
+  
+// 
+//    Serial.print("wifistatus=");
+//    Serial.println(wifiManager.getWifiStatus());
+//
+//     Serial.print("minimumEfficiencyForWifi=");
+//    Serial.println(digitalStablesData.minimumEfficiencyForWifi);
+//
+//    Serial.print(" hourly effi=");
+//    Serial.println(hourlySolarPowerData.efficiency);
+//
+//    Serial.print("capVolta=");
+//    Serial.println(digitalStablesData.capacitorVoltage);
+//
+//    Serial.print("solarVolta=");
+//    Serial.println(digitalStablesData.solarVoltage);
+//
+//    Serial.print("current=");
+//    Serial.println(digitalStablesData.capacitorCurrent);
+
+
+/*
+ * 
+ *    float shuntvoltage = 0;
+  float busvoltage = 0;
+  float current_mA = 0;
+  float loadvoltage = 0;
+  float power_mW = 0;
+  shuntvoltage = ina219.getShuntVoltage_mV();
+  busvoltage = ina219.getBusVoltage_V();
+  current_mA = ina219.getCurrent_mA();
+  power_mW = ina219.getPower_mW();
+  loadvoltage = busvoltage + (shuntvoltage / 1000);
+  
+  Serial.print("Bus Voltage:   "); Serial.print(busvoltage); Serial.println(" V");
+  Serial.print("Shunt Voltage: "); Serial.print(shuntvoltage); Serial.println(" mV");
+  Serial.print("Load Voltage:  "); Serial.print(loadvoltage); Serial.println(" V");
+  Serial.print("Current:       "); Serial.print(current_mA); Serial.println(" mA");
+  Serial.println("Power:         "); Serial.print(power_mW); Serial.println(" mW");
+  */
 }
 
 void restartWifi()
@@ -1333,7 +1605,7 @@ void readI2CTemp()
     Serial.print("Address error");
     break;
   case CHT8305_ERROR_I2C:
-    Serial.print("I2C error");
+    Serial.print("Outdoor Temperature I2C error");
     digitalStablesData.outdoortemperature = -99;
     break;
   case CHT8305_ERROR_CONNECT:
@@ -1423,19 +1695,22 @@ void loop()
   
     
       turnOffWifi= (hourlySolarPowerData.efficiency*100<digitalStablesData.minimumEfficiencyForWifi ) && wifiManager.getWifiStatus();
-//     char buffer[100];
-//      sprintf(buffer, "wifistatus=%d minimumEfficiencyForWifi=%.2f hourly effi=%.2f  capVolta=%.2f", wifiManager.getWifiStatus(),minimumEfficiencyForWifi, hourlySolarPowerData.efficiency,digitalStablesData.capacitorVoltage);
-//     Serial.println(buffer);
+     
 
+ if(debug)Serial.print("  turnOffWifi=");
+ if(debug)Serial.println(turnOffWifi);
 
   } // end of the tick block
 
 
   boolean isSleepMode=false;
   if(hourlySolarPowerData.efficiency*100<digitalStablesData.minimumEfficiencyForLed)isSleepMode=true;
-  if (digitalStablesData.capacitorVoltage > 1 && digitalStablesData.capacitorVoltage < wakingUpVoltage) isSleepMode=true;
+  if (digitalStablesData.capacitorVoltage > 1 && digitalStablesData.capacitorVoltage < sleepingVoltage) isSleepMode=true;
   if(isSleepMode){
     digitalStablesData.operatingStatus=OPERATING_STATUS_SLEEP;
+    Serial.print("going to sleep because digitalStablesData.capacitorVoltage is less than sleepingVoltage,, dscap=");
+    Serial.println(digitalStablesData.capacitorVoltage);
+    
     goToSleep();
   }
 
@@ -1613,7 +1888,10 @@ void loop()
         if(debug)Serial.print("showing scepotic=");
         if(debug)Serial.print(" percentage: ");
         if(debug)Serial.println(digitalStablesData.scepticAvailablePercentage);
-        
+        red = 255;
+        green = 0;
+        blue = 255;
+            
          for (int i = 0; i < NUM_LEDS; i++)
           {
             leds[i] = CRGB(0, 0, 0);
@@ -1706,7 +1984,9 @@ void loop()
             leds[i] = CRGB(0, 0, 0);
           }
           FastLED.show();
-        if (wifiManager.getWifiStatus())
+        if (wifiManager.getWifiStatus() &&
+          hourlySolarPowerData.efficiency*100>digitalStablesData.minimumEfficiencyForWifi
+        )
         {
           if (wifiManager.getAPStatus())
           {
@@ -1860,9 +2140,15 @@ void loop()
     {
       Serial.println(F("Ok-Ping"));
     }
+    else if(command.startsWith("goToSleep"))
+    {
+        goToSleep();
+   
+    }
     else if(command.startsWith("storeDSDData"))
     {
-        dataManager.storeDSDData(digitalStablesData);
+        int count = dataManager.storeDSDData(digitalStablesData);
+        Serial.println(count);
         Serial.println("Ok-storeDSDData");
         Serial.flush(); 
     }
@@ -1875,10 +2161,23 @@ void loop()
       Serial.println("Ok-clearAllDSDData");
       Serial.flush(); 
       
-    }else if (command.startsWith("exportDSDCSV"))
+    }else if (command.startsWith("printAllDSDData"))
+    {
+      dataManager.printAllDSDData();
+      Serial.println("Ok-printAllDSDData");
+      Serial.flush(); 
+    }
+    else if (command.startsWith("exportDSDCSV"))
     {
       dataManager.exportDSDCSV();
       Serial.println("Ok-exportDSDCSV");
+      Serial.flush(); 
+    }
+    else if (command.startsWith("getDSDStoredCount"))
+    {
+      int count = dataManager.getDSDStoredCount();
+      Serial.println(count);
+      Serial.println("Ok-getDSDStoredCount");
       Serial.flush(); 
     }
     else if (command.startsWith("readStoredDSDData"))
@@ -1886,21 +2185,20 @@ void loop()
       int count = dataManager.getDSDStoredCount();
       DigitalStablesData dataArray[count];
       int actualSize = 0;
-    
-    if (dataManager.readAllDSDData(dataArray, count, actualSize)) {
-        Serial.printf("Successfully read %d entries\n", actualSize);
-        
-        // Example: Print all entries
-        for(int i = 0; i < actualSize; i++) {
-            Serial.printf("\nEntry %d:\n", i);
-            dataManager.printDigitalStablesData(dataArray[i]);
-        }
-    }
-      
+      if (dataManager.readAllDSDData(dataArray, count, actualSize)) {
+          Serial.printf("Successfully read %d entries\n", actualSize);
+          // Example: Print all entries
+          for(int i = 0; i < actualSize; i++) {
+              Serial.printf("\nEntry %d:\n", i);
+              dataManager.printDigitalStablesData(dataArray[i]);
+          }
+      }
+      Serial.println("Ok-readStoredDSDData");
+      Serial.flush(); 
     }
     else if (command.startsWith("SetTime"))
     {
-      // SetTime#14#2#25#6#8#19#00
+      // SetTime#11#3#25#3#12#55#30
       // SetTime#17#5#20#7#11#06#00
       timeManager.setTime(command);
       Serial.println("Ok-SetTime");
@@ -1928,7 +2226,8 @@ void loop()
     }
     else if (command.startsWith("SetDeviceSensorConfig"))
     {
-// SetDeviceSensorConfig#Sceptic#SCEP#NoSensor#Temperature#AEST-10AEDT,M10.1.0,M4.1.0/3#-37.13305556#144.47472222#410#40#50#
+// SetDeviceSensorConfig#CreekTub #CREE #NoSensor#Temperature#AEST-10AEDT,M10.1.0,M4.1.0/3#-37.13305556#144.47472222#410#40#50#
+//SetDeviceSensorConfig#Sceptic #SCEP #NoSensor#Temperature#AEST-10AEDT,M10.1.0,M4.1.0/3#-37.13305556#144.47472222#410#40#50#
       // SetDeviceSensorConfig#DaffOffice#OFDA#NoSensor#Temperature#AEST-10AEDT,M10.1.0,M4.1.0/3#-37.13305556#144.47472222#410#40#50#
       String devicename = generalFunctions.getValue(command, '#', 1);
       String deviceshortname = generalFunctions.getValue(command, '#', 2);
