@@ -1030,7 +1030,7 @@ dataManager.start();
     Serial.println(hourlySolarPowerData.efficiency);
     isSleepMode=true;
     digitalStablesData.operatingStatus=OPERATING_STATUS_SLEEP;
-  }gotosl
+  }
 
  
   if(isSleepMode){
@@ -1235,21 +1235,39 @@ if(foundINA219){
   // Calculate current from raw register and calibration
   float direct_current_mA = rawCurrent * CURRENT_LSB * 1000;
   
-//  Serial.println("--- MEASUREMENTS ---");
-//  Serial.print("Raw Shunt Register: 0x"); Serial.print(rawShunt, HEX);
-//  Serial.print(" ("); Serial.print(rawShunt); Serial.println(")");
-//  Serial.print("Raw Current Register: 0x"); Serial.print(rawCurrent, HEX);
-//  Serial.print(" ("); Serial.print(rawCurrent); Serial.println(")");
-//  
-//  Serial.print("Bus Voltage: "); Serial.print(busvoltage); Serial.println(" V");
-//  Serial.print("Shunt Voltage: "); Serial.print(shuntvoltage); Serial.println(" mV");
-//  
-//  Serial.print("Library Current: "); Serial.print(current_mA); Serial.println(" mA");
-//  Serial.print("Calculated Current (V/R): "); Serial.print(calculated_current_mA); Serial.println(" mA");
-//  Serial.print("Direct Register Current: "); Serial.print(direct_current_mA); Serial.println(" mA");
-//  
-//  Serial.print("Power: "); Serial.print(power_mW); Serial.println(" mW");
-//  Serial.println("");
+ if(debug)Serial.println("--- MEASUREMENTS ---");
+ if(debug)Serial.print("Raw Shunt Register: 0x");
+  if(debug)Serial.print(rawShunt, HEX);
+ if(debug)Serial.print(" ("); 
+ if(debug)Serial.print(rawShunt); 
+ if(debug)Serial.println(")");
+ if(debug)Serial.print("Raw Current Register: 0x"); 
+ if(debug)Serial.print(rawCurrent, HEX);
+if(debug) Serial.print(" ("); 
+if(debug)Serial.print(rawCurrent); 
+if(debug)Serial.println(")");
+ 
+if(debug) Serial.print("Bus Voltage: "); 
+if(debug)Serial.print(busvoltage); 
+if(debug)Serial.println(" V");
+ if(debug)Serial.print("Shunt Voltage: "); 
+ if(debug)Serial.print(shuntvoltage); 
+ if(debug)Serial.println(" mV");
+ 
+ if(debug)Serial.print("Library Current: "); 
+ if(debug)Serial.print(current_mA); 
+ if(debug)Serial.println(" mA");
+ if(debug)Serial.print("Calculated Current (V/R): "); 
+ if(debug)Serial.print(calculated_current_mA); 
+ if(debug)Serial.println(" mA");
+if(debug) Serial.print("Direct Register Current: "); 
+if(debug)Serial.print(direct_current_mA); 
+if(debug)Serial.println(" mA");
+ 
+if(debug) Serial.print("Power: "); 
+if(debug)Serial.print(power_mW); 
+if(debug)Serial.println(" mW");
+ if(debug)Serial.println("");
   
   digitalStablesData.solarVoltage = busvoltage; 
   digitalStablesData.capacitorCurrent = calculated_current_mA;
@@ -1704,8 +1722,8 @@ void loop()
 
 
   boolean isSleepMode=false;
-  if(hourlySolarPowerData.efficiency*100<digitalStablesData.minimumEfficiencyForLed)isSleepMode=true;
-  if (digitalStablesData.capacitorVoltage > 1 && digitalStablesData.capacitorVoltage < sleepingVoltage) isSleepMode=true;
+  if(usingSolarPower && hourlySolarPowerData.efficiency*100<digitalStablesData.minimumEfficiencyForLed)isSleepMode=true;
+  if (usingSolarPower && digitalStablesData.capacitorVoltage > 1 && digitalStablesData.capacitorVoltage < sleepingVoltage) isSleepMode=true;
   if(isSleepMode){
     digitalStablesData.operatingStatus=OPERATING_STATUS_SLEEP;
     Serial.print("going to sleep because digitalStablesData.capacitorVoltage is less than sleepingVoltage,, dscap=");
@@ -1716,7 +1734,7 @@ void loop()
 
 
 
-  if (digitalStablesData.capacitorVoltage < minimumLEDVoltage && digitalRead(LED_CONTROL))
+  if (usingSolarPower && digitalStablesData.capacitorVoltage < minimumLEDVoltage && digitalRead(LED_CONTROL))
   {
 
     if(debug)Serial.print("line 967 turning off leds, cap=");
@@ -1828,14 +1846,14 @@ void loop()
     {
       showTemperature = !showTemperature;
       
-//      if(debug)Serial.print("capacitor voltage=");
-//      if(debug)Serial.print(digitalStablesData.capacitorVoltage);
-//      if(debug)Serial.print(" displayStatus=");
-//      if(debug)Serial.println(displayStatus);
-//      if(debug)Serial.print("line 1287 digitalStablesData.ledBrightness=");
-//      if(debug)Serial.print(digitalStablesData.ledBrightness);
-//      if(debug)Serial.print("  digitalRead(LED_CONTROL)=");
-//      if(debug)Serial.println(digitalRead(LED_CONTROL));
+     if(debug)Serial.print("capacitor voltage=");
+     if(debug)Serial.print(digitalStablesData.capacitorVoltage);
+     if(debug)Serial.print(" displayStatus=");
+     if(debug)Serial.println(displayStatus);
+     if(debug)Serial.print("line 1287 digitalStablesData.ledBrightness=");
+     if(debug)Serial.print(digitalStablesData.ledBrightness);
+     if(debug)Serial.print("  digitalRead(LED_CONTROL)=");
+     if(debug)Serial.println(digitalRead(LED_CONTROL));
 
       if(digitalStablesData.ledBrightness==powerManager->LORA_TX_NOT_ALLOWED){
         loraTxOk=false;
@@ -1971,14 +1989,14 @@ void loop()
       }
       else if (displayStatus == SHOW_INTERNET_STATUS)
       {
-//        if(debug)Serial.print("line 1112 inside of showintenrnetstatus internetAvailable=");
-//        if(debug)Serial.println(digitalStablesData.internetAvailable);
-//        if(debug)Serial.print("wifiManager.getAPStatus()=");
-//        if(debug)Serial.println(wifiManager.getAPStatus());
-//        if(debug)Serial.print("wifiManager.getWifiStatus()=");
-//        if(debug)Serial.println(wifiManager.getWifiStatus());
-//        if(debug)Serial.print("dsupload timer counter= ");
-//        if(debug)Serial.println(dscount);
+       if(debug)Serial.print("line 1112 inside of showintenrnetstatus internetAvailable=");
+       if(debug)Serial.println(digitalStablesData.internetAvailable);
+       if(debug)Serial.print("wifiManager.getAPStatus()=");
+       if(debug)Serial.println(wifiManager.getAPStatus());
+       if(debug)Serial.print("wifiManager.getWifiStatus()=");
+       if(debug)Serial.println(wifiManager.getWifiStatus());
+       if(debug)Serial.print("dsupload timer counter= ");
+       if(debug)Serial.println(dscount);
          for (int i = 0; i < NUM_LEDS; i++)
           {
             leds[i] = CRGB(0, 0, 0);
@@ -2144,6 +2162,22 @@ void loop()
     {
         goToSleep();
    
+    }
+     else if(command.startsWith("usingSolarPower"))
+    {
+      int usingSolarPowerv = generalFunctions.getValue(command, '#', 1).toInt();
+        if(usingSolarPowerv>0)usingSolarPower=true;
+        else usingSolarPower=false;
+        Serial.println("Ok-usingSolarPower");
+        Serial.flush(); 
+    }
+     else if(command.startsWith("debug"))
+    {
+      int debugv = generalFunctions.getValue(command, '#', 1).toInt();
+        if(debugv>0)debug=true;
+        else debug=false;
+    Serial.println("Ok-debug");
+        Serial.flush(); 
     }
     else if(command.startsWith("storeDSDData"))
     {
