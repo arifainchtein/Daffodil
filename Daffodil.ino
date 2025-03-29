@@ -11,13 +11,13 @@
 #include <Esp32SecretManager.h>
 #include <FastLED.h>
 #include <DaffodilWifiManager.h>
-#include <DaffodilData.h>
+//#include <DaffodilData.h>
 #include "OneWire.h"
 #include "DallasTemperature.h"
 #include <Wire.h>
 #include <sha1.h>
 #include <totp.h>
-#include <SolarPowerData.h>`
+#include <SolarPowerData.h>
 #include <DigitalStablesData.h>
 #include <WeatherForecastManager.h>
 #include <BH1750.h>
@@ -31,10 +31,36 @@
 #include <LittleFS.h>
 //#include <driver/adc.h>
 #include <BH1750.h>
-
 #include <Adafruit_INA219.h>
-#define SHUNT_RESISTANCE 0.050 // Shunt resistor value in Ohms
 
+
+#define RTC_CLK_OUT 4
+#define MISO 12
+#define MOSI 13
+#define SCK 14
+#define LoRa_SS 15
+#define LORA_RESET 16
+#define LORA_DI0 17
+//#define WATCHDOG_WDI 18
+#define LED_PIN 19
+#define LED_CONTROL 23
+#define TPL5010_DONE 25
+#define SLEEP_SWITCH_26 26
+#define TEMPERATURE 27
+
+// const int trigPin = 32;
+// const int echoPin = 33;
+#define TRIGGER_PIN 32  // Arduino pin tied to trigger pin on the ultrasonic sensor.
+#define ECHO_PIN 33 
+#define OP_MODE 34
+ #define SENSOR_INPUT_2 33
+ #define SENSOR_INPUT_1 32
+//#define ADS115_ALERT 35
+#define TPL5010_WAKE 35
+#define RTC_BATT_VOLT 36
+
+
+#define SHUNT_RESISTANCE 0.050 // Shunt resistor value in Ohm
  Adafruit_INA219 ina219(0x41);  
  float SHUNT_OHMS= 0.05;    // Your shunt resistor value in ohms
 #define MAX_CURRENT     1.0     // Maximum expected current in Amps
@@ -46,25 +72,19 @@ String currentSSID;
 String ipAddress = "";
 boolean initiatedWifi = false;
 // #define address 0x40
-#define LED_PIN 19
-#define OP_MODE 34
-#define NUM_LEDS 15
-#define LED_CONTROL 23
+
 bool debug=false;
 DataManager dataManager(Serial, LittleFS);
 
 HourlySolarPowerData hourlySolarPowerData;
 boolean usingSolarPower=true;
 
+#define NUM_LEDS 15
 CRGB leds[NUM_LEDS];
-#define WATCHDOG_WDI 18
-// const int trigPin = 32;
-// const int echoPin = 33;
-#define TRIGGER_PIN 32  // Arduino pin tied to trigger pin on the ultrasonic sensor.
-#define ECHO_PIN 33     // Arduino pin tied to echo pin on the ultrasonic sensor.
+
+    // Arduino pin tied to echo pin on the ultrasonic sensor.
 #define MAX_DISTANCE 90 // Maximum distance we want to ping for (in centimeters). Maximum sensor distance is rated at 400-500cm.
 
-#define SLEEP_SWITCH_26 26
 #define OPERATING_STATUS_SLEEP 1
 #define OPERATING_STATUS_NO_LED 2
 #define OPERATING_STATUS_FULL_MODE 3
@@ -77,12 +97,8 @@ NewPing sonar(TRIGGER_PIN, ECHO_PIN, MAX_DISTANCE); // NewPing setup of pins and
 
 // LoRa parameters, registers and constants
 
-#define SCK 14
-#define MOSI 13
-#define MISO 12
-#define LoRa_SS 15
-#define LORA_RESET 16
-#define LORA_DI0 17
+
+
 #define REG_OP_MODE            0x01
 #define REG_IRQ_FLAGS         0x12
 #define REG_RSSI_VALUE        0x1B
@@ -100,8 +116,7 @@ NewPing sonar(TRIGGER_PIN, ECHO_PIN, MAX_DISTANCE); // NewPing setup of pins and
 
 CHT8305 CHT(0x40);
 bool loraTxOk=false;
-#define SENSOR_INPUT_2 33
-#define SENSOR_INPUT_1 32
+
 
 TaskHandle_t watchdogTask;
 //i2c addresses:
@@ -116,16 +131,13 @@ ADS1115 ADS(0x48);
 volatile bool RDY = false;
 uint8_t ads1115channel = 0;
 int16_t ads1115val[4] = {0, 0, 0, 0};
-#define ADS115_ALERT 35
 
-#define TEMPERATURE 27
-#define RTC_BATT_VOLT 36
-#define RTC_CLK_OUT 4
 OneWire oneWire(TEMPERATURE);
 DallasTemperature tempSensor(&oneWire);
 
 Timer viewTimer(5);
 bool showTime = false;
+
 
 // bool internetAvailable;
 bool wifiActiveSwitch;
@@ -135,6 +147,8 @@ Timer dsUploadTimer(60);
 static volatile int flowMeterPulseCount;
 static volatile int flowMeterPulseCount2;
 
+volatile bool loraReceived=false;
+volatile int loraPacketSize=0;
 
 
 uint8_t displayStatus = 0;
@@ -178,7 +192,7 @@ WeatherForecastManager *weatherForecastManager;
 double lightMeterCorrectingFactor=3.45;
 DaffodilWifiManager wifiManager(Serial, LittleFS,timeManager, secretManager, digitalStablesData, digitalStablesConfigData);
 
-int badPacketCount = 0;
+//int badPacketCount = 0;
 byte msgCount = 0;        // count of outgoing messages
 byte localAddress = 0xFF; // address of this device
 byte destination = 0xAA;  // destination to send to
@@ -217,7 +231,14 @@ bool foundlcd = false;
  bool foundINA219=false;
  bool PCF8563T=false;
 
- 
+ //
+ // watchdog
+ //
+TaskHandle_t refreshTaskHandle = NULL;
+volatile bool wakeSignalReceived = false;
+unsigned long lastWakeTime = 0;
+const unsigned long WAKE_INTERVAL_MS = 1000; // Expected wake interval
+
 
 String serialNumber;
 struct TempHum
@@ -255,6 +276,7 @@ void IRAM_ATTR clockTick()
   portEXIT_CRITICAL_ISR(&mux);
 }
 
+
 //
 // Lora Functions
 //
@@ -262,14 +284,32 @@ void onReceive(int packetSize)
 {
    Serial.print(" Receive lora: ");
       Serial.println(packetSize);
+      loraReceived=true;
+      loraPacketSize=packetSize;
+}
+void processLora(int packetSize){
+   Serial.print(" Receive lora: ");
+      Serial.println(packetSize);
+
+       Serial.print(" size of ds: ");
+      Serial.println(sizeof(DigitalStablesData));
+
+ Serial.print(" size of WeatherForecastUpdate: ");
+      Serial.println(sizeof(WeatherForecastUpdate));
+
+ Serial.print(" size of RequestCommand: ");
+      Serial.println(sizeof(RequestCommand));
+
   if (packetSize == 0) return; // if there's no packet, return
 
     
-  if (packetSize == sizeof(PanchoCommandData))
+  if (packetSize == sizeof(DigitalStablesData))
   {
-    LoRa.readBytes((uint8_t *)&daffodilCommandData, sizeof(PanchoCommandData));
-    long commandcode = daffodilCommandData.commandcode;
+    LoRa.readBytes((uint8_t *)&digitalStablesData, sizeof(DigitalStablesData));
+    long commandcode = digitalStablesData.totpcode;
     bool validCode = secretManager.checkCode(commandcode);
+     Serial.print(" Received DigitalStablesData: ");
+      Serial.println(commandcode);
     if (validCode)
     {
 
@@ -278,25 +318,57 @@ void onReceive(int packetSize)
 
       int rssi = LoRa.packetRssi();
       float Snr = LoRa.packetSnr();
-      Serial.println(" Receive DaffodilCommandData: ");
-      Serial.print(" Field Id: ");
-      Serial.print(daffodilCommandData.fieldId);
-      Serial.print(" commandcode: ");
-      Serial.print(daffodilCommandData.commandcode);
+      Serial.println(" valid code ");
+      Serial.print(" rssi: ");
+      Serial.print(rssi);
     }
     else
     {
-      Serial.print(" Receive PanchoCommandData but invalid code: ");
+      Serial.print(" Receive digitalStablesData but invalid code: ");
       Serial.println(commandcode);
-      Serial.print(daffodilCommandData.fieldId);
+    
     }
-  }
-  else
+  }else  if (packetSize == sizeof(RequestCommand)){
+    RequestCommand rc;
+    LoRa.readBytes((uint8_t *)&rc, sizeof(RequestCommand));
+     long totpcode = rc.totpcode;
+    bool validCode = secretManager.checkCode(totpcode);
+    if (validCode){
+      uint8_t commandcode = rc.commandcode;
+      if(commandcode==SEND_ASYNC_DATA){
+        Serial.println("received SEND_ASYNC_DATA");
+      }else if(commandcode==RECEIVED_OK){
+        Serial.println("received RECEIVED_OK");
+      }else if(commandcode==CLEARED_OK){
+        Serial.println("received CLEARED_OK");
+      }else if(commandcode==NO_DATA){
+        Serial.println("received NO_DATA");
+      }
+    } else
+    {
+      Serial.print(" Receive RequestCommand but invalid code: ");
+      Serial.println(totpcode);
+    
+    }
+  }else  if (packetSize == sizeof(WeatherForecastUpdate)){
+    WeatherForecastUpdate weatherForecastUpdate;
+    LoRa.readBytes((uint8_t *)&weatherForecastUpdate, sizeof(WeatherForecastUpdate));
+     long commandcode = weatherForecastUpdate.totpcode;
+    bool validCode = secretManager.checkCode(commandcode);
+    if (validCode){
+      //WeatherForecast forecasts=weatherForecastUpdate.forecasts;
+      weatherForecastManager->saveForecasts(weatherForecastUpdate.forecasts);
+      solarInfo->setWeatherForecast(weatherForecastUpdate.forecasts ,4);
+    } else
+    {
+      Serial.print(" Receive WeatherForecastUpdate but invalid code: ");
+      Serial.println(commandcode);
+    
+    }
+  }else
   {
-    badPacketCount++;
-    Serial.print("Received  invalid data daffodilCommandData data, expected: ");
-    Serial.print(sizeof(PanchoCommandData));
-    Serial.print("  received");
+  //  badPacketCount++;
+    Serial.print("Received  invalid  data,  received ");
     Serial.println(packetSize);
   }
 }
@@ -588,6 +660,12 @@ dataManager.start();
   Serial.print("sizeof DigitalStablesData=");
   Serial.println(sizeof(DigitalStablesData));
 
+  Serial.print("sizeof RequestCommanmd=");
+  Serial.println(sizeof(RequestCommand));
+
+  Serial.print("sizeof WeatherForecastUpdate=");
+  Serial.println(sizeof(WeatherForecastUpdate));
+
   pinMode(RTC_CLK_OUT, INPUT_PULLUP); // set up interrupt pin
   digitalWrite(RTC_CLK_OUT, HIGH);    // turn on pullup resistors
   // attach interrupt to set_tick_tock callback on rising edge of INT0
@@ -602,7 +680,8 @@ dataManager.start();
   //  const int daylightOffset_sec = 3600; // 1 hour during daylight savings
 
   solarInfo = new SolarInfo(Serial, latitude, longitude, altitude);
-  weatherForecastManager = new WeatherForecastManager(currentTimerRecord, latitude, longitude, apiKey);
+  weatherForecastManager = new WeatherForecastManager(Serial,latitude, longitude, apiKey);
+  weatherForecastManager->initialize(currentTimerRecord);
   weatherForecastManager->loadForecasts(Serial);
   Serial.print("hasValidForecasts=");
   Serial.println(weatherForecastManager->hasValidForecasts());
@@ -901,7 +980,7 @@ dataManager.start();
   // 0001 > 3471
   // 1001 = 3198
   // 1101 = 2181
-  // 1111 = 0
+  // 1111 = 0    // daffodil septic but with usingSolarPanel=false
   if (cswOutput >= 7100)
   {
     digitalStablesData.currentFunctionValue = FUN_1_FLOW;
@@ -946,6 +1025,12 @@ dataManager.start();
   else if (cswOutput >= 4300 && cswOutput < 4600)
   {
     digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
+  }
+   else if ( cswOutput < 1000)
+  {
+    digitalStablesData.currentFunctionValue = DAFFODIL_SCEPTIC_TANK;
+    usingSolarPower=false;
+    Serial.println("setting DAFFODIL_SCEPTIC_TANKto false because 1111 ");
   }
   else
   {
@@ -996,7 +1081,7 @@ dataManager.start();
   digitalStablesData.dataSamplingSec = 10;
   Serial.print("digitalStablesData.dataSamplingSec=");
   Serial.println(digitalStablesData.dataSamplingSec);
-  Serial.print("Daffodil size=");
+  Serial.print("digitalStablesData size=");
   Serial.println(sizeof(digitalStablesData));
 
   
@@ -1006,26 +1091,33 @@ dataManager.start();
 
   viewTimer.start();
   LoRa.setSyncWord(0xF3);
-  pinMode(WATCHDOG_WDI, OUTPUT);
+  //pinMode(WATCHDOG_WDI, OUTPUT);
+ // Configure TPL5010 pins
+  pinMode(TPL5010_DONE, OUTPUT);
+  digitalWrite(TPL5010_DONE, LOW);
+  pinMode(TPL5010_WAKE, INPUT);
+
+  attachInterrupt(digitalPinToInterrupt(TPL5010_WAKE), handleWakeInterrupt, RISING);
  
+  pinMode(TPL5010_WAKE, INPUT);
   xTaskCreatePinnedToCore(
-      watchdogTaskFunction, /* Task function. */
-      "watchdogTask",       /* name of task. */
-      5000,                /* Stack size of task */
+      refreshTPL5010Task, /* Task function. */
+      "TPL5010Refresh",       /* name of task. */
+      2048,                /* Stack size of task */
       NULL,                 /* parameter of the task */
       1,                    /* priority of the task */
-      &watchdogTask,        /* Task handle to keep track of created task */
+      &refreshTaskHandle,        /* Task handle to keep track of created task */
       0);
   digitalWrite(WATCHDOG_WDI, LOW);
 
   boolean isSleepMode=false;
-  if(hourlySolarPowerData.efficiency*100<digitalStablesData.minimumEfficiencyForLed){
+  if(usingSolarPower && hourlySolarPowerData.efficiency*100<digitalStablesData.minimumEfficiencyForLed){
     isSleepMode=true;
     digitalStablesData.operatingStatus=OPERATING_STATUS_SLEEP;
     Serial.print("setting sleepmode in setup because of efficiency=");
     Serial.println(hourlySolarPowerData.efficiency);
   }
-  if (digitalStablesData.capacitorVoltage > 1 && digitalStablesData.capacitorVoltage < sleepingVoltage){
+  if (usingSolarPower && digitalStablesData.capacitorVoltage > 1 && digitalStablesData.capacitorVoltage < sleepingVoltage){
     Serial.print("setting sleepmode in setup because of low voltage=");
     Serial.println(hourlySolarPowerData.efficiency);
     isSleepMode=true;
@@ -1132,27 +1224,46 @@ void goToSleep(){
     esp_deep_sleep_start();
 }
 
-void watchdogTaskFunction(void *pvParameters)
-{
-  Serial.print("watchdogTask running on core ");
-  Serial.println(xPortGetCoreID());
-  TickType_t xLastWakeTime = xTaskGetTickCount();
-  const TickType_t xFrequency = pdMS_TO_TICKS(900);
+// void watchdogTaskFunction(void *pvParameters)
+// {
+//   Serial.print("watchdogTask running on core ");
+//   Serial.println(xPortGetCoreID());
+//   TickType_t xLastWakeTime = xTaskGetTickCount();
+//   const TickType_t xFrequency = pdMS_TO_TICKS(900);
     
-//  for (;;)
-//  {
- while (runWatchdog) // Changed from for(;;) to while(runWatchdog)
-    {
-    digitalWrite(WATCHDOG_WDI, HIGH);
-      vTaskDelay(pdMS_TO_TICKS(2));  
-    digitalWrite(WATCHDOG_WDI, LOW);
-   // Serial.print("watchdogTask reset ");
-   vTaskDelayUntil(&xLastWakeTime, xFrequency);
-  }
-   digitalWrite(WATCHDOG_WDI, LOW);  // Ensure WDI is low before ending task
-    vTaskDelete(NULL);  // Delete this task
-}
+// //  for (;;)
+// //  {
+//  while (runWatchdog) // Changed from for(;;) to while(runWatchdog)
+//     {
+//     digitalWrite(WATCHDOG_WDI, HIGH);
+//       vTaskDelay(pdMS_TO_TICKS(2));  
+//     digitalWrite(WATCHDOG_WDI, LOW);
+//    // Serial.print("watchdogTask reset ");
+//    vTaskDelayUntil(&xLastWakeTime, xFrequency);
+//   }
+//    digitalWrite(WATCHDOG_WDI, LOW);  // Ensure WDI is low before ending task
+//     vTaskDelete(NULL);  // Delete this task
+// }
 
+   void refreshTPL5010Task(void *parameter) {
+  while (true) {
+    // Wait for the wake signal to be acknowledged by the main loop
+    if (!wakeSignalReceived) {
+      // Send a pulse on the DONE pin to tell TPL5010 we're alive
+      digitalWrite(TPL5010_DONE, HIGH);
+      delayMicroseconds(100); // Pulse width needs to be at least 20µs
+      digitalWrite(TPL5010_DONE, LOW);
+      
+     // Serial.println("Sent DONE signal to TPL5010");
+    }
+    
+    // Wait before checking again
+    vTaskDelay(pdMS_TO_TICKS(1500)); // Check every 1500ms
+  }
+} 
+void handleWakeInterrupt() {
+  wakeSignalReceived = true;
+}
 
 void readSensorData(){
     //
@@ -1484,8 +1595,8 @@ void drawTemperature(uint8_t red, uint8_t green, uint8_t blue)
     ld = digitalStablesData.outdoortemperature - 40;
     hd = 4;
   }
-  Serial.print("hd=");
-  Serial.print(hd);
+  if(debug)Serial.print("hd=");
+  if(debug)Serial.print(hd);
   switch (hd)
   {
   case 0:
@@ -1511,8 +1622,8 @@ void drawTemperature(uint8_t red, uint8_t green, uint8_t blue)
   default:
     break;
   }
-  Serial.print("ld=");
-  Serial.println(ld);
+  if(debug)Serial.print("ld=");
+ if(debug) Serial.println(ld);
 
   switch (ld)
   {
@@ -1664,6 +1775,23 @@ void loop()
       }
     }
 
+  if (wakeSignalReceived) {
+    // Calculate time since last wake
+    unsigned long timeSinceLastWake = millis() - lastWakeTime;
+    lastWakeTime = millis();
+    
+    Serial.print("Wake signal received! Time since last wake: ");
+    Serial.print(timeSinceLastWake);
+    Serial.println(" ms");
+    // Reset the flag
+    wakeSignalReceived = false;
+    
+  }
+
+if(loraReceived){
+  loraReceived=false;
+  processLora(loraPacketSize);
+}
     secondsSinceLastDataSampling++;
     //   Serial.println("ticked");
 
@@ -2232,7 +2360,7 @@ void loop()
     }
     else if (command.startsWith("SetTime"))
     {
-      // SetTime#11#3#25#3#12#55#30
+      // SetTime#29#3#25#7#15#52#40
       // SetTime#17#5#20#7#11#06#00
       timeManager.setTime(command);
       Serial.println("Ok-SetTime");
