@@ -720,18 +720,7 @@ dataManager.start();
 //  Serial.print("temperature=");
 //  Serial.println(hourlySolarPowerData.temperature);
 
-  if(usingSolarPower){
-    if(hourlySolarPowerData.efficiency*100>digitalStablesData.minimumEfficiencyForLed){
-      digitalWrite(LED_CONTROL, HIGH);
-      digitalStablesData.operatingStatus = OPERATING_STATUS_FULL_MODE;
-    }else{
-      digitalWrite(LED_CONTROL, LOW);
-      digitalStablesData.operatingStatus = OPERATING_STATUS_NO_LED;
-    }
-  }else{
-    digitalWrite(LED_CONTROL, HIGH);
-    digitalStablesData.operatingStatus = OPERATING_STATUS_FULL_MODE;
-  }
+ 
 
   Serial.println("Scanning for I2C devices ...");
  
@@ -891,56 +880,7 @@ dataManager.start();
   Serial.print("i setup cap=");
   Serial.println(digitalStablesData.capacitorVoltage);
  
-
-  tempSensor.begin();
-  tempSensor.setWaitForConversion(false); // Don't block during conversion 
-  tempSensor.setResolution(9);
-  
-  // uint8_t address[8];
-  tempSensor.getAddress(digitalStablesData.serialnumberarray, 0);
-  for (uint8_t i = 0; i < 8; i++)
-  {
-    serialNumber += String(digitalStablesData.serialnumberarray[i], HEX);
-    digitalStablesData.checksum += static_cast<uint8_t>(digitalStablesData.serialnumberarray[i]);
-  }
-  digitalStablesData.checksum &= 0xFF;
-  Serial.print("serial number:");
-  Serial.println(serialNumber);
-
-  SPI.begin(SCK, MISO, MOSI);
-  pinMode(LoRa_SS, OUTPUT);
-  pinMode(LORA_RESET, OUTPUT);
-  pinMode(LORA_DI0, INPUT);
-  digitalWrite(LoRa_SS, HIGH);
-  LoRa.setPins(LoRa_SS, LORA_RESET, LORA_DI0);
-  // for (int i = 0; i < NUM_LEDS; i++) {
-  //   leds[i] = CRGB(0, 0, 0);
-  // }
-  // FastLED.show();
-  if (!LoRa.begin(433E6))
-  {
-   // Serial.println("Starting LoRa failed!");
-   // drawLora(false);
-    while (1)
-      ;
-  //  leds[1] = CRGB(255, 0, 0);
-  }
-  else
-  {
-  //  Serial.println("Starting LoRa worked!");
-   // drawLora(true);
-    loraActive = true;
-    // Configure LoRa parameters
-   // LoRa.setSpreadingFactor(12);
-   // LoRa.setSignalBandwidth(125E3);
-   // LoRa.setCodingRate4(8);
-    if(powerManager->isLoraTxSafe(9,currentTimerRecord)!=powerManager->LORA_TX_NOT_ALLOWED)loraTxOk=true;
-  }
-
-  // delay(2000);
-
- 
-  ADS.setGain(1);
+   ADS.setGain(1);
   // Config Switch
  // Serial.print("voltage factor=");
  // Serial.println(f);
@@ -953,10 +893,8 @@ dataManager.start();
   lcd.print(val2);
 
   int16_t cswOutput = val2;
- // Serial.print("cswOutput=");
- // Serial.println(cswOutput);
-
-  if (digitalStablesData.capacitorVoltage > 0)
+  
+ if (digitalStablesData.capacitorVoltage > 0)
   {
     float factor = 5 / digitalStablesData.capacitorVoltage;
     cswOutput = cswOutput * factor;
@@ -1038,6 +976,73 @@ dataManager.start();
     lcd.setCursor(0, 3);
     lcd.print("bad data sceptic is def");
   }
+
+ if(usingSolarPower){
+    if(hourlySolarPowerData.efficiency*100>digitalStablesData.minimumEfficiencyForLed){
+      digitalWrite(LED_CONTROL, HIGH);
+      digitalStablesData.operatingStatus = OPERATING_STATUS_FULL_MODE;
+    }else{
+      digitalWrite(LED_CONTROL, LOW);
+      digitalStablesData.operatingStatus = OPERATING_STATUS_NO_LED;
+    }
+  }else{
+    digitalWrite(LED_CONTROL, HIGH);
+    digitalStablesData.operatingStatus = OPERATING_STATUS_FULL_MODE;
+  }
+
+  tempSensor.begin();
+  tempSensor.setWaitForConversion(false); // Don't block during conversion 
+  tempSensor.setResolution(9);
+  
+  // uint8_t address[8];
+  tempSensor.getAddress(digitalStablesData.serialnumberarray, 0);
+  for (uint8_t i = 0; i < 8; i++)
+  {
+    serialNumber += String(digitalStablesData.serialnumberarray[i], HEX);
+    digitalStablesData.checksum += static_cast<uint8_t>(digitalStablesData.serialnumberarray[i]);
+  }
+  digitalStablesData.checksum &= 0xFF;
+  Serial.print("serial number:");
+  Serial.println(serialNumber);
+
+  SPI.begin(SCK, MISO, MOSI);
+  pinMode(LoRa_SS, OUTPUT);
+  pinMode(LORA_RESET, OUTPUT);
+  pinMode(LORA_DI0, INPUT);
+  digitalWrite(LoRa_SS, HIGH);
+  LoRa.setPins(LoRa_SS, LORA_RESET, LORA_DI0);
+  // for (int i = 0; i < NUM_LEDS; i++) {
+  //   leds[i] = CRGB(0, 0, 0);
+  // }
+  // FastLED.show();
+  if (!LoRa.begin(433E6))
+  {
+   // Serial.println("Starting LoRa failed!");
+   // drawLora(false);
+    while (1)
+      ;
+  //  leds[1] = CRGB(255, 0, 0);
+  }
+  else
+  {
+  //  Serial.println("Starting LoRa worked!");
+   // drawLora(true);
+    loraActive = true;
+    // Configure LoRa parameters
+   // LoRa.setSpreadingFactor(12);
+   // LoRa.setSignalBandwidth(125E3);
+   // LoRa.setCodingRate4(8);
+    if(powerManager->isLoraTxSafe(9,currentTimerRecord)!=powerManager->LORA_TX_NOT_ALLOWED)loraTxOk=true;
+  }
+
+  // delay(2000);
+
+ 
+
+ // Serial.print("cswOutput=");
+ // Serial.println(cswOutput);
+
+ 
 
 
 
