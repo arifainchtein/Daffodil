@@ -308,6 +308,7 @@ void processLora(int packetSize){
     LoRa.readBytes((uint8_t *)&digitalStablesData, sizeof(DigitalStablesData));
     long commandcode = digitalStablesData.totpcode;
     bool validCode = secretManager.checkCode(commandcode);
+
      Serial.print(" Received DigitalStablesData: ");
       Serial.println(commandcode);
     if (validCode)
@@ -324,9 +325,11 @@ void processLora(int packetSize){
     }
     else
     {
+      long currentcode =secretManager.generateCode();
       Serial.print(" Receive digitalStablesData but invalid code: ");
-      Serial.println(commandcode);
-    
+      Serial.print(commandcode);
+      Serial.print(" currentcode: ");
+      Serial.println(currentcode);
     }
   }else  if (packetSize == sizeof(RequestCommand)){
     RequestCommand rc;
@@ -893,7 +896,7 @@ dataManager.start();
   lcd.print(val2);
 
   int16_t cswOutput = val2;
-  
+
  if (digitalStablesData.capacitorVoltage > 0)
   {
     float factor = 5 / digitalStablesData.capacitorVoltage;
@@ -1767,9 +1770,13 @@ void loop()
     portEXIT_CRITICAL(&mux);
     currentTimerRecord = timeManager.now();
     
-    
+    //
+    // generate codes so that the history is refresed
+    //
     if (currentTimerRecord.second == 0)
     {
+       
+
       if (currentTimerRecord.minute == 0)
       {
         //  Serial.println(F("New Hour"));
@@ -1780,6 +1787,16 @@ void loop()
       }
     }
 
+if(currentTimerRecord.second%10 == 0){
+  secretManager.generateCode();
+   Serial.print("update code history: ");
+   long* history = secretManager.getCommandCodeHistory();
+  for (int i = 0; i < 5; i++) {
+    Serial.print(i);
+    Serial.print(": ");
+    Serial.println(history[i]);
+  }
+}
   if (wakeSignalReceived) {
     // Calculate time since last wake
     unsigned long timeSinceLastWake = millis() - lastWakeTime;
@@ -2495,7 +2512,7 @@ if(loraReceived){
     }
     else if (command.startsWith("GetCommandCode"))
     {
-      long code = 123456; // secretManager.generateCode();
+      long code =  secretManager.generateCode();
       //
       // patch a bug in the totp library
       // if the first digit is a zero, it
@@ -2509,6 +2526,14 @@ if(loraReceived){
       {
         Serial.println(code);
       }
+
+ long* history = secretManager.getCommandCodeHistory();
+  Serial.println("Using returned array pointer:");
+  for (int i = 0; i < 5; i++) {
+    Serial.print(i);
+    Serial.print(": ");
+    Serial.println(history[i]);
+  }
 
       Serial.flush();
       delay(delayTime);
@@ -2528,20 +2553,20 @@ if(loraReceived){
     else if (command.startsWith("GetSecret"))
     {
       // char secretCode[SHARED_SECRET_LENGTH];
-      // secretManager.readSecret(secretCode);
-      // Serial.println(secretCode);
+      String secretCode= secretManager.readSecret();
+       Serial.println(secretCode);
       Serial.println("Ok-GetSecret");
       Serial.flush();
       delay(delayTime);
     }
     else if (command.startsWith("SetSecret"))
     {
-      // SetSecret#IZQWS3TDNB2GK2LO#6#30
+      // SetSecret#J5KFCNCPIRCTGT2UJUZFSMQ#6#30
       String secret = generalFunctions.getValue(command, '#', 1);
       int numberDigits = generalFunctions.getValue(command, '#', 2).toInt();
       int periodSeconds = generalFunctions.getValue(command, '#', 3).toInt();
       Serial.println("about to enter savesecret");
-      //   secretManager.saveSecret(secret, numberDigits, periodSeconds);
+       secretManager.saveSecret(secret, numberDigits, periodSeconds);
       Serial.println("storing secret");
       Serial.println(secret);
 
