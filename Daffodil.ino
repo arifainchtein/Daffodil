@@ -487,12 +487,14 @@ int sendMessage()
   lcd.print("Sending Lora");
   Serial.print("sending lora sn=");
   Serial.print(serialNumber);
-  String secret = "J5KFCNCPIRCTGT2UJUZFSMQK";
-  TOTP totp = TOTP(secret.c_str());
-  char totpCode[7]; // get 6 char code
-  long timeVal = timeManager.getTimeForCodeGeneration(currentTimerRecord);
-  digitalStablesData.secondsTime = timeVal;
-  long code = totp.gen_code(timeVal);
+  // String secret = "J5KFCNCPIRCTGT2UJUZFSMQK";
+  // TOTP totp = TOTP(secret.c_str());
+  // char totpCode[7]; // get 6 char code
+  // long timeVal = timeManager.getTimeForCodeGeneration(currentTimerRecord);
+  // digitalStablesData.secondsTime = timeVal;
+ 
+ 
+  long code = secretManager.generateCode();
   Serial.print("  totp=");
   Serial.print(code);
 
