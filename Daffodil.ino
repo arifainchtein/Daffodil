@@ -282,8 +282,8 @@ void IRAM_ATTR clockTick()
 //
 void onReceive(int packetSize)
 {
-   Serial.print(" Receive lora: ");
-      Serial.println(packetSize);
+ //  Serial.print(" Receive lora: ");
+ //     Serial.println(packetSize);
       loraReceived=true;
       loraPacketSize=packetSize;
 }
@@ -292,12 +292,12 @@ void processLora(int packetSize){
       Serial.println(packetSize);
 
        Serial.print(" size of ds: ");
-      Serial.println(sizeof(DigitalStablesData));
+      Serial.print(sizeof(DigitalStablesData));
 
- Serial.print(" size of WeatherForecastUpdate: ");
-      Serial.println(sizeof(WeatherForecastUpdate));
+ Serial.print(" WeatherForecastUpdate: ");
+      Serial.print(sizeof(WeatherForecastUpdate));
 
- Serial.print(" size of RequestCommand: ");
+ Serial.print(" s RequestCommand: ");
       Serial.println(sizeof(RequestCommand));
 
   if (packetSize == 0) return; // if there's no packet, return
@@ -305,47 +305,93 @@ void processLora(int packetSize){
     
   if (packetSize == sizeof(DigitalStablesData))
   {
-    LoRa.readBytes((uint8_t *)&digitalStablesData, sizeof(DigitalStablesData));
-    long commandcode = digitalStablesData.totpcode;
+    DigitalStablesData receivedDigitalStablesData;
+    LoRa.readBytes((uint8_t *)&receivedDigitalStablesData, sizeof(DigitalStablesData));
+    long commandcode = receivedDigitalStablesData.totpcode;
     bool validCode = secretManager.checkCode(commandcode);
 
-     Serial.print(" Received DigitalStablesData: ");
-      Serial.println(commandcode);
-    if (validCode)
-    {
-
-      // secretManager.saveSleepPingMinutes(rosieConfigData.sleepPingMinutes);
-      // secretManager.saveConfigData(rosieConfigData.fieldId,  stationName );
-
-      int rssi = LoRa.packetRssi();
-      float Snr = LoRa.packetSnr();
-      Serial.println(" valid code ");
-      Serial.print(" rssi: ");
-      Serial.print(rssi);
-    }
-    else
-    {
-      long currentcode =secretManager.generateCode();
-      Serial.print(" Receive digitalStablesData but invalid code: ");
+     Serial.print(" Received DigitalStablesData code  : ");
       Serial.print(commandcode);
-      Serial.print(" currentcode: ");
-      Serial.println(currentcode);
-    }
+    String receivedSerialNumber;
+    for (uint8_t i = 0; i < 8; i++)
+      {
+        receivedSerialNumber += String(receivedDigitalStablesData.serialnumberarray[i], HEX);
+      }
+
+     Serial.print(" sn  : ");
+      Serial.print(receivedSerialNumber);
+ if(receivedSerialNumber==serialNumber){
+    Serial.println("Ignored self reception");
+ }else{
+    if (validCode)
+        {
+
+          // secretManager.saveSleepPingMinutes(rosieConfigData.sleepPingMinutes);
+          // secretManager.saveConfigData(rosieConfigData.fieldId,  stationName );
+
+          int rssi = LoRa.packetRssi();
+          float Snr = LoRa.packetSnr();
+          Serial.print(" valid code ");
+          Serial.print("  from: ");
+          Serial.println(receivedDigitalStablesData.devicename);
+        }
+        else
+        {
+          long currentcode =secretManager.generateCode();
+          Serial.print(" Receive digitalStablesData but invalid code: ");
+          Serial.print(commandcode);
+          Serial.print(" currentcode: ");
+          Serial.println(currentcode);
+        }
+ }
+   
   }else  if (packetSize == sizeof(RequestCommand)){
     RequestCommand rc;
     LoRa.readBytes((uint8_t *)&rc, sizeof(RequestCommand));
      long totpcode = rc.totpcode;
     bool validCode = secretManager.checkCode(totpcode);
     if (validCode){
-      uint8_t commandcode = rc.commandcode;
-      if(commandcode==SEND_ASYNC_DATA){
+      String commandcode = String(rc.commandString);
+      if(commandcode=="SendAsyncData"){
         Serial.println("received SEND_ASYNC_DATA");
-      }else if(commandcode==RECEIVED_OK){
+
+          // void sendDataViaLoRa() {
+            // Read all stored data
+            const int MAX_RECORDS = 10;  // Adjust based on your memory constraints
+            DigitalStablesData dataArray[MAX_RECORDS];
+            int actualSize = 0;
+            if (!dataManager.readAllDSDData(dataArray, MAX_RECORDS, actualSize)) {
+              Serial.println("No data to send or error reading data");
+                RequestCommand rc;
+                rc.totpcode=secretManager.generateCode();
+                rc.setCommand("NoData");
+                sendMessage(rc);
+            }
+            Serial.printf("Sending %d records via LoRa...\n", actualSize);
+
+            // Send each record as binary data
+            for (int i = 0; i < actualSize; i++) {
+              dataArray[i].totpcode=secretManager.generateCode();
+              sendMessage(dataArray[i]);
+            // LoRa.endPacket();
+              Serial.printf("Sent record %d/%d (%d bytes)\n",
+                            i+1, actualSize, sizeof(DigitalStablesData) + 2);  // +2 for marker and index
+              // Brief delay to avoid overwhelming the receiver
+              delay(200);
+            }
+            Serial.println("All data sent");
+          //}
+
+
+      }else if(commandcode=="ReceivedOK"){
         Serial.println("received RECEIVED_OK");
-      }else if(commandcode==CLEARED_OK){
+      }else if(commandcode=="ClearedOk"){
         Serial.println("received CLEARED_OK");
-      }else if(commandcode==NO_DATA){
+      }else if(commandcode=="NoData"){
         Serial.println("received NO_DATA");
+      }else if(commandcode=="SendCurrentData"){
+        Serial.println("received SendCurrentData, sending ..");
+        sendMessage(digitalStablesData);
       }
     } else
     {
@@ -362,17 +408,77 @@ void processLora(int packetSize){
       //WeatherForecast forecasts=weatherForecastUpdate.forecasts;
       weatherForecastManager->saveForecasts(weatherForecastUpdate.forecasts);
       solarInfo->setWeatherForecast(weatherForecastUpdate.forecasts ,4);
+       Serial.println(" Receive and processed weatherForecast ");
     } else
     {
       Serial.print(" Receive WeatherForecastUpdate but invalid code: ");
       Serial.println(commandcode);
     
     }
-  }else
-  {
-  //  badPacketCount++;
-    Serial.print("Received  invalid  data,  received ");
-    Serial.println(packetSize);
+  }else {//if(packetSize==14){
+       Serial.println("\n--- RECEIVED unknown size  PACKET ---");
+    // Create a buffer to store the received bytes
+    uint8_t buffer[packetSize];
+    // Read all bytes into the buffer
+    for (int i = 0; i < packetSize; i++) {
+      buffer[i] = LoRa.read();
+    }
+    // Display as hex values (with position)
+    Serial.print("HEX: ");
+    for (int i = 0; i < packetSize; i++) {
+      // Print position
+      Serial.print("[");
+      Serial.print(i);
+      Serial.print("]");
+      // Print hex value with leading zero if needed
+      if (buffer[i] < 16) Serial.print("0");
+      Serial.print(buffer[i], HEX);
+      Serial.print(" ");
+    }
+    Serial.println();
+    // Display as ASCII (printable characters only)
+    Serial.print("ASCII: ");
+    for (int i = 0; i < packetSize; i++) {
+      // Check if it's a printable ASCII character (32-126)
+      if (buffer[i] >= 32 && buffer[i] <= 126) {
+        Serial.print((char)buffer[i]);
+      } else {
+        Serial.print(".");  // Non-printable character
+      }
+    }
+    Serial.println();
+    // Display as decimal values
+    Serial.print("DEC: ");
+    for (int i = 0; i < packetSize; i++) {
+      Serial.print("[");
+      Serial.print(i);
+      Serial.print("]");
+      Serial.print(buffer[i]);
+      Serial.print(" ");
+    }
+    Serial.println();
+    // Try to interpret as common data types
+    if (packetSize >= 4) {
+      // As 32-bit integer (little endian)
+      int32_t int32Value = buffer[0] | (buffer[1] << 8) | (buffer[2] << 16) | (buffer[3] << 24);
+      Serial.print("As Int32 (LE): ");
+      Serial.println(int32Value);
+      // As 32-bit float (little endian)
+      float floatValue;
+      memcpy(&floatValue, buffer, 4);
+      Serial.print("As Float (LE): ");
+      Serial.println(floatValue);
+    }
+    // Calculate a simple checksum to see if it's consistent
+    uint8_t checksum = 0;
+    for (int i = 0; i < packetSize - 1; i++) {
+      checksum ^= buffer[i];  // XOR checksum
+    }
+    Serial.print("Last byte: ");
+    Serial.print(buffer[packetSize-1]);
+    Serial.print(", XOR Checksum: ");
+    Serial.println(checksum);
+    Serial.println("--- END OF PACKET ANALYSIS ---\n");
   }
 }
 void LoRa_txMode()
@@ -426,7 +532,7 @@ LoRaError performCAD() {
     LoRa.idle();
  
     Serial.print("checkcad, avgRssi=");
-    Serial.println(avgRssi);
+    Serial.print(avgRssi);
     if (avgRssi > RSSI_THRESHOLD) {
        // errorMgr.setLoRaError(LORA_CHANNEL_BUSY, avgRssi);  
         return LORA_CHANNEL_BUSY;
@@ -471,7 +577,7 @@ LoRaError performCADOld() {
     avgRssi = rssiSum / SAMPLES;
     LoRa.idle();
  
-   Serial.print("checkcad, avgRssi=");
+   Serial.print("  checkcad, avgRssi=");
   Serial.println(avgRssi);
     if (avgRssi > RSSI_THRESHOLD) {
         return LORA_CHANNEL_BUSY;
@@ -480,101 +586,81 @@ LoRaError performCADOld() {
     return LORA_OK;
 }
 
-int sendMessage()
+template <typename T>
+int sendMessage(const T& dataToSend)
 {
   lcd.setCursor(0, 0);
   lcd.clear();
   lcd.print("Sending Lora");
   Serial.print("sending lora sn=");
   Serial.print(serialNumber);
-  // String secret = "J5KFCNCPIRCTGT2UJUZFSMQK";
-  // TOTP totp = TOTP(secret.c_str());
-  // char totpCode[7]; // get 6 char code
-  // long timeVal = timeManager.getTimeForCodeGeneration(currentTimerRecord);
-  // digitalStablesData.secondsTime = timeVal;
- 
- 
   long code = secretManager.generateCode();
   Serial.print("  totp=");
   Serial.print(code);
-
-  digitalStablesData.totpcode = code;
-
+  // If the passed object is digitalStablesData, update its TOTP code
+  // This is optional - you can remove this if you want to handle it outside
+  if constexpr (std::is_same<T, DigitalStablesData>::value) {
+    ((DigitalStablesData&)dataToSend).totpcode = code;
+  }
   LoRa_txMode();
-  uint8_t result=  99;;
+  uint8_t result = 99;
   int retries = 0;
-  boolean keepGoing=true;
-  long startsendingtime=millis();
-    
+  boolean keepGoing = true;
+  long startsendingtime = millis();
   while (keepGoing) {
-       cadResult = performCAD();
-     
-      if (cadResult == LORA_OK) {
-          // Channel is clear, attempt transmission
-          LoRa.beginPacket();
-          // Add Node ID to the beginning of the message
-//            LoRa.print(NODE_ID);
-//            LoRa.print(":");
-//            LoRa.print(message);
-            LoRa.write((uint8_t *)&digitalStablesData, sizeof(DigitalStablesData));
-            if (!LoRa.endPacket(true)) {
-                result= LORA_TX_FAILED;
-            }else{
-              result=LORA_OK;
-            }
-            Serial.print("took ");
-            Serial.print (millis()-startsendingtime);
-            
-            keepGoing=false;
-      } else if (cadResult != LORA_CHANNEL_BUSY) {
-          // If error is not due to busy channel, return the error
-          result= cadResult;
-          int backoff = random(MIN_BACKOFF * (1 << retries), MAX_BACKOFF * (1 << retries));
-          lcd.setCursor(0, 1);
-          lcd.clear();
-          lcd.print("Bu ");
-          lcd.print(retries + 1);
-          lcd.print(" of ");
-          lcd.print(MAX_RETRIES);
-          lcd.print(". b=");
-          lcd.print(backoff);
-          lcd.println("ms");
-          
-          Serial.print("Channel busy, retry ");
-          Serial.print(retries + 1);
-          Serial.print(" of ");
-          Serial.print(MAX_RETRIES);
-          Serial.print(". Waiting ");
-          Serial.print(backoff);
-          Serial.println("ms");
-          // Channel is busy, implement exponential backoff
-          delay(backoff);
-          retries++;
-          keepGoing=retries < MAX_RETRIES;
+    cadResult = performCAD();
+    if (cadResult == LORA_OK) {
+      // Channel is clear, attempt transmission
+      LoRa.beginPacket();
+      // Send the provided data object
+      LoRa.write((uint8_t *)&dataToSend, sizeof(T));
+      if (!LoRa.endPacket(true)) {
+        result = LORA_TX_FAILED;
+      } else {
+        result = LORA_OK;
+      }
+      Serial.print("took ");
+      Serial.print(millis() - startsendingtime);
+      keepGoing = false;
+    } else if (cadResult != LORA_CHANNEL_BUSY) {
+      // If error is not due to busy channel, return the error
+      result = cadResult;
+      int backoff = random(MIN_BACKOFF * (1 << retries), MAX_BACKOFF * (1 << retries));
+      lcd.setCursor(0, 1);
+      lcd.clear();
+      lcd.print("Bu ");
+      lcd.print(retries + 1);
+      lcd.print(" of ");
+      lcd.print(MAX_RETRIES);
+      lcd.print(". b=");
+      lcd.print(backoff);
+      lcd.println("ms");
+      Serial.print("Channel busy, retry ");
+      Serial.print(retries + 1);
+      Serial.print(" of ");
+      Serial.print(MAX_RETRIES);
+      Serial.print(". Waiting ");
+      Serial.print(backoff);
+      Serial.println("ms");
+      // Channel is busy, implement exponential backoff
+      delay(backoff);
+      retries++;
+      keepGoing = retries < MAX_RETRIES;
     }
   }
   lcd.setCursor(0, 1);
-  if(result==99){
-    result=LORA_MAX_RETRIES_REACHED;
+  if (result == 99) {
+    result = LORA_MAX_RETRIES_REACHED;
   }
-  
-    lcd.setCursor(0, 1);
-    lcd.print("Lora returns ");
-    lcd.print(result);
-    Serial.print(" ,Lora returns ");
-    Serial.println(result);
-    delay(500);
-
-        // previous way
-        //
-        //  LoRa.beginPacket(); // start packet
-        //  LoRa.write((uint8_t *)&digitalStablesData, sizeof(DigitalStablesData));
-        //  LoRa.endPacket(true); // finish packet and send it
+  lcd.setCursor(0, 1);
+  lcd.print("Lora returns ");
+  lcd.print(result);
+  Serial.print(" ,Lora returns ");
+  Serial.println(result);
+  delay(500);
   LoRa_rxMode();
   msgCount++; // increment message ID
-  
- 
- return result;
+  return result;
 }
 
 void print_wakeup_reason() {
@@ -1190,9 +1276,9 @@ void goToSleep(){
  // adc_power_off();
       sleepDS18B20();
     if(digitalStablesData.ledBrightness!=powerManager->LORA_TX_NOT_ALLOWED){
-      sendMessage();
+      sendMessage(digitalStablesData);
       delay(500);
-      sendMessage();
+     // sendMessage(digitalStablesData);
     }
      LoRa.sleep();
     
@@ -1791,13 +1877,13 @@ void loop()
 
 if(currentTimerRecord.second%10 == 0){
   secretManager.generateCode();
-   Serial.print("update code history: ");
-   long* history = secretManager.getCommandCodeHistory();
-  for (int i = 0; i < 5; i++) {
-    Serial.print(i);
-    Serial.print(": ");
-    Serial.println(history[i]);
-  }
+//   Serial.print("update code history: ");
+  //  long* history = secretManager.getCommandCodeHistory();
+  // for (int i = 0; i < 5; i++) {
+  //   Serial.print(i);
+  //   Serial.print(": ");
+  //   Serial.println(history[i]);
+  // }
 }
   if (wakeSignalReceived) {
     // Calculate time since last wake
@@ -2266,7 +2352,7 @@ if(loraReceived){
         if (loraActive && loraTxOk)
         {
           
-          loraLastResult = sendMessage();
+          loraLastResult = sendMessage(digitalStablesData);
           lcd.setCursor(10, 0);
           lcd.print(displayStatus);
           if(loraLastResult==LORA_TX_FAILED){
