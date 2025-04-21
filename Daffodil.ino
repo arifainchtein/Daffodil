@@ -587,8 +587,36 @@ LoRaError performCADOld() {
 }
 
 template <typename T>
-int sendMessage(const T& dataToSend)
+uint8_t calculateChecksum(const T& data) {
+  uint8_t checksum = 0;
+  const uint8_t* dataPtr = (const uint8_t*)&data;
+  
+  // Get the offset of the checksum field
+  size_t checksumOffset = 0;
+  if constexpr (std::is_same<T, DigitalStablesData>::value) {
+    checksumOffset = offsetof(DigitalStablesData, checksum);
+  } else if constexpr (std::is_same<T, RequestCommand>::value) {
+    checksumOffset = offsetof(RequestCommand, checksum);
+  }
+  
+  // Calculate checksum for bytes before the checksum field
+  for (size_t i = 0; i < checksumOffset; i++) {
+    checksum ^= dataPtr[i]; // XOR operation
+  }
+  
+  // Calculate checksum for bytes after the checksum field
+  for (size_t i = checksumOffset + sizeof(uint8_t); i < sizeof(T); i++) {
+    checksum ^= dataPtr[i];
+  }
+  
+  return checksum;
+}
+
+template <typename T>
+int sendMessage(const T& inputData)
 {
+    T dataToSend = inputData;
+  
   lcd.setCursor(0, 0);
   lcd.clear();
   lcd.print("Sending Lora");
@@ -597,11 +625,31 @@ int sendMessage(const T& dataToSend)
   long code = secretManager.generateCode();
   Serial.print("  totp=");
   Serial.print(code);
-  // If the passed object is digitalStablesData, update its TOTP code
-  // This is optional - you can remove this if you want to handle it outside
-  if constexpr (std::is_same<T, DigitalStablesData>::value) {
-    ((DigitalStablesData&)dataToSend).totpcode = code;
+
+   if constexpr (std::is_same<T, DigitalStablesData>::value) {
+    dataToSend.totpcode = code;
+  } else if constexpr (std::is_same<T, RequestCommand>::value) {
+    dataToSend.totpcode = code;
   }
+
+   if constexpr (std::is_same<T, DigitalStablesData>::value) {
+    dataToSend.checksum = 0;
+  } else if constexpr (std::is_same<T, RequestCommand>::value) {
+    dataToSend.checksum = 0;
+  }
+  uint8_t calculatedChecksum = calculateChecksum(dataToSend);
+
+  if constexpr (std::is_same<T, DigitalStablesData>::value) {
+    dataToSend.checksum = calculatedChecksum;
+    Serial.print(" checksum=");
+    Serial.print(dataToSend.checksum, HEX);
+  } else if constexpr (std::is_same<T, RequestCommand>::value) {
+    dataToSend.checksum = calculatedChecksum;
+    Serial.print(" checksum=");
+    Serial.print(dataToSend.checksum, HEX);
+  }
+  
+  
   LoRa_txMode();
   uint8_t result = 99;
   int retries = 0;
@@ -1087,12 +1135,12 @@ dataManager.start();
   
   // uint8_t address[8];
   tempSensor.getAddress(digitalStablesData.serialnumberarray, 0);
-  for (uint8_t i = 0; i < 8; i++)
-  {
-    serialNumber += String(digitalStablesData.serialnumberarray[i], HEX);
-    digitalStablesData.checksum += static_cast<uint8_t>(digitalStablesData.serialnumberarray[i]);
-  }
-  digitalStablesData.checksum &= 0xFF;
+//  for (uint8_t i = 0; i < 8; i++)
+//  {
+//    serialNumber += String(digitalStablesData.serialnumberarray[i], HEX);
+//    digitalStablesData.checksum += static_cast<uint8_t>(digitalStablesData.serialnumberarray[i]);
+//  }
+//  digitalStablesData.checksum &= 0xFF;
   Serial.print("serial number:");
   Serial.println(serialNumber);
 
@@ -1308,6 +1356,11 @@ void goToSleep(){
     ADS.setMode(1);   
     
      Serial.println("  going to sleep");
+     lcd.setCursor(0, 0);
+      lcd.clear();
+      lcd.print("sleeping ");
+      lcd.print(sleep_time_us);
+  
     // Convert seconds_sleep from seconds to microseconds for deep sleep
     esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_OFF);
     esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_SLOW_MEM, ESP_PD_OPTION_OFF);
@@ -2470,7 +2523,7 @@ if(loraReceived){
     }
     else if (command.startsWith("SetTime"))
     {
-      // SetTime#29#3#25#7#15#52#40
+      // SetTime#21#4#25#2#9#53#20
       // SetTime#17#5#20#7#11#06#00
       timeManager.setTime(command);
       Serial.println("Ok-SetTime");
@@ -2494,11 +2547,17 @@ if(loraReceived){
       Serial.print("#");
       Serial.print(digitalStablesData.latitude);
       Serial.print("#");
+      Serial.print(digitalStablesData.altitude);
+      Serial.print("#");
+      Serial.print(digitalStablesData.minimumEfficiencyForLed);
+      Serial.print("#");
+      Serial.print(digitalStablesData.minimumEfficiencyForWifi);
+      Serial.print("#");
       Serial.println(F("Ok-GetDeviceSensorConfig"));
     }
     else if (command.startsWith("SetDeviceSensorConfig"))
     {
-// SetDeviceSensorConfig#CreekTub #CREE #NoSensor#Temperature#AEST-10AEDT,M10.1.0,M4.1.0/3#-37.13305556#144.47472222#410#40#50#
+// SetDeviceSensorConfig#CreekTub #CREE #NoSensor#Temperature#AEST-10AEDT,M10.1.0,M4.1.0/3#-37.13305556#144.47472222#410#35#50#
 //SetDeviceSensorConfig#Sceptic #SCEP #NoSensor#Temperature#AEST-10AEDT,M10.1.0,M4.1.0/3#-37.13305556#144.47472222#410#40#50#
       // SetDeviceSensorConfig#DaffOffice#OFDA#NoSensor#Temperature#AEST-10AEDT,M10.1.0,M4.1.0/3#-37.13305556#144.47472222#410#40#50#
       String devicename = generalFunctions.getValue(command, '#', 1);
