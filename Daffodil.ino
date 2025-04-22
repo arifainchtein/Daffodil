@@ -1987,9 +1987,13 @@ if(loraReceived){
       turnOffWifi= (hourlySolarPowerData.efficiency*100<digitalStablesData.minimumEfficiencyForWifi ) && wifistatus;
      
 
-      if(debug)Serial.print("  turnOffWifi=");
+    if(debug)Serial.print("line 1990  hourlySolarPowerData.efficiency=");
+      if(debug)Serial.print(hourlySolarPowerData.efficiency);
+      if(debug)Serial.print(" wifistatus=");
+      if(debug)Serial.println(wifistatus);
+       if(debug)Serial.print(" turnOffWifi=");
       if(debug)Serial.println(turnOffWifi);
-
+      
   } // end of the tick block
 
 
@@ -2051,7 +2055,10 @@ if(loraReceived){
 
     
      
-  if(!turnOffWifi)turnOffWifi=(digitalStablesData.capacitorVoltage < minimumWifiVoltage) && wifistatus;
+  if(!turnOffWifi){
+    if(debug)Serial.print("line 2055 turning off wifi");
+    turnOffWifi=(digitalStablesData.capacitorVoltage < minimumWifiVoltage) && wifistatus;
+  }
   if (turnOffWifi)
   {
     if(debug)Serial.print("turning off wifi cap voltage=");
@@ -2091,7 +2098,7 @@ if(loraReceived){
   }
 wifistatus = wifiManager.getWifiStatus();
     boolean turnOnWifi=false; 
-    if(usingSolarPower){
+    if(!usingSolarPower){
       if(!wifistatus)turnOnWifi=true;
     }else{
       turnOnWifi= (hourlySolarPowerData.efficiency*100>digitalStablesData.minimumEfficiencyForWifi) && (currentSecondsWithWifiVoltage >= numberSecondsWithMinimumWifiVoltageForStartWifi) && !wifistatus; 
@@ -2275,6 +2282,9 @@ wifistatus = wifiManager.getWifiStatus();
        if(debug)Serial.println(wifistatus);
        if(debug)Serial.print("dsupload timer counter= ");
        if(debug)Serial.println(dscount);
+       
+      
+       
          for (int i = 0; i < NUM_LEDS; i++)
           {
             leds[i] = CRGB(0, 0, 0);
