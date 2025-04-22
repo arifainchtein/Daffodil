@@ -1536,26 +1536,6 @@ if(debug)Serial.println(" mW");
   digitalStablesData.capacitorCurrent = -99;
 }
   
-// 
-//    Serial.print("wifistatus=");
-//    Serial.println(wifiManager.getWifiStatus());
-//
-//     Serial.print("minimumEfficiencyForWifi=");
-//    Serial.println(digitalStablesData.minimumEfficiencyForWifi);
-//
-//    Serial.print(" hourly effi=");
-//    Serial.println(hourlySolarPowerData.efficiency);
-//
-//    Serial.print("capVolta=");
-//    Serial.println(digitalStablesData.capacitorVoltage);
-//
-//    Serial.print("solarVolta=");
-//    Serial.println(digitalStablesData.solarVoltage);
-//
-//    Serial.print("current=");
-//    Serial.println(digitalStablesData.capacitorCurrent);
-
-
 /*
  * 
  *    float shuntvoltage = 0;
@@ -1883,7 +1863,7 @@ void readI2CTemp()
     Serial.print("Address error");
     break;
   case CHT8305_ERROR_I2C:
-    Serial.print("Outdoor Temperature I2C error");
+   // Serial.print("Outdoor Temperature I2C error");
     digitalStablesData.outdoortemperature = -99;
     break;
   case CHT8305_ERROR_CONNECT:
@@ -1903,6 +1883,7 @@ void loop()
 {
   uint16_t dscount;
   boolean turnOffWifi= false;
+   bool wifistatus=wifiManager.getWifiStatus();
   if (clockTicked)
   {
 
@@ -1967,8 +1948,8 @@ if(loraReceived){
     
     readSensorData();    
    
-    
-    if (digitalStablesData.capacitorVoltage > minimumInitWifiVoltage && !wifiManager.getWifiStatus())
+   
+    if (digitalStablesData.capacitorVoltage > minimumInitWifiVoltage && !wifistatus)
     {
       currentSecondsWithWifiVoltage++;
     }
@@ -2003,7 +1984,7 @@ if(loraReceived){
 
   
     
-      turnOffWifi= (hourlySolarPowerData.efficiency*100<digitalStablesData.minimumEfficiencyForWifi ) && wifiManager.getWifiStatus();
+      turnOffWifi= (hourlySolarPowerData.efficiency*100<digitalStablesData.minimumEfficiencyForWifi ) && wifistatus;
      
 
       if(debug)Serial.print("  turnOffWifi=");
@@ -2070,7 +2051,7 @@ if(loraReceived){
 
     
      
-  if(!turnOffWifi)turnOffWifi=digitalStablesData.capacitorVoltage < minimumWifiVoltage && wifiManager.getWifiStatus();
+  if(!turnOffWifi)turnOffWifi=(digitalStablesData.capacitorVoltage < minimumWifiVoltage) && wifistatus;
   if (turnOffWifi)
   {
     if(debug)Serial.print("turning off wifi cap voltage=");
@@ -2108,24 +2089,19 @@ if(loraReceived){
     leds[14] = CRGB(255, 255, 0);
     FastLED.show();
   }
-
+wifistatus = wifiManager.getWifiStatus();
     boolean turnOnWifi=false; 
     if(usingSolarPower){
-      if(!wifiManager.getWifiStatus())turnOnWifi=true;
+      if(!wifistatus)turnOnWifi=true;
     }else{
-      turnOnWifi= (hourlySolarPowerData.efficiency*100>digitalStablesData.minimumEfficiencyForWifi) && (currentSecondsWithWifiVoltage >= numberSecondsWithMinimumWifiVoltageForStartWifi) && !wifiManager.getWifiStatus() && !wifiManager.getAPStatus(); 
+      turnOnWifi= (hourlySolarPowerData.efficiency*100>digitalStablesData.minimumEfficiencyForWifi) && (currentSecondsWithWifiVoltage >= numberSecondsWithMinimumWifiVoltageForStartWifi) && !wifistatus; 
     }
     
     if (turnOnWifi)
     {
       if(debug)Serial.print("turning on  wifi");
       restartWifi();
-      boolean staledata = weatherForecastManager->isWeatherDataStale(currentTimerRecord);
-      if(staledata){
-        boolean downloadOk = weatherForecastManager->downloadWeatherData(solarInfo);
-        if(debug)Serial.print("line 1343 downloadWeatherData returnxs=");
-        if(debug)Serial.println(downloadOk);        
-      }
+      wifistatus = wifiManager.getWifiStatus();
     }
     // Serial.println("line 1121");
     uint8_t red = 255;
@@ -2136,7 +2112,7 @@ if(loraReceived){
     boolean staledata = weatherForecastManager->isWeatherDataStale(currentTimerRecord);
     // if(debug)Serial.print("l;ine 1128 staledata=");
     //  if(debug)Serial.println(staledata);
-    if (staledata && wifiManager.getWifiStatus() && !wifiManager.getAPStatus())
+    if (staledata && wifistatus && !wifiManager.getAPStatus())
     {
       // Fetch weather data and update SolarInfo
       weatherForecastManager->downloadWeatherData(solarInfo);
@@ -2290,12 +2266,13 @@ if(loraReceived){
       }
       else if (displayStatus == SHOW_INTERNET_STATUS)
       {
+       wifistatus= wifiManager.getWifiStatus();
        if(debug)Serial.print("line 1112 inside of showintenrnetstatus internetAvailable=");
        if(debug)Serial.println(digitalStablesData.internetAvailable);
        if(debug)Serial.print("wifiManager.getAPStatus()=");
        if(debug)Serial.println(wifiManager.getAPStatus());
        if(debug)Serial.print("wifiManager.getWifiStatus()=");
-       if(debug)Serial.println(wifiManager.getWifiStatus());
+       if(debug)Serial.println(wifistatus);
        if(debug)Serial.print("dsupload timer counter= ");
        if(debug)Serial.println(dscount);
          for (int i = 0; i < NUM_LEDS; i++)
@@ -2307,7 +2284,7 @@ if(loraReceived){
           boolean displayWifi=false;
           if(!usingSolarPower)displayWifi=true;
           else{
-            displayWifi=wifiManager.getWifiStatus() && (hourlySolarPowerData.efficiency*100>digitalStablesData.minimumEfficiencyForWifi);
+            displayWifi=wifistatus && (hourlySolarPowerData.efficiency*100>digitalStablesData.minimumEfficiencyForWifi);
           }
         if (displayWifi)
         {
