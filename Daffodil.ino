@@ -2006,8 +2006,8 @@ if(loraReceived){
       turnOffWifi= (hourlySolarPowerData.efficiency*100<digitalStablesData.minimumEfficiencyForWifi ) && wifiManager.getWifiStatus();
      
 
- if(debug)Serial.print("  turnOffWifi=");
- if(debug)Serial.println(turnOffWifi);
+      if(debug)Serial.print("  turnOffWifi=");
+      if(debug)Serial.println(turnOffWifi);
 
   } // end of the tick block
 
@@ -2076,6 +2076,10 @@ if(loraReceived){
     if(debug)Serial.print("turning off wifi cap voltage=");
     if(debug)Serial.println(digitalStablesData.capacitorVoltage);
     wifiManager.stop();
+
+     if(debug)Serial.print("after wifimanager stop, eifistatus=");
+    if(debug)Serial.println(wifiManager.getWifiStatus());
+    
     digitalStablesData.internetAvailable = false;
     currentSecondsWithWifiVoltage = 0;
     FastLED.clear(true);
@@ -2104,8 +2108,14 @@ if(loraReceived){
     leds[14] = CRGB(255, 255, 0);
     FastLED.show();
   }
-  
-    boolean turnOnWifi= (hourlySolarPowerData.efficiency*100>digitalStablesData.minimumEfficiencyForWifi) && (currentSecondsWithWifiVoltage >= numberSecondsWithMinimumWifiVoltageForStartWifi) && !wifiManager.getWifiStatus() && !wifiManager.getAPStatus(); 
+
+    boolean turnOnWifi=false; 
+    if(usingSolarPower){
+      if(!wifiManager.getWifiStatus())turnOnWifi=true;
+    }else{
+      turnOnWifi= (hourlySolarPowerData.efficiency*100>digitalStablesData.minimumEfficiencyForWifi) && (currentSecondsWithWifiVoltage >= numberSecondsWithMinimumWifiVoltageForStartWifi) && !wifiManager.getWifiStatus() && !wifiManager.getAPStatus(); 
+    }
+    
     if (turnOnWifi)
     {
       if(debug)Serial.print("turning on  wifi");
@@ -2293,9 +2303,13 @@ if(loraReceived){
             leds[i] = CRGB(0, 0, 0);
           }
           FastLED.show();
-        if (wifiManager.getWifiStatus() &&
-          hourlySolarPowerData.efficiency*100>digitalStablesData.minimumEfficiencyForWifi
-        )
+
+          boolean displayWifi=false;
+          if(!usingSolarPower)displayWifi=true;
+          else{
+            displayWifi=wifiManager.getWifiStatus() && (hourlySolarPowerData.efficiency*100>digitalStablesData.minimumEfficiencyForWifi);
+          }
+        if (displayWifi)
         {
           if (wifiManager.getAPStatus())
           {
@@ -2523,7 +2537,7 @@ if(loraReceived){
     }
     else if (command.startsWith("SetTime"))
     {
-      // SetTime#21#4#25#2#9#53#20
+      // SetTime#21#4#25#2#18#3#40
       // SetTime#17#5#20#7#11#06#00
       timeManager.setTime(command);
       Serial.println("Ok-SetTime");
@@ -2632,13 +2646,15 @@ if(loraReceived){
     else if (command.startsWith("ConfigWifiAP"))
     {
       // ConfigWifiAP#soft_ap_ssid#soft_ap_password#hostaname
-      // ConfigWifiAP#RosieBench##RosieBench
+      // ConfigWifiAP#CreekTub##CreekTub#
 
       String soft_ap_ssid = generalFunctions.getValue(command, '#', 1);
       String soft_ap_password = generalFunctions.getValue(command, '#', 2);
       String hostname = generalFunctions.getValue(command, '#', 3);
 
       bool stat = wifiManager.configWifiAP(soft_ap_ssid, soft_ap_password, hostname);
+      Serial.print("ConfigWifiAP result=");
+      Serial.println(stat);
       if (stat)
       {
         leds[0] = CRGB(0, 255, 0);
