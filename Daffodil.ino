@@ -796,6 +796,9 @@ dataManager.start();
   digitalStablesData.latitude=latitude;
   digitalStablesData.longitude=longitude;
 
+Serial.print("digitalStablesData.minimumEfficiencyForLed=");
+  Serial.println(digitalStablesData.minimumEfficiencyForLed);
+  
   Serial.print("sizeof DigitalStablesData=");
   Serial.println(sizeof(DigitalStablesData));
 
@@ -2524,7 +2527,7 @@ wifistatus = wifiManager.getWifiStatus();
     }
     else if (command.startsWith("SetTime"))
     {
-      // SetTime#21#4#25#2#18#3#40
+      // SetTime#23#4#25#4#9#46#5
       // SetTime#17#5#20#7#11#06#00
       timeManager.setTime(command);
       Serial.println("Ok-SetTime");
@@ -2558,7 +2561,7 @@ wifistatus = wifiManager.getWifiStatus();
     }
     else if (command.startsWith("SetDeviceSensorConfig"))
     {
-// SetDeviceSensorConfig#CreekTub #CREE #NoSensor#Temperature#AEST-10AEDT,M10.1.0,M4.1.0/3#-37.13305556#144.47472222#410#35#50#
+// SetDeviceSensorConfig#CreekTub #CREE #NoSensor#Temperature#AEST-10AEDT,M10.1.0,M4.1.0/3#-37.13305556#144.47472222#410#20#50#
 //SetDeviceSensorConfig#Sceptic #SCEP #NoSensor#Temperature#AEST-10AEDT,M10.1.0,M4.1.0/3#-37.13305556#144.47472222#410#40#50#
       // SetDeviceSensorConfig#DaffOffice#OFDA#NoSensor#Temperature#AEST-10AEDT,M10.1.0,M4.1.0/3#-37.13305556#144.47472222#410#40#50#
       String devicename = generalFunctions.getValue(command, '#', 1);
@@ -2581,7 +2584,8 @@ wifistatus = wifiManager.getWifiStatus();
       sensor1name.toCharArray(digitalStablesData.sensor1name, sensor1name.length() + 1);
       sensor2name.toCharArray(digitalStablesData.sensor2name, sensor2name.length() + 1);
 
-    
+     Serial.print(F("digitalStablesData.minimumEfficiencyForLed="));
+     Serial.println(digitalStablesData.minimumEfficiencyForLed);
       secretManager.saveDeviceSensorConfig(devicename, deviceshortname, sensor1name, sensor2name, timezone, latitude, longitude, altitude, digitalStablesData.minimumEfficiencyForLed, digitalStablesData.minimumEfficiencyForWifi);
       
       Serial.println(F("Ok-SetDeviceSensorConfig"));
