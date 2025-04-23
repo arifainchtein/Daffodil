@@ -1968,6 +1968,7 @@ if(loraReceived){
         digitalWrite(LED_CONTROL, HIGH);
         digitalStablesData.ledBrightness=powerManager->isLoraTxSafe(9,currentTimerRecord);
         digitalStablesData.operatingStatus = OPERATING_STATUS_FULL_MODE;
+        turnOffWifi= (hourlySolarPowerData.efficiency*100<digitalStablesData.minimumEfficiencyForWifi ) && wifistatus;
       }else{
         FastLED.clear(true);
         for (int i = 0; i < NUM_LEDS; i++)
@@ -1978,16 +1979,18 @@ if(loraReceived){
         digitalStablesData.ledBrightness=0;
         digitalWrite(LED_CONTROL, LOW);
         digitalStablesData.operatingStatus = OPERATING_STATUS_NO_LED;
+        turnOffWifi=true;
       }
     }else{
       digitalWrite(LED_CONTROL, HIGH);
       digitalStablesData.ledBrightness=powerManager->isLoraTxSafe(9,currentTimerRecord);
       digitalStablesData.operatingStatus = OPERATING_STATUS_FULL_MODE;
+      turnOffWifi=false;
     }
 
   
     
-      turnOffWifi= (hourlySolarPowerData.efficiency*100<digitalStablesData.minimumEfficiencyForWifi ) && wifistatus;
+      
      
 
     if(debug)Serial.print("line 1990  hourlySolarPowerData.efficiency=");
@@ -2060,7 +2063,7 @@ if(loraReceived){
      
   if(!turnOffWifi){
     if(debug)Serial.print("line 2055 turning off wifi");
-    turnOffWifi=(digitalStablesData.capacitorVoltage < minimumWifiVoltage) && wifistatus;
+    turnOffWifi=(digitalStablesData.capacitorVoltage < minimumWifiVoltage) && wifistatus && usingSolarPower;
   }
   if (turnOffWifi)
   {
