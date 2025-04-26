@@ -1419,7 +1419,7 @@ void goToSleep(){
 } 
 void handleWakeInterrupt() {
   wakeSignalReceived = true;
-}
+} 
 
 void readSensorData(){
     //
