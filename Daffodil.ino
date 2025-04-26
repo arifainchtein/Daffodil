@@ -1057,7 +1057,7 @@ Serial.print("digitalStablesData.minimumEfficiencyForLed=");
   // 1010 = 5212  Daffodil Sceptic
   // 0110 > 4774 Daffodil Water Trough
   // 1110 > 4394 DAFFODILE_TEMP_SOILMOISTURE
-  // 0001 > 3471
+  // 0001 > 3471 VOLTAGE_MONITOR
   // 1001 = 3198
   // 1101 = 2181
   // 1111 = 0    // daffodil septic but with usingSolarPanel=false
@@ -1105,6 +1105,10 @@ Serial.print("digitalStablesData.minimumEfficiencyForLed=");
   else if (cswOutput >= 4300 && cswOutput < 4600)
   {
     digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
+  }
+  else if (cswOutput >= 3400 && cswOutput < 4200)
+  {
+    digitalStablesData.currentFunctionValue = VOLTAGE_MONITOR;
   }
    else if ( cswOutput < 1000)
   {
@@ -1425,6 +1429,13 @@ void readSensorData(){
     int16_t val_3 = ADS.readADC(3);
     float f = ADS.toVoltage(1); //  voltage factor
     digitalStablesData.capacitorVoltage = val_3 * f; 
+
+    if(digitalStablesData.currentFunctionValue==VOLTAGE_MONITOR){
+      int16_t val_1 = ADS.readADC(1);
+    float f = ADS.toVoltage(1); //  voltage factor
+    digitalStablesData.flowRate = val_1 * f; 
+
+    }
     
     tempSensor.requestTemperatures();
     float tempC = tempSensor.getTempCByIndex(0);
