@@ -1109,6 +1109,7 @@ Serial.print("digitalStablesData.minimumEfficiencyForLed=");
   else if (cswOutput >= 3400 && cswOutput < 4200)
   {
     digitalStablesData.currentFunctionValue = VOLTAGE_MONITOR;
+    Serial.println("SELECTED VOLTAGE MONITORING");
   }
    else if ( cswOutput < 1000)
   {
@@ -1431,10 +1432,15 @@ void readSensorData(){
     digitalStablesData.capacitorVoltage = val_3 * f; 
 
     if(digitalStablesData.currentFunctionValue==VOLTAGE_MONITOR){
+      // read the voltage on sensor 1 ie pin 32
       int16_t val_1 = ADS.readADC(1);
-    float f = ADS.toVoltage(1); //  voltage factor
-    digitalStablesData.flowRate = val_1 * f; 
-
+      float f = ADS.toVoltage(1); //  voltage factor
+      digitalStablesData.flowRate = val_1 * f; 
+     // Serial.print("External Voltage=");
+    //  Serial.println(digitalStablesData.flowRate);
+      if(currentTimerRecord.hour>=16){
+        dataManager.storeDSDData(digitalStablesData);
+      }
     }
     
     tempSensor.requestTemperatures();
