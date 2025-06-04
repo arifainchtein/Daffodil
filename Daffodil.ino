@@ -1,4 +1,4 @@
-// New Version
+/// New Version
 #include <PowerManager.h>
 #include <SolarInfo.h>
 //#include <TimeUtils.h>
@@ -32,7 +32,8 @@
 //#include <driver/adc.h>
 #include <BH1750.h>
 #include <Adafruit_INA219.h>
-
+#include <esp_sleep.h>
+#include <driver/adc.h>
 
 #define RTC_CLK_OUT 4
 #define MISO 12
@@ -57,7 +58,8 @@
  #define SENSOR_INPUT_1 32
 //#define ADS115_ALERT 35
 #define TPL5010_WAKE 35
-#define RTC_BATT_VOLT 36
+#define RTC_BATT_VOLT ADC1_CHANNEL_0
+
 
 
 #define SHUNT_RESISTANCE 0.050 // Shunt resistor value in Ohm
@@ -65,7 +67,7 @@
  float SHUNT_OHMS= 0.05;    // Your shunt resistor value in ohms
 #define MAX_CURRENT     1.0     // Maximum expected current in Amps
 #define CURRENT_LSB     0.00003 // Current LSB in A/bit (10µA per bit for higher precision)
-
+boolean memoryFull=false;
 static volatile bool runWatchdog = true;
 
 String currentSSID;
@@ -136,6 +138,9 @@ OneWire oneWire(TEMPERATURE);
 DallasTemperature tempSensor(&oneWire);
 
 Timer viewTimer(5);
+Timer remoteMonitorTimer(5);
+#define MAXIMUM_STORED_RECORDS 5000
+
 bool showTime = false;
 
 
@@ -288,17 +293,17 @@ void onReceive(int packetSize)
       loraPacketSize=packetSize;
 }
 void processLora(int packetSize){
-   Serial.print(" Receive lora: ");
-      Serial.println(packetSize);
+   if(debug)Serial.print(" Receive lora: ");
+      if(debug)Serial.println(packetSize);
 
-       Serial.print(" size of ds: ");
-      Serial.print(sizeof(DigitalStablesData));
+       if(debug)Serial.print(" size of ds: ");
+      if(debug)Serial.print(sizeof(DigitalStablesData));
 
- Serial.print(" WeatherForecastUpdate: ");
-      Serial.print(sizeof(WeatherForecastUpdate));
+ if(debug)Serial.print(" WeatherForecastUpdate: ");
+      if(debug)Serial.print(sizeof(WeatherForecastUpdate));
 
- Serial.print(" s RequestCommand: ");
-      Serial.println(sizeof(RequestCommand));
+ if(debug)Serial.print(" s RequestCommand: ");
+      if(debug)Serial.println(sizeof(RequestCommand));
 
   if (packetSize == 0) return; // if there's no packet, return
 
@@ -310,18 +315,18 @@ void processLora(int packetSize){
     long commandcode = receivedDigitalStablesData.totpcode;
     bool validCode = secretManager.checkCode(commandcode);
 
-     Serial.print(" Received DigitalStablesData code  : ");
-      Serial.print(commandcode);
+     if(debug)Serial.print(" Received DigitalStablesData code  : ");
+      if(debug)Serial.print(commandcode);
     String receivedSerialNumber;
     for (uint8_t i = 0; i < 8; i++)
       {
         receivedSerialNumber += String(receivedDigitalStablesData.serialnumberarray[i], HEX);
       }
 
-     Serial.print(" sn  : ");
-      Serial.print(receivedSerialNumber);
+     if(debug)Serial.print(" sn  : ");
+      if(debug)Serial.print(receivedSerialNumber);
  if(receivedSerialNumber==serialNumber){
-    Serial.println("Ignored self reception");
+    if(debug)Serial.println("Ignored self reception");
  }else{
     if (validCode)
         {
@@ -331,17 +336,17 @@ void processLora(int packetSize){
 
           int rssi = LoRa.packetRssi();
           float Snr = LoRa.packetSnr();
-          Serial.print(" valid code ");
-          Serial.print("  from: ");
-          Serial.println(receivedDigitalStablesData.devicename);
+          if(debug)Serial.print(" valid code ");
+          if(debug)Serial.print("  from: ");
+          if(debug)Serial.println(receivedDigitalStablesData.devicename);
         }
         else
         {
           long currentcode =secretManager.generateCode();
-          Serial.print(" Receive digitalStablesData but invalid code: ");
-          Serial.print(commandcode);
-          Serial.print(" currentcode: ");
-          Serial.println(currentcode);
+          if(debug)Serial.print(" Receive digitalStablesData but invalid code: ");
+          if(debug)Serial.print(commandcode);
+          if(debug)Serial.print(" currentcode: ");
+          if(debug)Serial.println(currentcode);
         }
  }
    
@@ -353,7 +358,7 @@ void processLora(int packetSize){
     if (validCode){
       String commandcode = String(rc.commandString);
       if(commandcode=="SendAsyncData"){
-        Serial.println("received SEND_ASYNC_DATA");
+        if(debug)Serial.println("received SEND_ASYNC_DATA");
 
           // void sendDataViaLoRa() {
             // Read all stored data
@@ -361,42 +366,42 @@ void processLora(int packetSize){
             DigitalStablesData dataArray[MAX_RECORDS];
             int actualSize = 0;
             if (!dataManager.readAllDSDData(dataArray, MAX_RECORDS, actualSize)) {
-              Serial.println("No data to send or error reading data");
+              if(debug)Serial.println("No data to send or error reading data");
                 RequestCommand rc;
                 rc.totpcode=secretManager.generateCode();
                 rc.setCommand("NoData");
                 sendMessage(rc);
             }
-            Serial.printf("Sending %d records via LoRa...\n", actualSize);
+            if(debug)Serial.printf("Sending %d records via LoRa...\n", actualSize);
 
             // Send each record as binary data
             for (int i = 0; i < actualSize; i++) {
               dataArray[i].totpcode=secretManager.generateCode();
               sendMessage(dataArray[i]);
             // LoRa.endPacket();
-              Serial.printf("Sent record %d/%d (%d bytes)\n",
+              if(debug)Serial.printf("Sent record %d/%d (%d bytes)\n",
                             i+1, actualSize, sizeof(DigitalStablesData) + 2);  // +2 for marker and index
               // Brief delay to avoid overwhelming the receiver
               delay(200);
             }
-            Serial.println("All data sent");
+            if(debug)Serial.println("All data sent");
           //}
 
 
       }else if(commandcode=="ReceivedOK"){
-        Serial.println("received RECEIVED_OK");
+        if(debug)Serial.println("received RECEIVED_OK");
       }else if(commandcode=="ClearedOk"){
-        Serial.println("received CLEARED_OK");
+        if(debug)Serial.println("received CLEARED_OK");
       }else if(commandcode=="NoData"){
-        Serial.println("received NO_DATA");
+        if(debug)Serial.println("received NO_DATA");
       }else if(commandcode=="SendCurrentData"){
-        Serial.println("received SendCurrentData, sending ..");
+        if(debug)Serial.println("received SendCurrentData, sending ..");
         sendMessage(digitalStablesData);
       }
     } else
     {
-      Serial.print(" Receive RequestCommand but invalid code: ");
-      Serial.println(totpcode);
+      if(debug)Serial.print(" Receive RequestCommand but invalid code: ");
+      if(debug)Serial.println(totpcode);
     
     }
   }else  if (packetSize == sizeof(WeatherForecastUpdate)){
@@ -408,15 +413,15 @@ void processLora(int packetSize){
       //WeatherForecast forecasts=weatherForecastUpdate.forecasts;
       weatherForecastManager->saveForecasts(weatherForecastUpdate.forecasts);
       solarInfo->setWeatherForecast(weatherForecastUpdate.forecasts ,4);
-       Serial.println(" Receive and processed weatherForecast ");
+       if(debug)Serial.println(" Receive and processed weatherForecast ");
     } else
     {
-      Serial.print(" Receive WeatherForecastUpdate but invalid code: ");
-      Serial.println(commandcode);
+      if(debug)Serial.print(" Receive WeatherForecastUpdate but invalid code: ");
+      if(debug)Serial.println(commandcode);
     
     }
   }else {//if(packetSize==14){
-       Serial.println("\n--- RECEIVED unknown size  PACKET ---");
+       if(debug)Serial.println("\n--- RECEIVED unknown size  PACKET ---");
     // Create a buffer to store the received bytes
     uint8_t buffer[packetSize];
     // Read all bytes into the buffer
@@ -424,61 +429,61 @@ void processLora(int packetSize){
       buffer[i] = LoRa.read();
     }
     // Display as hex values (with position)
-    Serial.print("HEX: ");
+    if(debug)Serial.print("HEX: ");
     for (int i = 0; i < packetSize; i++) {
       // Print position
-      Serial.print("[");
-      Serial.print(i);
-      Serial.print("]");
+      if(debug)Serial.print("[");
+      if(debug)Serial.print(i);
+      if(debug)Serial.print("]");
       // Print hex value with leading zero if needed
-      if (buffer[i] < 16) Serial.print("0");
-      Serial.print(buffer[i], HEX);
-      Serial.print(" ");
+      if (buffer[i] < 16) if(debug)Serial.print("0");
+      if(debug)Serial.print(buffer[i], HEX);
+      if(debug)Serial.print(" ");
     }
-    Serial.println();
+    if(debug)Serial.println();
     // Display as ASCII (printable characters only)
-    Serial.print("ASCII: ");
+    if(debug)Serial.print("ASCII: ");
     for (int i = 0; i < packetSize; i++) {
       // Check if it's a printable ASCII character (32-126)
       if (buffer[i] >= 32 && buffer[i] <= 126) {
-        Serial.print((char)buffer[i]);
+        if(debug)Serial.print((char)buffer[i]);
       } else {
-        Serial.print(".");  // Non-printable character
+        if(debug)Serial.print(".");  // Non-printable character
       }
     }
-    Serial.println();
+    if(debug)Serial.println();
     // Display as decimal values
-    Serial.print("DEC: ");
+    if(debug)Serial.print("DEC: ");
     for (int i = 0; i < packetSize; i++) {
-      Serial.print("[");
-      Serial.print(i);
-      Serial.print("]");
-      Serial.print(buffer[i]);
-      Serial.print(" ");
+      if(debug)Serial.print("[");
+      if(debug)Serial.print(i);
+      if(debug)Serial.print("]");
+      if(debug)Serial.print(buffer[i]);
+      if(debug)Serial.print(" ");
     }
-    Serial.println();
+    if(debug)Serial.println();
     // Try to interpret as common data types
     if (packetSize >= 4) {
       // As 32-bit integer (little endian)
       int32_t int32Value = buffer[0] | (buffer[1] << 8) | (buffer[2] << 16) | (buffer[3] << 24);
-      Serial.print("As Int32 (LE): ");
-      Serial.println(int32Value);
+      if(debug)Serial.print("As Int32 (LE): ");
+      if(debug)Serial.println(int32Value);
       // As 32-bit float (little endian)
       float floatValue;
       memcpy(&floatValue, buffer, 4);
-      Serial.print("As Float (LE): ");
-      Serial.println(floatValue);
+      if(debug)Serial.print("As Float (LE): ");
+      if(debug)Serial.println(floatValue);
     }
     // Calculate a simple checksum to see if it's consistent
     uint8_t checksum = 0;
     for (int i = 0; i < packetSize - 1; i++) {
       checksum ^= buffer[i];  // XOR checksum
     }
-    Serial.print("Last byte: ");
-    Serial.print(buffer[packetSize-1]);
-    Serial.print(", XOR Checksum: ");
-    Serial.println(checksum);
-    Serial.println("--- END OF PACKET ANALYSIS ---\n");
+    if(debug)Serial.print("Last byte: ");
+    if(debug)Serial.print(buffer[packetSize-1]);
+    if(debug)Serial.print(", XOR Checksum: ");
+    if(debug)Serial.println(checksum);
+    if(debug)Serial.println("--- END OF PACKET ANALYSIS ---\n");
   }
 }
 void LoRa_txMode()
@@ -531,8 +536,8 @@ LoRaError performCAD() {
     avgRssi = rssiSum / SAMPLES;  
     LoRa.idle();
  
-    Serial.print("checkcad, avgRssi=");
-    Serial.print(avgRssi);
+    if(debug)Serial.print("checkcad, avgRssi=");
+    if(debug)Serial.print(avgRssi);
     if (avgRssi > RSSI_THRESHOLD) {
        // errorMgr.setLoRaError(LORA_CHANNEL_BUSY, avgRssi);  
         return LORA_CHANNEL_BUSY;
@@ -577,8 +582,8 @@ LoRaError performCADOld() {
     avgRssi = rssiSum / SAMPLES;
     LoRa.idle();
  
-   Serial.print("  checkcad, avgRssi=");
-  Serial.println(avgRssi);
+   if(debug)Serial.print("  checkcad, avgRssi=");
+  if(debug)Serial.println(avgRssi);
     if (avgRssi > RSSI_THRESHOLD) {
         return LORA_CHANNEL_BUSY;
     }
@@ -620,11 +625,11 @@ int sendMessage(const T& inputData)
   lcd.setCursor(0, 0);
   lcd.clear();
   lcd.print("Sending Lora");
-  Serial.print("sending lora sn=");
-  Serial.print(serialNumber);
+  if(debug)Serial.print("sending lora sn=");
+  if(debug)Serial.print(serialNumber);
   long code = secretManager.generateCode();
-  Serial.print("  totp=");
-  Serial.print(code);
+  if(debug)Serial.print("  totp=");
+  if(debug)Serial.print(code);
 
    if constexpr (std::is_same<T, DigitalStablesData>::value) {
     dataToSend.totpcode = code;
@@ -641,12 +646,12 @@ int sendMessage(const T& inputData)
 
   if constexpr (std::is_same<T, DigitalStablesData>::value) {
     dataToSend.checksum = calculatedChecksum;
-    Serial.print(" checksum=");
-    Serial.print(dataToSend.checksum, HEX);
+    if(debug)Serial.print(" checksum=");
+    if(debug)Serial.print(dataToSend.checksum, HEX);
   } else if constexpr (std::is_same<T, RequestCommand>::value) {
     dataToSend.checksum = calculatedChecksum;
-    Serial.print(" checksum=");
-    Serial.print(dataToSend.checksum, HEX);
+    if(debug)Serial.print(" checksum=");
+    if(debug)Serial.print(dataToSend.checksum, HEX);
   }
   
   
@@ -667,8 +672,8 @@ int sendMessage(const T& inputData)
       } else {
         result = LORA_OK;
       }
-      Serial.print("took ");
-      Serial.print(millis() - startsendingtime);
+      if(debug)Serial.print("took ");
+      if(debug)Serial.print(millis() - startsendingtime);
       keepGoing = false;
     } else if (cadResult != LORA_CHANNEL_BUSY) {
       // If error is not due to busy channel, return the error
@@ -683,13 +688,13 @@ int sendMessage(const T& inputData)
       lcd.print(". b=");
       lcd.print(backoff);
       lcd.println("ms");
-      Serial.print("Channel busy, retry ");
-      Serial.print(retries + 1);
-      Serial.print(" of ");
-      Serial.print(MAX_RETRIES);
-      Serial.print(". Waiting ");
-      Serial.print(backoff);
-      Serial.println("ms");
+      if(debug)Serial.print("Channel busy, retry ");
+      if(debug)Serial.print(retries + 1);
+      if(debug)Serial.print(" of ");
+      if(debug)Serial.print(MAX_RETRIES);
+      if(debug)Serial.print(". Waiting ");
+      if(debug)Serial.print(backoff);
+      if(debug)Serial.println("ms");
       // Channel is busy, implement exponential backoff
       delay(backoff);
       retries++;
@@ -703,8 +708,8 @@ int sendMessage(const T& inputData)
   lcd.setCursor(0, 1);
   lcd.print("Lora returns ");
   lcd.print(result);
-  Serial.print(" ,Lora returns ");
-  Serial.println(result);
+  if(debug)Serial.print(" ,Lora returns ");
+  if(debug)Serial.println(result);
   delay(500);
   LoRa_rxMode();
   msgCount++; // increment message ID
@@ -717,15 +722,15 @@ void print_wakeup_reason() {
 
   switch(wakeup_reason) {
     case ESP_SLEEP_WAKEUP_EXT0:
-      Serial.println("Wakeup caused by button press");
+      if(debug)Serial.println("Wakeup caused by button press");
       // Do something specific when button wakes the device
       break;
     case ESP_SLEEP_WAKEUP_TIMER:
-      Serial.println("Wakeup caused by timer");
+      if(debug)Serial.println("Wakeup caused by timer");
       // Do something specific when timer wakes the device
       break;
     default:
-      Serial.println("First boot or reset");
+      if(debug)Serial.println("First boot or reset");
       break;
   }
 }
@@ -785,38 +790,40 @@ dataManager.start();
   float capacitorValue = 3.0;
   float currentPerLed = .020;
   const char *apiKey = "103df7bb3e4010e033d494f031b483e0";
-  
-  usingSolarPower=true;
-
-  
-
    TimeUtils::parseTimezone(timezone);
   setenv("TZ", timezone.c_str(), 1);
   tzset();
   digitalStablesData.latitude=latitude;
   digitalStablesData.longitude=longitude;
 
-Serial.print("digitalStablesData.minimumEfficiencyForLed=");
-  Serial.println(digitalStablesData.minimumEfficiencyForLed);
+if(debug)Serial.print("digitalStablesData.minimumEfficiencyForLed=");
+  if(debug)Serial.println(digitalStablesData.minimumEfficiencyForLed);
   
-  Serial.print("sizeof DigitalStablesData=");
-  Serial.println(sizeof(DigitalStablesData));
+  if(debug)Serial.print("sizeof DigitalStablesData=");
+  if(debug)Serial.println(sizeof(DigitalStablesData));
 
-  Serial.print("sizeof RequestCommanmd=");
-  Serial.println(sizeof(RequestCommand));
+  if(debug)Serial.print("sizeof RequestCommanmd=");
+  if(debug)Serial.println(sizeof(RequestCommand));
 
-  Serial.print("sizeof WeatherForecastUpdate=");
-  Serial.println(sizeof(WeatherForecastUpdate));
+  if(debug)Serial.print("sizeof WeatherForecastUpdate=");
+  if(debug)Serial.println(sizeof(WeatherForecastUpdate));
 
   pinMode(RTC_CLK_OUT, INPUT_PULLUP); // set up interrupt pin
   digitalWrite(RTC_CLK_OUT, HIGH);    // turn on pullup resistors
   // attach interrupt to set_tick_tock callback on rising edge of INT0
   attachInterrupt(digitalPinToInterrupt(RTC_CLK_OUT), clockTick, RISING);
-
+ 
   timeManager.start();
   timeManager.PCF8563osc1Hz();
   currentTimerRecord = timeManager.now();
-
+  digitalStablesData.secondsTime = timeManager.getCurrentTimeInSeconds(currentTimerRecord);
+  digitalStablesData.asyncdata = 1;
+  
+  if(dataManager.getDSDStoredCount()<MAXIMUM_STORED_RECORDS){
+    dataManager.storeDSDData(digitalStablesData);
+  }
+  
+  
   //  const char* ntpServer = "pool.ntp.org";
   //  const long gmtOffset_sec = 36000;  // Melbourne is UTC+10
   //  const int daylightOffset_sec = 3600; // 1 hour during daylight savings
@@ -825,23 +832,23 @@ Serial.print("digitalStablesData.minimumEfficiencyForLed=");
   weatherForecastManager = new WeatherForecastManager(Serial,latitude, longitude, apiKey);
   weatherForecastManager->initialize(currentTimerRecord);
   weatherForecastManager->loadForecasts(Serial);
-  Serial.print("hasValidForecasts=");
-  Serial.println(weatherForecastManager->hasValidForecasts());
+  if(debug)Serial.print("hasValidForecasts=");
+  if(debug)Serial.println(weatherForecastManager->hasValidForecasts());
 
   
 
   powerManager = new PowerManager(Serial, ADS, *solarInfo, latitude, longitude, capacitorValue, currentPerLed);
   DailySolarData dailySolarData = solarInfo->getDailySolarData(currentTimerRecord);
 
-  Serial.print("sunrise=");
-  Serial.println(dailySolarData.sunrise);
-  Serial.print("sunset=");
-  Serial.println(dailySolarData.sunset);
+  if(debug)Serial.print("sunrise=");
+  if(debug)Serial.println(dailySolarData.sunrise);
+  if(debug)Serial.print("sunset=");
+  if(debug)Serial.println(dailySolarData.sunset);
 
-  Serial.print("sunrisetime=");
-  Serial.println(dailySolarData.sunrisetime);
-  Serial.print("sunsettime=");
-  Serial.println(dailySolarData.sunsettime);
+  if(debug)Serial.print("sunrisetime=");
+  if(debug)Serial.println(dailySolarData.sunrisetime);
+  if(debug)Serial.print("sunsettime=");
+  if(debug)Serial.println(dailySolarData.sunsettime);
 
   
   FastLED.addLeds<WS2812, LED_PIN, GRB>(leds, NUM_LEDS);
@@ -853,9 +860,9 @@ Serial.print("digitalStablesData.minimumEfficiencyForLed=");
 
   
   hourlySolarPowerData = solarInfo->calculateActualPower(currentTimerRecord);
-  Serial.print(" line 368 efficiency=");
-  Serial.println(hourlySolarPowerData.efficiency);
-//  Serial.print("actualPower=");
+  if(debug)Serial.print(" line 368 efficiency=");
+  if(debug)Serial.println(hourlySolarPowerData.efficiency);
+//  if(debug)Serial.print("actualPower=");
 //  Serial.println(hourlySolarPowerData.actualPower);
 //  Serial.print("irradiance=");
 //  Serial.println(hourlySolarPowerData.irradiance);
@@ -864,7 +871,7 @@ Serial.print("digitalStablesData.minimumEfficiencyForLed=");
 
  
 
-  Serial.println("Scanning for I2C devices ...");
+  if(debug)Serial.println("Scanning for I2C devices ...");
  
   
   byte error, address;
@@ -876,32 +883,32 @@ Serial.print("digitalStablesData.minimumEfficiencyForLed=");
     error = Wire.endTransmission();
     if (error == 0)
     {
-      Serial.print("I2C device found at address ");
-      Serial.println(address);
+      if(debug)Serial.print("I2C device found at address ");
+      if(debug)Serial.println(address);
       if (address == 3){
         foundlcd = true;
       }else if (address == 64){ // 0x40
         foundtemp = true;
-         Serial.println("foundtemp");
+         if(debug)Serial.println("foundtemp");
       }else if (address == 72){ // 0x48
         foundADS = true;
-         Serial.println("foundADS");
+         if(debug)Serial.println("foundADS");
       }else if (address == 65){ // 0x41
         foundINA219 = true;
-         Serial.println("foundINA219");
+         if(debug)Serial.println("foundINA219");
       }else if (address == 81){ // 0x51;
         PCF8563T = true;
-         Serial.println("found PCF8563T");
+         if(debug)Serial.println("found PCF8563T");
       }else if (address == 35){  // 0x23
         foundBH1750=true;
-         Serial.println("foundBH1750");
+         if(debug)Serial.println("foundBH1750");
       }
         
       nDevices++;
     }
     else if (error != 2)
     {
-      Serial.printf("Error %d at address 0x%02X\n", error, address);
+      if(debug)Serial.printf("Error %d at address 0x%02X\n", error, address);
     }
   }
 
@@ -934,22 +941,22 @@ Serial.print("digitalStablesData.minimumEfficiencyForLed=");
   ADS.begin();
   if (!ADS.begin())
   {
-    Serial.println("invalid address ADS1115 or 0x48 not found");
+    if(debug)Serial.println("invalid address ADS1115 or 0x48 not found");
     foundADS=false;
   }
   else
   {
-    Serial.println("found ADS1115");
+    if(debug)Serial.println("found ADS1115");
     foundADS=true;
   }
 
 
  if (! ina219.begin()) {
-    Serial.println("Failed to find INA219 chip");
+    if(debug)Serial.println("Failed to find INA219 chip");
     foundINA219=false;
   }else{
      foundINA219=true;
-    Serial.println("initialized INA219");
+    if(debug)Serial.println("initialized INA219");
   // To use a slightly lower 32V, 1A range (higher precision on amps):
   //ina219.setCalibration_32V_1A();
   // Or to use a lower 16V, 400mA range (higher precision on volts and amps):
@@ -970,8 +977,8 @@ Serial.print("digitalStablesData.minimumEfficiencyForLed=");
   
    uint16_t calibrationValue = (uint16_t)(0.04096 / (CURRENT_LSB * SHUNT_OHMS));
   
-  Serial.print("Calculated calibration value: ");
-  Serial.println(calibrationValue);
+  if(debug)Serial.print("Calculated calibration value: ");
+  if(debug)Serial.println(calibrationValue);
 
   
   // Set configuration register - try with different gain settings
@@ -1000,15 +1007,9 @@ Serial.print("digitalStablesData.minimumEfficiencyForLed=");
 
 
 
-
-
-
-
-
-
-  Serial.println(CHT.getManufacturer(), HEX);
-  Serial.println(CHT.getVersionID(), HEX);
-  Serial.println(CHT.getVoltage());
+  if(debug)Serial.println(CHT.getManufacturer(), HEX);
+  if(debug)Serial.println(CHT.getVersionID(), HEX);
+  if(debug)Serial.println(CHT.getVoltage());
 
   ADS.setGain(0);
   //
@@ -1019,48 +1020,196 @@ Serial.print("digitalStablesData.minimumEfficiencyForLed=");
   lcd.setCursor(0, 0);
   lcd.print("cap=");
   lcd.print(digitalStablesData.capacitorVoltage);
-  Serial.print("i setup cap=");
-  Serial.println(digitalStablesData.capacitorVoltage);
+  if(debug)Serial.print("i setup cap=");
+  if(debug)Serial.println(digitalStablesData.capacitorVoltage);
+   
  
-   ADS.setGain(1);
   // Config Switch
- // Serial.print("voltage factor=");
- // Serial.println(f);
-  float val2 = ADS.readADC(2);
-  if(debug)Serial.print("val2=");
-  if(debug)Serial.println(val2);
-
+ // if(debug)Serial.print("voltage factor=");
+ // if(debug)Serial.println(f);
+  float rawValue = ADS.readADC(2);
+  if(debug)Serial.print("rawValue=");
+  if(debug)Serial.println(rawValue);
+  float factor =1;
+  int16_t cswOutput = rawValue;
+  float correctedvalue = factor*rawValue;
+   if (digitalStablesData.capacitorVoltage > 0)
+  {
+     factor = 5 / digitalStablesData.capacitorVoltage;
+    cswOutput = rawValue * factor;
+  }
   lcd.setCursor(0, 1);
   lcd.print("csw=");
-  lcd.print(val2);
+  lcd.print(rawValue);
 
-  int16_t cswOutput = val2;
+  
 
- if (digitalStablesData.capacitorVoltage > 0)
-  {
-    float factor = 5 / digitalStablesData.capacitorVoltage;
-    cswOutput = cswOutput * factor;
-  }
-  Serial.print("corrected cswOutput=");
-  Serial.println(cswOutput);
+
+  if(debug)Serial.print("corrected cswOutput=");
+  if(debug)Serial.println(cswOutput);
   lcd.setCursor(0, 2);
   lcd.print(" corr csw=");
   lcd.print(cswOutput);
   //
   // dip switch values
   // 1234
-  // 0000 = 7279  F
-  // 1000 = 6889  FF
-  // 0100 = 6475  FT
-  // 1100 = 6062  T
-  // 0010 = 5663  TT
-  // 1010 = 5212  Daffodil Sceptic
-  // 0110 > 4774 Daffodil Water Trough
-  // 1110 > 4394 DAFFODILE_TEMP_SOILMOISTURE
-  // 0001 > 3471 VOLTAGE_MONITOR
-  // 1001 = 3198
-  // 1101 = 2181
-  // 1111 = 0    // daffodil septic but with usingSolarPanel=false
+  // 0000 =  F
+  // 1000 =  FF
+  // 0100 =  FT
+  // 1100 =  T
+  // 0010 =  TT
+  // 1010 =  Daffodil Sceptic
+  // 0110 =  Daffodil Water Trough
+  // 1110 =  DAFFODILE_TEMP_SOILMOISTURE
+  // 0001 =  
+  // 1001 = 
+  // 1101 = 
+  // 1111 = 0    // VOLTAGE_MONITOR
+ 
+ if (cswOutput >= 8200 ) {
+    // Position 0: 00000 (All OFF)
+        digitalStablesData.currentFunctionValue = FUN_1_FLOW;
+        attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
+        secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, 12);
+        usingSolarPower=false;
+    } else if (cswOutput >= 8000 && cswOutput <= 8200) {
+        // Position 1: 00001 (R3 ON)
+        digitalStablesData.currentFunctionValue = FUN_2_FLOW;
+        attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
+        attachInterrupt(SENSOR_INPUT_2, pulseCounter2, FALLING);
+        secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, 12);
+        secretManager.readFlow2Name().toCharArray(digitalStablesData.sensor2name, 12);
+        usingSolarPower=false;
+    } else if (cswOutput >= 7800 && cswOutput < 8000) {
+        // Position 2: 00010 (R4 ON)
+        digitalStablesData.currentFunctionValue = FUN_1_FLOW_1_TANK;
+        attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
+        secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, 12);
+        secretManager.readTank2Name().toCharArray(digitalStablesData.sensor2name, 12);
+        usingSolarPower=false;
+    } else if (cswOutput >= 7690 && cswOutput < 7800) {
+         // Position 3: 00011 (R3+R4 ON)
+        digitalStablesData.currentFunctionValue = FUN_1_TANK;
+        secretManager.readTank1Name().toCharArray(digitalStablesData.sensor1name, 12);
+        usingSolarPower=false;
+    } else if (cswOutput >= 7500 && cswOutput < 7690) {
+        // Position 4: 00100 (R10 ON)
+        digitalStablesData.currentFunctionValue = FUN_2_TANK;
+        secretManager.readTank1Name().toCharArray(digitalStablesData.sensor1name, 12);
+        secretManager.readTank2Name().toCharArray(digitalStablesData.sensor2name, 12); 
+        usingSolarPower=false;
+    } else if (cswOutput >= 7300 && cswOutput < 7500) {
+        // Position 5: 00101 (R3+R10 ON)
+        digitalStablesData.currentFunctionValue = DAFFODIL_SCEPTIC_TANK;
+        usingSolarPower=false;
+    } else if (cswOutput >= 7100 && cswOutput < 7300) {
+        cswOutput = 6;  // Position 6: 00110 (R4+R10 ON)
+        digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
+        usingSolarPower=false;
+    } else if (cswOutput >= 6900 && cswOutput < 7100) {
+        // Position 7: 00111 (R3+R4+R10 ON)
+           digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
+            usingSolarPower=false;
+    } else if (cswOutput >= 6600 && cswOutput < 6900) {
+        // Position 8: 01000 (R11 ON)
+        usingSolarPower=false;
+    } else if (cswOutput >= 6300 && cswOutput < 6600) {
+        // Position 9: 01001 (R3+R11 ON)
+        usingSolarPower=false;
+    } else if (cswOutput >= 6100 && cswOutput < 6300) {
+        // Position 10: 01010 (R4+R11 ON)
+        usingSolarPower=false;
+    } else if (cswOutput >= 5900 && cswOutput < 6100) {
+        // Position 11: 01011 (R3+R4+R11 ON)
+        usingSolarPower=false;
+    } else if (cswOutput >= 5700 && cswOutput < 5900) {
+        // Position 12: 01100 (R10+R11 ON)
+        usingSolarPower=false;
+    } else if (cswOutput >= 5450 && cswOutput < 5700) {
+        // Position 13: 01101 (R3+R10+R11 ON)
+        usingSolarPower=false;
+    } else if (cswOutput >= 5200 && cswOutput < 5450) {
+        // Position 14: 01110 (R4+R10+R11 ON)
+        usingSolarPower=false;
+    } else if (cswOutput >= 4900 && cswOutput < 5200) {
+        // Position 15: 01111 (R3+R4+R10+R11 ON)
+        usingSolarPower=false;
+    } else if (cswOutput >= 4800 && cswOutput < 4900) {
+        // Position 16: 10000 (R13 ON)
+        digitalStablesData.currentFunctionValue = FUN_1_FLOW;
+        attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
+        secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, 12);
+        usingSolarPower=true;
+    } else if (cswOutput >= 4500 && cswOutput < 4800) {
+         // Position 17: 10001 (R3+R13 ON)
+          digitalStablesData.currentFunctionValue = FUN_2_FLOW;
+          attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
+          attachInterrupt(SENSOR_INPUT_2, pulseCounter2, FALLING);
+          secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, 12);
+          secretManager.readFlow2Name().toCharArray(digitalStablesData.sensor2name, 12);
+         usingSolarPower=true;
+    } else if (cswOutput >= 4200 && cswOutput < 4500) {
+        // Position 18: 10010 (R4+R13 ON)
+         usingSolarPower=true;
+          digitalStablesData.currentFunctionValue = FUN_1_FLOW_1_TANK;
+          attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
+      
+          secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, 12);
+          secretManager.readTank2Name().toCharArray(digitalStablesData.sensor2name, 12);
+    } else if (cswOutput >= 3900 && cswOutput < 4200) {
+        // Position 19: 10011 (R3+R4+R13 ON)
+         digitalStablesData.currentFunctionValue = FUN_1_TANK;
+    secretManager.readTank1Name().toCharArray(digitalStablesData.sensor1name, 12);
+         usingSolarPower=true;
+    } else if (cswOutput >= 3700 && cswOutput < 3900) {
+         // Position 20: 10100 (R10+R13 ON)
+         digitalStablesData.currentFunctionValue = FUN_2_TANK;
+    secretManager.readTank1Name().toCharArray(digitalStablesData.sensor1name, 12);
+    secretManager.readTank2Name().toCharArray(digitalStablesData.sensor2name, 12);
+         usingSolarPower=true;
+    } else if (cswOutput >= 3400 && cswOutput < 3700) {
+         // Position 21: 10101 (R3+R10+R13 ON)
+           digitalStablesData.currentFunctionValue = DAFFODIL_SCEPTIC_TANK;
+ 
+         usingSolarPower=true;
+    } else if (cswOutput >= 3100 && cswOutput < 3400) {
+         // Position 22: 10110 (R4+R10+R13 ON)
+           digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
+ 
+         usingSolarPower=true;
+    } else if (cswOutput >= 2800 && cswOutput < 3100) {
+         // Position 23: 10111 (R3+R4+R10+R13 ON)
+            digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
+ 
+         usingSolarPower=true;
+    } else if (cswOutput >= 2400 && cswOutput < 2800) {
+         // Position 24: 11000 (R11+R13 ON)
+         usingSolarPower=true;
+    } else if (cswOutput >= 2000 && cswOutput < 2400) {
+         // Position 25: 11001 (R3+R11+R13 ON)
+         usingSolarPower=true;
+    } else if (cswOutput >= 1700 && cswOutput < 2000) {
+        // Position 26: 11010 (R4+R11+R13 ON)
+         usingSolarPower=true;
+    } else if (cswOutput >= 1380 && cswOutput < 1700) {
+        // Position 27: 11011 (R3+R4+R11+R13 ON)
+         usingSolarPower=true;
+    } else if (cswOutput >= 1100 && cswOutput < 1380) {
+        // Position 28: 11100 (R10+R11+R13 ON)
+         usingSolarPower=true;
+    } else if (cswOutput >= 700 && cswOutput < 1100) {
+         // Position 29: 11101 (R3+R10+R11+R13 ON)
+         usingSolarPower=true;
+    } else if (cswOutput >= 350 && cswOutput < 700) {
+        // Position 30: 11110 (R4+R10+R11+R13 ON)
+         usingSolarPower=true;
+    } else if (cswOutput < 350) {
+         // Position 31: 11111 (All ON) - assuming this is very low
+         usingSolarPower=true;
+    } 
+
+  
+  
   if (cswOutput >= 7100)
   {
     digitalStablesData.currentFunctionValue = FUN_1_FLOW;
@@ -1108,14 +1257,13 @@ Serial.print("digitalStablesData.minimumEfficiencyForLed=");
   }
   else if (cswOutput >= 3400 && cswOutput < 4200)
   {
-    digitalStablesData.currentFunctionValue = VOLTAGE_MONITOR;
-    Serial.println("SELECTED VOLTAGE MONITORING");
+   
   }
    else if ( cswOutput < 1000)
   {
-    digitalStablesData.currentFunctionValue = DAFFODIL_SCEPTIC_TANK;
+     digitalStablesData.currentFunctionValue = VOLTAGE_MONITOR;
     usingSolarPower=false;
-    Serial.println("setting DAFFODIL_SCEPTIC_TANKto false because 1111 ");
+    if(debug)Serial.println("SELECTED VOLTAGE MONITORING");
   }
   else
   {
@@ -1149,8 +1297,8 @@ Serial.print("digitalStablesData.minimumEfficiencyForLed=");
 //    digitalStablesData.checksum += static_cast<uint8_t>(digitalStablesData.serialnumberarray[i]);
 //  }
 //  digitalStablesData.checksum &= 0xFF;
-  Serial.print("serial number:");
-  Serial.println(serialNumber);
+  if(debug)Serial.print("serial number:");
+  if(debug)Serial.println(serialNumber);
 
   SPI.begin(SCK, MISO, MOSI);
   pinMode(LoRa_SS, OUTPUT);
@@ -1184,17 +1332,6 @@ Serial.print("digitalStablesData.minimumEfficiencyForLed=");
 
   // delay(2000);
 
- 
-
- // Serial.print("cswOutput=");
- // Serial.println(cswOutput);
-
- 
-
-
-
-
-
   String devicename = secretManager.readDeviceName();
   char devicenamearray[devicename.length()];
   devicename.toCharArray(devicenamearray, devicename.length());
@@ -1213,8 +1350,8 @@ Serial.print("digitalStablesData.minimumEfficiencyForLed=");
    grp.toCharArray(gprid, grp.length());
    strcpy(digitalStablesData.groupidentifier, gprid);
 
-   Serial.print("Starting wifi digitalStablesConfigData.groupidentifier=");
-   Serial.println(digitalStablesData.groupidentifier);
+   if(debug)Serial.print("Starting wifi digitalStablesConfigData.groupidentifier=");
+   if(debug)Serial.println(digitalStablesData.groupidentifier);
 
   String identifier = "daffodilTF";
   char ty[identifier.length() + 1];
@@ -1222,19 +1359,22 @@ Serial.print("digitalStablesData.minimumEfficiencyForLed=");
   strcpy(digitalStablesData.deviceTypeId, ty);
 
   digitalStablesConfigData.fieldId = secretManager.getFieldId();
-  Serial.print("Starting wifi digitalStablesConfigData.fieldId=");
-  Serial.println(digitalStablesConfigData.fieldId);
+  if(debug)Serial.print("Starting wifi digitalStablesConfigData.fieldId=");
+  if(debug)Serial.println(digitalStablesConfigData.fieldId);
 
   pinMode(RTC_BATT_VOLT, INPUT);
+   adc1_config_width(ADC_WIDTH_BIT_12);
+  adc1_config_channel_atten(RTC_BATT_VOLT, ADC_ATTEN_DB_11);  // 0-3.1V range
+
   opmode = digitalRead(OP_MODE);
   digitalStablesData.opMode = opmode;
 
   dsUploadTimer.start();
   digitalStablesData.dataSamplingSec = 10;
-  Serial.print("digitalStablesData.dataSamplingSec=");
-  Serial.println(digitalStablesData.dataSamplingSec);
-  Serial.print("digitalStablesData size=");
-  Serial.println(sizeof(digitalStablesData));
+  if(debug)Serial.print("digitalStablesData.dataSamplingSec=");
+  if(debug)Serial.println(digitalStablesData.dataSamplingSec);
+  if(debug)Serial.print("digitalStablesData size=");
+  if(debug)Serial.println(sizeof(digitalStablesData));
 
   
   //  pinMode(trigPin, OUTPUT); // Sets the trigPin as an Output
@@ -1242,6 +1382,8 @@ Serial.print("digitalStablesData.minimumEfficiencyForLed=");
   lastswitchmillis = millis();
 
   viewTimer.start();
+  remoteMonitorTimer.start();
+  
   LoRa.setSyncWord(0xF3);
   //pinMode(WATCHDOG_WDI, OUTPUT);
  // Configure TPL5010 pins
@@ -1250,8 +1392,6 @@ Serial.print("digitalStablesData.minimumEfficiencyForLed=");
   pinMode(TPL5010_WAKE, INPUT);
 
   attachInterrupt(digitalPinToInterrupt(TPL5010_WAKE), handleWakeInterrupt, RISING);
- 
-  pinMode(TPL5010_WAKE, INPUT);
   xTaskCreatePinnedToCore(
       refreshTPL5010Task, /* Task function. */
       "TPL5010Refresh",       /* name of task. */
@@ -1266,32 +1406,40 @@ Serial.print("digitalStablesData.minimumEfficiencyForLed=");
   if(usingSolarPower && hourlySolarPowerData.efficiency*100<digitalStablesData.minimumEfficiencyForLed){
     isSleepMode=true;
     digitalStablesData.operatingStatus=OPERATING_STATUS_SLEEP;
-    Serial.print("setting sleepmode in setup because of efficiency=");
-    Serial.println(hourlySolarPowerData.efficiency);
+    if(debug)Serial.print("setting sleepmode in setup because of efficiency=");
+    if(debug)Serial.println(hourlySolarPowerData.efficiency);
+  
+    digitalStablesData.asyncdata = 2;
+    if(dataManager.getDSDStoredCount()<MAXIMUM_STORED_RECORDS){
+      dataManager.storeDSDData(digitalStablesData);
+    }
+  
   }
   if (usingSolarPower && digitalStablesData.capacitorVoltage > 1 && digitalStablesData.capacitorVoltage < sleepingVoltage){
-    Serial.print("setting sleepmode in setup because of low voltage=");
-    Serial.println(hourlySolarPowerData.efficiency);
+    if(debug)Serial.print("setting sleepmode in setup because of low voltage=");
+    if(debug)Serial.println(hourlySolarPowerData.efficiency);
     isSleepMode=true;
     digitalStablesData.operatingStatus=OPERATING_STATUS_SLEEP;
+    digitalStablesData.asyncdata = 3;
+    if(dataManager.getDSDStoredCount()<MAXIMUM_STORED_RECORDS){
+      dataManager.storeDSDData(digitalStablesData);
+    }
   }
 
  
   if(isSleepMode){
-    goToSleep();
+    ;
   }else{
     digitalStablesData.operatingStatus=OPERATING_STATUS_NO_LED;
+    if (loraActive) {
+      // LoRa_rxMode();
+      // LoRa.setSyncWord(0xF3);
+      LoRa.onReceive(onReceive);
+      // put the radio into receive mode
+      LoRa.receive();
+    }
   }
-  if (loraActive) {
-    
-    // LoRa_rxMode();
-    // LoRa.setSyncWord(0xF3);
-    LoRa.onReceive(onReceive);
-    // put the radio into receive mode
-    LoRa.receive();
-
-  }
-   Serial.println(F("Finished Setup"));
+   if(debug)Serial.println(F("Finished Setup"));
 }
 
 void sleepDS18B20() { // Put OneWire bus in high impedance state pinMode(ONE_WIRE_BUS, INPUT);
@@ -1309,21 +1457,27 @@ void goToSleep(){
    
      long seconds_sleep= powerManager->calculateOptimalSleepTime(currentTimerRecord);
      uint64_t sleep_time_us = (uint64_t)(seconds_sleep * 1000000ULL);
-    Serial.print("sleep_time_us=");
-    Serial.print(sleep_time_us);
+    if(debug)Serial.print("sleep_time_us=");
+    if(debug)Serial.print(sleep_time_us);
    
      digitalStablesData.sleepTime=seconds_sleep;
     readSensorData();
     digitalStablesData.ledBrightness=powerManager->isLoraTxSafe(0,currentTimerRecord);
     digitalStablesData.operatingStatus=OPERATING_STATUS_SLEEP;
-
+  digitalStablesData.asyncdata=4;
+if(dataManager.getDSDStoredCount()<MAXIMUM_STORED_RECORDS){
     dataManager.storeDSDData(digitalStablesData);
+  }
+  
+    
   //   Serial.print("in gotosleep digitalStablesData.ledBrightness=");
    // Serial.print(digitalStablesData.ledBrightness);
     
-    Serial.print("  digitalStablesData.sleepTime=");
-    Serial.println(digitalStablesData.sleepTime);
+    if(debug)Serial.print("  digitalStablesData.sleepTime=");
+    if(debug)Serial.println(digitalStablesData.sleepTime);
     //  adc_power_off();
+      adc_power_acquire();  // Ensure ADC is powered (required for release)
+  adc_power_release();  // Power down ADC
     digitalWrite(LED_CONTROL, LOW);
      WiFi.disconnect(true);
   WiFi.mode(WIFI_OFF);
@@ -1332,6 +1486,13 @@ void goToSleep(){
  // adc_power_off();
       sleepDS18B20();
     if(digitalStablesData.ledBrightness!=powerManager->LORA_TX_NOT_ALLOWED){
+       
+      digitalStablesData.asyncdata = 5;
+      if(dataManager.getDSDStoredCount()<MAXIMUM_STORED_RECORDS){
+        dataManager.storeDSDData(digitalStablesData);
+      }
+
+      
       sendMessage(digitalStablesData);
       delay(500);
      // sendMessage(digitalStablesData);
@@ -1347,10 +1508,9 @@ void goToSleep(){
      const int gpioOutputPins[] = {
          4, 5, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 23, 25, 27, 32, 33
       };
-      const int numPins = sizeof(gpioOutputPins) / sizeof(gpioOutputPins[0]);
-     for(int i = 0; i < numPins; i++) {
+     //const int numPins = sizeof(gpioOutputPins) / sizeof(gpioOutputPins[0]);
+     for(int i = 0; i < 17; i++) {
       pinMode(gpioOutputPins[i], INPUT);
-    //  digitalWrite(gpioOutputPins[i], LOW);
     }
  // disabling task
  
@@ -1360,20 +1520,20 @@ void goToSleep(){
 //        vTaskDelete(watchdogTask);
 //        watchdogTask = NULL;
 //    }
-    Serial.println(" about to put ads1115 to sleep ");
+    if(debug)Serial.println(" about to put ads1115 to sleep ");
     ADS.setMode(1);   
     
-     Serial.println("  going to sleep");
+     if(debug)Serial.println("  going to sleep");
      lcd.setCursor(0, 0);
       lcd.clear();
       lcd.print("sleeping ");
       lcd.print(sleep_time_us);
   
-    // Convert seconds_sleep from seconds to microseconds for deep sleep
-    esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_OFF);
-    esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_SLOW_MEM, ESP_PD_OPTION_OFF);
-    esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_FAST_MEM, ESP_PD_OPTION_OFF);
-    esp_sleep_enable_timer_wakeup(sleep_time_us);
+ 
+   // esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_OFF);
+ //   esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_SLOW_MEM, ESP_PD_OPTION_OFF);
+  //  esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_FAST_MEM, ESP_PD_OPTION_OFF);
+ //   esp_sleep_enable_timer_wakeup(sleep_time_us);
     digitalWrite(SLEEP_SWITCH_26, LOW);
     delay(100);
     pinMode(SLEEP_SWITCH_26, INPUT);
@@ -1383,8 +1543,8 @@ void goToSleep(){
 
 // void watchdogTaskFunction(void *pvParameters)
 // {
-//   Serial.print("watchdogTask running on core ");
-//   Serial.println(xPortGetCoreID());
+//   if(debug)Serial.print("watchdogTask running on core ");
+//   if(debug)Serial.println(xPortGetCoreID());
 //   TickType_t xLastWakeTime = xTaskGetTickCount();
 //   const TickType_t xFrequency = pdMS_TO_TICKS(900);
     
@@ -1395,7 +1555,7 @@ void goToSleep(){
 //     digitalWrite(WATCHDOG_WDI, HIGH);
 //       vTaskDelay(pdMS_TO_TICKS(2));  
 //     digitalWrite(WATCHDOG_WDI, LOW);
-//    // Serial.print("watchdogTask reset ");
+//    // if(debug)Serial.print("watchdogTask reset ");
 //    vTaskDelayUntil(&xLastWakeTime, xFrequency);
 //   }
 //    digitalWrite(WATCHDOG_WDI, LOW);  // Ensure WDI is low before ending task
@@ -1411,7 +1571,7 @@ void goToSleep(){
       delayMicroseconds(100); // Pulse width needs to be at least 20µs
       digitalWrite(TPL5010_DONE, LOW);
       
-     // Serial.println("Sent DONE signal to TPL5010");
+     // if(debug)Serial.println("Sent DONE signal to TPL5010");
     }
     
     // Wait before checking again
@@ -1436,11 +1596,6 @@ void readSensorData(){
       int16_t val_1 = ADS.readADC(1);
       float f = ADS.toVoltage(1); //  voltage factor
       digitalStablesData.flowRate = val_1 * f; 
-     // Serial.print("External Voltage=");
-    //  Serial.println(digitalStablesData.flowRate);
-      if(currentTimerRecord.hour>=16){
-        dataManager.storeDSDData(digitalStablesData);
-      }
     }
     
     tempSensor.requestTemperatures();
@@ -1461,8 +1616,8 @@ void readSensorData(){
     }else{
       digitalStablesData.lux = -99;
     }
-//    Serial.print("lux=");
-//    Serial.println(digitalStablesData.lux);
+//    if(debug)Serial.print("lux=");
+//    if(debug)Serial.println(digitalStablesData.lux);
     
     digitalStablesData.ledBrightness=powerManager->isLoraTxSafe(9,currentTimerRecord);
     float distance = sonar.ping_cm();
@@ -1471,24 +1626,22 @@ void readSensorData(){
     //
     // RTC_BATT_VOLT Voltage
     //
+
     float total = 0;
     uint8_t samples = 10;
     for (int x = 0; x < samples; x++)
     {                                            // multiple analogue readings for averaging
-      total = total + analogRead(RTC_BATT_VOLT); // add each value to a total
+      total = total + adc1_get_raw(RTC_BATT_VOLT); // add each value to a total
+      delay(1);
     }
     float average = total / samples;
     float voltage = (average / 4095.0) * Vref;
     // Calculate the actual voltage using the voltage divider formula
-    float rtcBatVoltage = (voltage * (R1 + R2)) / R2;
-    digitalStablesData.rtcBatVolt = rtcBatVoltage;
-
+   // float rtcBatVoltage = (voltage * (R1 + R2)) / R2;
+    digitalStablesData.rtcBatVolt = (voltage * (R1 + R2)) / R2;
 //
 // current
 //
-
- 
-
 // Read raw shunt voltage register for debugging
 if(foundINA219){
    Wire.beginTransmission(0x40);
@@ -1662,7 +1815,7 @@ void restartWifi()
  // Serial.println("in ino Done starting wifi");
 }
 
-void drawError()
+void drawError(uint8_t code)
 {
   for (int i = 0; i < NUM_LEDS; i++)
   {
@@ -1670,16 +1823,28 @@ void drawError()
   }
   FastLED.show();
 
+    leds[0] = CRGB(255,0, 0);
     leds[1] = CRGB(255,0, 0);
     leds[2] = CRGB(255,0, 0);
-    leds[3] = CRGB(255,0, 0);
-    
+    leds[5] = CRGB(255, 0, 0);
     leds[6] = CRGB(255, 0, 0);
-    leds[7] = CRGB(255, 0, 0);
+    leds[10] = CRGB(255, 0, 0);
     leds[11] = CRGB(255, 0, 0);
     leds[12] = CRGB(255, 0, 0);
-    leds[13] = CRGB(255, 0, 0);
- 
+
+    // for the error is 4, 9, 13
+    switch(code){
+      case 0:
+        leds[4] = CRGB(0, 0, 255);
+        break;
+      case 1:
+        leds[9] = CRGB(0, 0, 255);
+        break;
+      case 2:
+        leds[13] = CRGB(0, 0, 255);
+        break;
+      
+    }
   FastLED.show();
 }
 
@@ -1944,9 +2109,9 @@ if(currentTimerRecord.second%10 == 0){
     unsigned long timeSinceLastWake = millis() - lastWakeTime;
     lastWakeTime = millis();
     
-    Serial.print("Wake signal received! Time since last wake: ");
-    Serial.print(timeSinceLastWake);
-    Serial.println(" ms");
+    if(debug)Serial.print("Wake signal received! Time since last wake: ");
+    if(debug)Serial.print(timeSinceLastWake);
+    if(debug)Serial.println(" ms");
     // Reset the flag
     wakeSignalReceived = false;
     
@@ -1960,6 +2125,7 @@ if(loraReceived){
     //   Serial.println("ticked");
 
     viewTimer.tick();
+    remoteMonitorTimer.tick();
     hourlySolarPowerData = solarInfo->calculateActualPower(currentTimerRecord);
 
     //
@@ -1967,8 +2133,31 @@ if(loraReceived){
     //
     
     readSensorData();    
-   
-   
+
+     int dsdStoredCount=dataManager.getDSDStoredCount();
+    if(dsdStoredCount>MAXIMUM_STORED_RECORDS){
+      memoryFull=true;
+    }else{
+      memoryFull=false;
+    }
+    
+      
+      if(remoteMonitorTimer.status()){
+         remoteMonitorTimer.reset();
+         if(digitalStablesData.currentFunctionValue==VOLTAGE_MONITOR &&
+            currentTimerRecord.hour>=16 &&
+            !memoryFull
+          ){
+            digitalStablesData.asyncdata=6;
+            dataManager.storeDSDData(digitalStablesData);
+            remoteMonitorTimer.reset();
+        }
+      }
+    
+    
+     // if(debug)Serial.print("External Voltage=");
+    //  if(debug)Serial.println(digitalStablesData.flowRate);
+      
     if (digitalStablesData.capacitorVoltage > minimumInitWifiVoltage && !wifistatus)
     {
       currentSecondsWithWifiVoltage++;
@@ -1985,6 +2174,8 @@ if(loraReceived){
         digitalWrite(LED_CONTROL, HIGH);
         digitalStablesData.ledBrightness=powerManager->isLoraTxSafe(9,currentTimerRecord);
         digitalStablesData.operatingStatus = OPERATING_STATUS_FULL_MODE;
+        digitalStablesData.asyncdata=7;
+        dataManager.storeDSDData(digitalStablesData);
         turnOffWifi= (hourlySolarPowerData.efficiency*100<digitalStablesData.minimumEfficiencyForWifi ) && wifistatus;
       }else{
         FastLED.clear(true);
@@ -1997,6 +2188,8 @@ if(loraReceived){
         digitalWrite(LED_CONTROL, LOW);
         digitalStablesData.operatingStatus = OPERATING_STATUS_NO_LED;
         turnOffWifi=true;
+        digitalStablesData.asyncdata=8;
+        dataManager.storeDSDData(digitalStablesData);
       }
     }else{
       digitalWrite(LED_CONTROL, HIGH);
@@ -2025,8 +2218,8 @@ if(loraReceived){
   if (usingSolarPower && digitalStablesData.capacitorVoltage > 1 && digitalStablesData.capacitorVoltage < sleepingVoltage) isSleepMode=true;
   if(isSleepMode){
     digitalStablesData.operatingStatus=OPERATING_STATUS_SLEEP;
-    Serial.print("going to sleep because digitalStablesData.capacitorVoltage is less than sleepingVoltage,, dscap=");
-    Serial.println(digitalStablesData.capacitorVoltage);
+    if(debug)Serial.print("going to sleep because digitalStablesData.capacitorVoltage is less than sleepingVoltage,, dscap=");
+    if(debug)Serial.println(digitalStablesData.capacitorVoltage);
     
     goToSleep();
   }
@@ -2275,6 +2468,32 @@ wifistatus = wifiManager.getWifiStatus();
             green = 0;
             blue = 255;
           }
+        }else if(digitalStablesData.currentFunctionValue==VOLTAGE_MONITOR){
+             int dsdStoredCount = dataManager.getDSDStoredCount();
+            if ( (dsdStoredCount*100/ MAXIMUM_STORED_RECORDS) <= 25)
+          {
+            red = 255;
+            green = 0;
+            blue = 0;
+          }
+          else if ((dsdStoredCount*100/ MAXIMUM_STORED_RECORDS) > 25 && (dsdStoredCount*100/ MAXIMUM_STORED_RECORDS) <= 50)
+          {
+            red = 255;
+            green = 255;
+            blue = 0;
+          }
+          else if ((dsdStoredCount*100/ MAXIMUM_STORED_RECORDS) > 50 && (dsdStoredCount*100/ MAXIMUM_STORED_RECORDS) <= 75)
+          {
+            red = 0;
+            green = 255;
+            blue = 0;
+          }
+          else if ((dsdStoredCount*100/ MAXIMUM_STORED_RECORDS) > 75)
+          {
+            red = 0;
+            green = 0;
+            blue = 255;
+          }
         }
         //            for (int i = 0; i < numLedsToLight; i++)
         //            {
@@ -2428,7 +2647,13 @@ wifistatus = wifiManager.getWifiStatus();
         if(debug)Serial.println(loraTxOk);
         if (loraActive && loraTxOk)
         {
-          
+
+          readSensorData();
+          digitalStablesData.asyncdata=9;
+          if(dataManager.getDSDStoredCount()<MAXIMUM_STORED_RECORDS){
+            dataManager.storeDSDData(digitalStablesData);
+          }
+    
           loraLastResult = sendMessage(digitalStablesData);
           lcd.setCursor(10, 0);
           lcd.print(displayStatus);
@@ -2445,8 +2670,12 @@ wifistatus = wifiManager.getWifiStatus();
       }else if (displayStatus == SHOW_ERROR_STATUS )
       {
         if(!foundADS){
-           if(debug)Serial.print("showing error with ADS");
-          drawError();
+           if(debug)Serial.println("showing error with ADS");
+          drawError(0);
+          showError=true;
+        }else if( memoryFull){
+           if(debug)Serial.println("memory full");
+          drawError(1);
           showError=true;
         }else{
           displayStatus++; // to make sure that this is not displayed
@@ -2456,7 +2685,7 @@ wifistatus = wifiManager.getWifiStatus();
       }
       displayStatus++;
       
-      if (displayStatus > 4){
+      if (displayStatus > 5){
         displayStatus = 0;
       }
      
@@ -2496,6 +2725,7 @@ wifistatus = wifiManager.getWifiStatus();
     }
     else if(command.startsWith("storeDSDData"))
     {
+      digitalStablesData.asyncdata=10;
         int count = dataManager.storeDSDData(digitalStablesData);
         Serial.println(count);
         Serial.println("Ok-storeDSDData");
@@ -2504,6 +2734,7 @@ wifistatus = wifiManager.getWifiStatus();
     else if (command.startsWith("SetFieldId"))
     {
       // fieldId= GeneralFunctions::getValue(command, '#', 1).toInt();
+      
     }else if (command.startsWith("clearAllDSDData"))
     {
       dataManager.clearAllDSDData();
@@ -2547,8 +2778,8 @@ wifistatus = wifiManager.getWifiStatus();
     }
     else if (command.startsWith("SetTime"))
     {
-      // SetTime#23#4#25#4#9#46#5
-      // SetTime#17#5#20#7#11#06#00
+      // SetTime#31#6#25#7#16#22#30
+      // SetTime#1#6#25#1#19#43#00
       timeManager.setTime(command);
       Serial.println("Ok-SetTime");
       Serial.flush(); // SetTime#24#1#25#6#17#21#20
@@ -2583,6 +2814,8 @@ wifistatus = wifiManager.getWifiStatus();
     {
 // SetDeviceSensorConfig#CreekTub #CREE #NoSensor#Temperature#AEST-10AEDT,M10.1.0,M4.1.0/3#-37.13305556#144.47472222#410#20#50#
 //SetDeviceSensorConfig#Sceptic #SCEP #NoSensor#Temperature#AEST-10AEDT,M10.1.0,M4.1.0/3#-37.13305556#144.47472222#410#40#50#
+  //SetDeviceSensorConfig#GH Compost#GHCO #Soil Moist#Soil Temp#AEST-10AEDT,M10.1.0,M4.1.0/3#-37.13305556#144.47472222#410#20#50#
+
       // SetDeviceSensorConfig#DaffOffice#OFDA#NoSensor#Temperature#AEST-10AEDT,M10.1.0,M4.1.0/3#-37.13305556#144.47472222#410#40#50#
       String devicename = generalFunctions.getValue(command, '#', 1);
       String deviceshortname = generalFunctions.getValue(command, '#', 2);
