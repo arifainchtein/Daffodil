@@ -1428,7 +1428,7 @@ if(debug)Serial.print("digitalStablesData.minimumEfficiencyForLed=");
 
  
   if(isSleepMode){
-    ;
+   goToSleep() ;
   }else{
     digitalStablesData.operatingStatus=OPERATING_STATUS_NO_LED;
     if (loraActive) {
