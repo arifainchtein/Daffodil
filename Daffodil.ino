@@ -120,7 +120,7 @@ CHT8305 CHT(0x40);
 bool loraTxOk=false;
 
 
-TaskHandle_t watchdogTask;
+//TaskHandle_t watchdogTask;
 //i2c addresses:
 // 40=DFRobot i2c temperature sensor
 // 48= ADS1115
@@ -139,7 +139,7 @@ DallasTemperature tempSensor(&oneWire);
 
 Timer viewTimer(5);
 Timer remoteMonitorTimer(5);
-#define MAXIMUM_STORED_RECORDS 5000
+#define MAXIMUM_STORED_RECORDS 2000
 
 bool showTime = false;
 
@@ -667,11 +667,18 @@ int sendMessage(const T& inputData)
       LoRa.beginPacket();
       // Send the provided data object
       LoRa.write((uint8_t *)&dataToSend, sizeof(T));
+      digitalStablesData.asyncdata = 12;
+      readSensorData();
+      if(dataManager.getDSDStoredCount()<MAXIMUM_STORED_RECORDS){
+         dataManager.storeDSDData(digitalStablesData);
+      }
+  
       if (!LoRa.endPacket(true)) {
         result = LORA_TX_FAILED;
       } else {
         result = LORA_OK;
       }
+     
       if(debug)Serial.print("took ");
       if(debug)Serial.print(millis() - startsendingtime);
       keepGoing = false;
@@ -741,7 +748,7 @@ void print_wakeup_reason() {
 //
 void setup()
 {
-  Serial.begin(115200);
+  if(debug)Serial.begin(115200);
   Wire.begin();
   Wire.setClock(400000);
 
@@ -750,10 +757,10 @@ void setup()
 
   
 if(!LittleFS.begin(false)) { 
-  Serial.println("LittleFS Mount Failed, formatting..."); 
+   if(debug)Serial.println("LittleFS Mount Failed, formatting..."); 
   LittleFS.format(); 
   if(!LittleFS.begin(false)) { 
-    Serial.println("LittleFS Mount Failed even after formatting"); 
+     if(debug)Serial.println("LittleFS Mount Failed even after formatting"); 
     return; 
   } 
  }
@@ -887,7 +894,7 @@ if(debug)Serial.print("digitalStablesData.minimumEfficiencyForLed=");
       if(debug)Serial.println(address);
       if (address == 3){
         foundlcd = true;
-      }else if (address == 64){ // 0x40
+      }else if (address == 68){//64){ // 0x40
         foundtemp = true;
          if(debug)Serial.println("foundtemp");
       }else if (address == 72){ // 0x48
@@ -1392,15 +1399,15 @@ if(debug)Serial.print("digitalStablesData.minimumEfficiencyForLed=");
   pinMode(TPL5010_WAKE, INPUT);
 
   attachInterrupt(digitalPinToInterrupt(TPL5010_WAKE), handleWakeInterrupt, RISING);
-  xTaskCreatePinnedToCore(
-      refreshTPL5010Task, /* Task function. */
-      "TPL5010Refresh",       /* name of task. */
-      2048,                /* Stack size of task */
-      NULL,                 /* parameter of the task */
-      1,                    /* priority of the task */
-      &refreshTaskHandle,        /* Task handle to keep track of created task */
-      0);
-  digitalWrite(WATCHDOG_WDI, LOW);
+//  xTaskCreatePinnedToCore(
+//      refreshTPL5010Task, /* Task function. */
+//      "TPL5010Refresh",       /* name of task. */
+//      2048,                /* Stack size of task */
+//      NULL,                 /* parameter of the task */
+//      1,                    /* priority of the task */
+//      &refreshTaskHandle,        /* Task handle to keep track of created task */
+//      0);
+ // digitalWrite(WATCHDOG_WDI, LOW);
 
   boolean isSleepMode=false;
   if(usingSolarPower && hourlySolarPowerData.efficiency*100<digitalStablesData.minimumEfficiencyForLed){
@@ -1464,7 +1471,7 @@ void goToSleep(){
     readSensorData();
     digitalStablesData.ledBrightness=powerManager->isLoraTxSafe(0,currentTimerRecord);
     digitalStablesData.operatingStatus=OPERATING_STATUS_SLEEP;
-  digitalStablesData.asyncdata=4;
+    digitalStablesData.asyncdata = 4;
 if(dataManager.getDSDStoredCount()<MAXIMUM_STORED_RECORDS){
     dataManager.storeDSDData(digitalStablesData);
   }
@@ -1479,47 +1486,44 @@ if(dataManager.getDSDStoredCount()<MAXIMUM_STORED_RECORDS){
       adc_power_acquire();  // Ensure ADC is powered (required for release)
   adc_power_release();  // Power down ADC
     digitalWrite(LED_CONTROL, LOW);
+    WiFi.softAPdisconnect(true);  
      WiFi.disconnect(true);
-  WiFi.mode(WIFI_OFF);
-  // Disable Bluetooth
-  btStop();
- // adc_power_off();
+    WiFi.mode(WIFI_OFF);
+      
+
+    while(WiFi.getMode() != WIFI_OFF || WiFi.status() == WL_CONNECTED) {
+       // Serial.print("Wi-Fi status: ");
+      //  Serial.println(WiFi.status());  // Print current Wi-Fi status
+        delay(500);  // Delay for a second before checking again
+    }
+
+
+    btStop(); 
+    esp_bt_controller_disable(); 
+    esp_wifi_stop();
       sleepDS18B20();
-    if(digitalStablesData.ledBrightness!=powerManager->LORA_TX_NOT_ALLOWED){
-       
+   // if(digitalStablesData.ledBrightness!=powerManager->LORA_TX_NOT_ALLOWED){
       digitalStablesData.asyncdata = 5;
       if(dataManager.getDSDStoredCount()<MAXIMUM_STORED_RECORDS){
         dataManager.storeDSDData(digitalStablesData);
       }
-
-      
       sendMessage(digitalStablesData);
-      delay(500);
-     // sendMessage(digitalStablesData);
-    }
+      
+  //  }
      LoRa.sleep();
+     delay(500);
     
-      pinMode(LORA_RESET, INPUT);
-   ;
-    
-//Serial.print("about to set runwadopg to false");
-//     runWatchdog=false;
-     
+     digitalWrite(LORA_RESET, LOW);  
+     delay(50);
+      pinMode(LORA_RESET, INPUT);   
      const int gpioOutputPins[] = {
-         4, 5, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 23, 25, 27, 32, 33
+        0,2, 4, 5, 12, 13, 14, 15,16, 17, 18, 19, 21, 22, 23, 25, 27, 32, 33
       };
      //const int numPins = sizeof(gpioOutputPins) / sizeof(gpioOutputPins[0]);
-     for(int i = 0; i < 17; i++) {
-      pinMode(gpioOutputPins[i], INPUT);
+     for(int i = 0; i < 19; i++) {
+      pinMode(gpioOutputPins[i], INPUT_PULLDOWN);
     }
- // disabling task
- 
-//  // Try explicitly stopping the watchdog task
-//   Serial.println(" about to disable task");
-//    if(watchdogTask != NULL) {
-//        vTaskDelete(watchdogTask);
-//        watchdogTask = NULL;
-//    }
+
     if(debug)Serial.println(" about to put ads1115 to sleep ");
     ADS.setMode(1);   
     
@@ -1533,7 +1537,8 @@ if(dataManager.getDSDStoredCount()<MAXIMUM_STORED_RECORDS){
    // esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_OFF);
  //   esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_SLOW_MEM, ESP_PD_OPTION_OFF);
   //  esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_FAST_MEM, ESP_PD_OPTION_OFF);
- //   esp_sleep_enable_timer_wakeup(sleep_time_us);
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+    esp_sleep_enable_timer_wakeup(sleep_time_us);
     digitalWrite(SLEEP_SWITCH_26, LOW);
     delay(100);
     pinMode(SLEEP_SWITCH_26, INPUT);
@@ -1561,23 +1566,23 @@ if(dataManager.getDSDStoredCount()<MAXIMUM_STORED_RECORDS){
 //    digitalWrite(WATCHDOG_WDI, LOW);  // Ensure WDI is low before ending task
 //     vTaskDelete(NULL);  // Delete this task
 // }
-
-   void refreshTPL5010Task(void *parameter) {
-  while (true) {
-    // Wait for the wake signal to be acknowledged by the main loop
-    if (!wakeSignalReceived) {
-      // Send a pulse on the DONE pin to tell TPL5010 we're alive
-      digitalWrite(TPL5010_DONE, HIGH);
-      delayMicroseconds(100); // Pulse width needs to be at least 20µs
-      digitalWrite(TPL5010_DONE, LOW);
-      
-     // if(debug)Serial.println("Sent DONE signal to TPL5010");
-    }
-    
-    // Wait before checking again
-    vTaskDelay(pdMS_TO_TICKS(1500)); // Check every 1500ms
-  }
-} 
+//
+//   void refreshTPL5010Task(void *parameter) {
+//  while (true) {
+//    // Wait for the wake signal to be acknowledged by the main loop
+//    if (!wakeSignalReceived) {
+//      // Send a pulse on the DONE pin to tell TPL5010 we're alive
+//      digitalWrite(TPL5010_DONE, HIGH);
+//      delayMicroseconds(100); // Pulse width needs to be at least 20µs
+//      digitalWrite(TPL5010_DONE, LOW);
+//      
+//     // if(debug)Serial.println("Sent DONE signal to TPL5010");
+//    }
+//    
+//    // Wait before checking again
+//    vTaskDelay(pdMS_TO_TICKS(1500)); // Check every 1500ms
+//  }
+//} 
 void handleWakeInterrupt() {
   wakeSignalReceived = true;
 } 
@@ -2076,7 +2081,13 @@ void loop()
     clockTicked = false;
     portEXIT_CRITICAL(&mux);
     currentTimerRecord = timeManager.now();
-    
+
+   if(wakeSignalReceived){
+      wakeSignalReceived=false;
+     digitalWrite(TPL5010_DONE, HIGH);
+      delayMicroseconds(100); // Pulse width needs to be at least 20µs
+      digitalWrite(TPL5010_DONE, LOW);
+}
     //
     // generate codes so that the history is refresed
     //
@@ -2174,8 +2185,10 @@ if(loraReceived){
         digitalWrite(LED_CONTROL, HIGH);
         digitalStablesData.ledBrightness=powerManager->isLoraTxSafe(9,currentTimerRecord);
         digitalStablesData.operatingStatus = OPERATING_STATUS_FULL_MODE;
-        digitalStablesData.asyncdata=7;
-        dataManager.storeDSDData(digitalStablesData);
+//        digitalStablesData.asyncdata=7;
+//         if(dataManager.getDSDStoredCount()<MAXIMUM_STORED_RECORDS){
+//            dataManager.storeDSDData(digitalStablesData);
+//         }
         turnOffWifi= (hourlySolarPowerData.efficiency*100<digitalStablesData.minimumEfficiencyForWifi ) && wifistatus;
       }else{
         FastLED.clear(true);
@@ -2188,8 +2201,10 @@ if(loraReceived){
         digitalWrite(LED_CONTROL, LOW);
         digitalStablesData.operatingStatus = OPERATING_STATUS_NO_LED;
         turnOffWifi=true;
-        digitalStablesData.asyncdata=8;
-        dataManager.storeDSDData(digitalStablesData);
+//         if(dataManager.getDSDStoredCount()<MAXIMUM_STORED_RECORDS){
+//            digitalStablesData.asyncdata=8;
+//         }
+//        dataManager.storeDSDData(digitalStablesData);
       }
     }else{
       digitalWrite(LED_CONTROL, HIGH);
@@ -2220,6 +2235,10 @@ if(loraReceived){
     digitalStablesData.operatingStatus=OPERATING_STATUS_SLEEP;
     if(debug)Serial.print("going to sleep because digitalStablesData.capacitorVoltage is less than sleepingVoltage,, dscap=");
     if(debug)Serial.println(digitalStablesData.capacitorVoltage);
+     if(dataManager.getDSDStoredCount()<MAXIMUM_STORED_RECORDS){
+      digitalStablesData.asyncdata=7;
+      dataManager.storeDSDData(digitalStablesData);
+      }
     
     goToSleep();
   }
