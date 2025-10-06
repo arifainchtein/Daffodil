@@ -1529,8 +1529,8 @@ if(dataManager.getDSDStoredCount()<MAXIMUM_STORED_RECORDS){
     if(debug)Serial.print("  digitalStablesData.sleepTime=");
     if(debug)Serial.println(digitalStablesData.sleepTime);
     //  adc_power_off();
-      adc_power_acquire();  // Ensure ADC is powered (required for release)
-  adc_power_release();  // Power down ADC
+   //   adc_power_acquire();  // Ensure ADC is powered (required for release)
+//adc_power_release();  // Power down ADC
     digitalWrite(LED_CONTROL, LOW);
     WiFi.softAPdisconnect(true);  
      WiFi.disconnect(true);
