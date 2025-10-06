@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html data-bs-theme="light" lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, shrink-to-fit=no">
+    <title>daffodil</title>
+    <link rel="stylesheet" href="assets/bootstrap/css/bootstrap.min.css">
+    <link rel="stylesheet" href="assets/css/Roboto.css">
+    <link rel="stylesheet" href="assets/fonts/fontawesome-all.min.css">
+    <link rel="stylesheet" href="assets/css/slideswitch.css">
+    <link rel="stylesheet" href="assets/css/styles.css">
+</head>
+
+<body style="margin:auto">
+    <div class="container text-center container-fluid" style="margin-top:20px">
+        <div class="row">
+            <div class="col-sm-12 col-med-3 col-lg-3 row"><img class="col-3" src="assets/img/Daffodil.svg">
+                <div class="col-7" stylw="margin-top:80px;">
+                    <h5 id="host-name" class="show-raw-data" style="font-size:24px;margin-top:20px"></h5>
+                    <h6 id="time" style="font-size:16px"></h6>
+                </div><a id="system-info-icon" class="col-1" href="#"><i class="fas fa-cog text-primary col-3" style="font-size: 24px;margin-left: 5px;padding-top: 20px;" onclick=""></i></a>
+            </div>
+        </div>
+        <hr>
+        <div class="row" style="margin-left:5px;margin-right:5px">
+            <div id="system-info" class="col-sm-12 col-md-3 col-lg-3 card display-module d-none" style="margin-bottom:10px;">
+                <div class="row card-body" style="padding:10px;">
+                    <h6 id="title" class="col-6" style="font-size: 24px;width:100%">System Info</h6>
+                    <h6 style="font-size: 16px;width:30%;text-align:left;d-none">Serial #</h6>
+                    <h6 id="serial-number" style="font-size: 16px;width:70%;"></h6>
+                    <h6 style="font-size: 16px;width:70%;text-align:left;">Board Temperature:</h6>
+                    <h6 id="temperature" style="font-size: 16px;width:30%;text-align:right;"></h6>
+                    <h6 style="font-size: 16px;width:48%;text-align:left;">RTC Battery Vol</h6>
+                    <h6 id="rtc-bat-volt" style="font-size: 16px;width:37%;"></h6><i class="fas fa-battery-full" id="rtc-battery-icon" style="font-size: 16px;width:15%;text-align:right;"></i>
+                    <h6 style="font-size: 16px;width:60%;text-align:left;">Internet Ping Time</h6>
+                    <h6 id="internet-ping-time" style="font-size: 16px;width:40%;text-align:right;"></h6>
+                    <hr>
+                    <div id="time-config" class="d-inline-flex" style="margin-top:5px;margin-bottom:10px">
+                        <h6 style="font-size: 16px;width:35%;text-align:center;margin-top:15px;">Set Time:</h6>
+                        <div class="btn-group" role="group" style="font-size: 16px;width:40%;text-align:left;"><button class="btn btn-primary btn-sm" id="manual-time-button" type="button" style="margin:10px;">Manually</button><button class="btn btn-primary btn-sm" id="internet-time-configure-button" type="button" style="margin:10px;">Internet</button></div>
+                    </div>
+                    <hr>
+                    <div id="coordinates" style="margin-top:5px;">
+                        <h5>GPS</h5>
+                        <div class="input-group"><span class="input-group-text">Latitude</span><input class="form-control" type="text" id="latitude"></div>
+                        <div class="input-group" style="margin-top:10px;margin-bottom:10px"><span class="input-group-text">Longitude</span><input class="form-control" type="text" id="longitude"></div><button class="btn btn-success" id="save-gps-button" type="button">Save GPS</button>
+                    </div>
+                </div>
+                <div class="card-footer" style="margin-top:20px;">
+                    <div class="btn-group" role="group"><button class="btn btn-success" id="system-info-cancel" type="button" style="margin-right:20px">Close</button></div>
+                </div>
+            </div>
+            <div id="wifi-info" class="col-sm-12 col-md-3 col-lg-3 card display-module" style="margin-bottom:10px;">
+                <div class="card-header d-inline-flex" style="padding:5px;"><span id="lora-logo" style="font-size:14px;margin:5px;padding-right:1px;">LoRa</span><span id="ds-upload" style="font-size:14px;margin:5px;padding-right:15px;">DS</span><span id="ssid-name" style="margin:5px;font-size:14px;padding-right:20px"></span><i class="fas fa-wifi text-primary" id="wifi-config-icon" style="font-size: 24px;margin-left:5px;padding-left:20px"></i></div>
+                <div class="card-body d-none"></div>
+            </div>
+            <div id="wifi-configure" class="card display-module col-sm-12 col-md-3 col-lg-3 d-none" style="margin-bottom:20px;">
+                <div class="d-inline-flex card-header" style="margin-bottom:20px;">
+                    <h4 style="margin:auto;">Wifi&nbsp; Config</h4>
+                </div>
+                <div class="card-body">
+                    <div class="input-group" style="margin-bottom:10px;"><label class="form-label" style="margin-top:1px;margin-right:5px;">Access Point</label><label class="form-label switch" style="margin-top:-15px;"><input type="checkbox" id="wifi-switch" style="margin-top:-15px;"><span class="slider round">&nbsp;&nbsp;</span></label><label class="form-label" style="margin-top:1px;margin-left:5px;">SSID</label></div>
+                    <div class="input-group station-mode d-inline-flex" id="ssid-grp"><span class="input-group-text">SSID</span><select class="form-select" id="ssid"></select></div>
+                    <div class="input-group station-mode d-inline-flex" id="pass-grp" style="margin-top:20px"><span class="input-group-text">Password</span><input class="form-control" type="password" id="wifi-password"></div>
+                    <div class="input-group station-mode d-inline-flex" id="host-grp" style="margin-top:20px;"><span class="input-group-text">Host Name</span><input class="form-control" type="text" id="hostname"></div>
+                    <div class="input-group ap-mode d-inline-flex" id="ap-grp"><span class="input-group-text">AP SSID</span><input class="form-control" type="text" id="ap-address"></div>
+                    <div class="input-group ap-mode d-inline-flex" id="ap-pass-grp" style="margin-top:20px"><span class="input-group-text">Password</span><input class="form-control" type="password" id="ap-password"></div>
+                    <div class="input-group ap-mode d-inline-flex" id="ap-host-grp" style="margin-top:20px;"><span class="input-group-text">Host Name</span><input class="form-control" type="text" id="ap-hostname"></div>
+                </div>
+                <div class="card-footer">
+                    <div class="btn-group" role="group"><button class="btn btn-danger btn-sm" id="wifi-configure-cancel" type="button" style="margin-right:20px">Cancel</button><button class="btn btn-success btn-sm" id="wifi-configure-submit" type="button">Save</button></div>
+                </div>
+            </div>
+            <div id="daffodil-sceptic" class="card display-module col-sm-12 col-md-3 col-lg-3 d-none" style="margin-bottom:20px;">
+                <div class="d-inline-flex card-header">
+                    <h4 id="daffodil-sceptic-name" class="col-sm-6" style="margin-left:60px;">Sceptic Free</h4><i class="fas fa-cog" id="daffodil-sceptic-config-icon" style="font-size: 24px;margin-left:40px;"></i>
+                </div>
+                <h1 id="daffodil-sceptic-value" style="font-size:80px;">8.52</h1>
+                <h5 id="daffodil-sceptic-units" class="card-footer">%</h5>
+            </div>
+            <div id="daffodil-temp" class="card display-module col-sm-12 col-md-3 col-lg-3 d-none" style="margin-bottom:20px;">
+                <div class="d-inline-flex card-header">
+                    <h4 id="daffodil-temp-name" class="col-sm-6" style="margin-left:60px;">Temperature</h4><i class="fas fa-cog" id="daffodil-temp-config-icon" style="font-size: 24px;margin-left:40px;"></i>
+                </div>
+                <h1 id="daffodil-temp-value" style="font-size:80px;">8.52</h1>
+                <h5 id="dafodil-temp-units" class="card-footer">&amp;deg;C</h5>
+            </div>
+            <div id="daffodil-humidity" class="card display-module col-sm-12 col-md-3 col-lg-3 d-none" style="margin-bottom:20px;">
+                <div class="d-inline-flex card-header">
+                    <h4 id="daffodil-humidity-name" class="col-sm-6" style="margin-left:60px;">Humidity</h4><i class="fas fa-cog" id="daffodil-humidity-config-icon" style="font-size: 24px;margin-left:40px;"></i>
+                </div>
+                <h1 id="daffodil-humidity-value" style="font-size:80px;">8.52</h1>
+                <h5 id="dafodil-humidity-units" class="card-footer">%</h5>
+            </div>
+            <div id="daffodil-capacitor" class="card display-module col-sm-12 col-md-3 col-lg-3 d-none" style="margin-bottom:20px;">
+                <div class="d-inline-flex card-header">
+                    <h4 id="daffodil-capacitor-name" class="col-sm-6" style="margin-left:60px;">Capacitor Voltage</h4><i class="fas fa-cog" id="daffodil-capacitor-config-icon" style="font-size: 24px;margin-left:40px;"></i>
+                </div>
+                <h1 id="daffodil-capacitor-value" style="font-size:80px;">8.52</h1>
+                <h5 id="dafodil-capacitor-units" class="card-footer">Volts</h5>
+            </div>
+            <div id="flow-sensor-1" class="card display-module col-sm-12 col-md-3 col-lg-3 d-none" style="margin-bottom:20px;">
+                <div class="d-inline-flex card-header">
+                    <h4 id="flow-sensor-1-name" class="col-sm-6" style="margin-left:60px;">Flow Sensor 1</h4><i class="fas fa-cog" id="flow-sensor-1-config-icon" style="font-size: 24px;margin-left:40px;"></i>
+                </div>
+                <h1 id="flow-sensor-1-value" style="font-size:80px;">8.52</h1>
+                <h5 id="flow-sensor-1-units" class="card-footer">liters/min</h5>
+            </div>
+            <div id="flow-sensor-1-total" class="card display-module col-sm-12 col-md-3 col-lg-3 d-none" style="margin-bottom:20px;">
+                <div class="d-inline-flex card-header">
+                    <h4 id="flow-sensor-1-total-heading" style="margin-left:10px">Sensor 1 Volume</h4>
+                </div>
+                <h1 id="flow-sensor-1-total-value" style="font-size:80px;">2545</h1>
+                <h5 id="flow-sensor-1-total-units" class="card-footer">liters</h5>
+            </div>
+            <div id="flow-sensor-2" class="card display-module col-sm-12 col-md-3 col-lg-3 d-none" style="margin-bottom:20px;">
+                <div class="d-inline-flex card-header">
+                    <h4 id="flow-sensor-2-name" style="margin-left:10px">Flow Sensor 2</h4><i class="fas fa-cog" id="flow-sensor-2-config-icon" style="font-size:24px;margin-left:50px"></i>
+                </div>
+                <h1 id="flow-sensor-2-value" style="font-size:80px;">8.52</h1>
+                <h5 id="flow-sensor-2-units" class="card-footer">liters/min</h5>
+            </div>
+            <div id="flow-sensor-2-total" class="card display-module col-sm-12 col-md-3 col-lg-3 d-none" style="margin-bottom:20px;">
+                <div class="d-inline-flex card-header">
+                    <h4 id="flow-sensor-2-total-heading" style="margin-left:10px">Sensor 2 Volume</h4>
+                </div>
+                <h1 id="flow-sensor-2-total-value" style="font-size:80px;">2545</h1>
+                <h5 id="flow-sensor-2-total-units" class="card-footer">liters</h5>
+            </div>
+            <div id="tank-sensor-1" class="card display-module col-sm-12 col-md-3 col-lg-3 d-none" style="margin-bottom:20px;">
+                <div class="d-inline-flex card-header">
+                    <h4 id="tank-sensor-1-name" style="margin-left:10px">&nbsp; &nbsp; &nbsp; Tank 1</h4><i class="fas fa-cog" id="tank-sensor-1-config-icon" style="font-size:24px;margin-left:90px"></i>
+                </div>
+                <h1 id="tank-sensor-1-value" style="font-size:80px;">3422</h1>
+                <h5 id="tank-sensor-1-units" class="card-footer">liters</h5>
+            </div>
+            <div id="tank-sensor-2" class="card display-module col-sm-12 col-md-3 col-lg-3 d-none" style="margin-bottom:20px;">
+                <div class="d-inline-flex card-header">
+                    <h4 id="tank-sensor-2-name" style="margin-left:10px">&nbsp; &nbsp; &nbsp; Tank 2</h4><i class="fas fa-cog" id="tank-sensor-2-config-icon" style="font-size:24px;margin-left:90px"></i>
+                </div>
+                <h1 id="tank-sensor-2-value" style="font-size:80px;">1500</h1>
+                <h5 id="tank-sensor-2-units" class="card-footer">liters</h5>
+            </div>
+            <div id="flow-sensor-1-configure" class="card display-module d-none" style="width: 18rem;margin-bottom:30px;">
+                <div class="d-inline-flex card-header">
+                    <h4 style="margin-left:10px">Flow Sensor 1</h4>
+                </div>
+                <div class="card-body">
+                    <div class="input-group"><span class="input-group-text" id="flow-sensor-1-name-config">Name</span><input class="form-control" type="text" id="flow-sensor-1-input-name"></div>
+                    <div class="input-group d-none" style="margin-top:20px;"><span class="input-group-text">Pipe Diameter</span><select class="form-select" id="flow-sensor-1-diameter">
+                            <option value=".82" selected="">15mm</option>
+                            <option value=".82">20mm</option>
+                            <option value=".82">25mm</option>
+                            <option value=".82">32mm</option>
+                            <option value=".82">40mm</option>
+                            <option value="0.175">50mm</option>
+                        </select></div>
+                    <div class="input-group" style="margin-top:20px;"><span class="input-group-text">qFactor</span><input class="form-control" type="number" id="flow-sensor-1-qfactor-input"></div>
+                </div>
+                <div class="card-footer">
+                    <div class="btn-group" role="group"><button class="btn btn-danger btn-sm" id="flow-sensor-1-configure-cancel" type="button" style="margin-right:20px">Cancel</button><button class="btn btn-success btn-sm" id="flow-sensor-1-configure-submit" type="button">Save</button></div>
+                </div>
+            </div>
+            <div id="flow-sensor-2-configure" class="card display-module d-none" style="width: 18rem;margin-bottom:30px;">
+                <div class="d-inline-flex card-header">
+                    <h4 id="flow-sensor-2-name" style="margin-left:10px">Flow Sensor 2</h4>
+                </div>
+                <div class="card-body">
+                    <div class="input-group"><span class="input-group-text" id="flow-sensor-2-name-config">Name</span><input class="form-control" type="text" id="flow-sensor-2-input-name"></div>
+                    <div class="input-group d-none" style="margin-top:20px;"><span class="input-group-text">Pipe Diameter</span><select class="form-select" id="flow-sensor-2-diameter">
+                            <option value=".82" selected="">15mm</option>
+                            <option value=".82">20mm</option>
+                            <option value=".82">25mm</option>
+                            <option value=".82">32mm</option>
+                            <option value=".82">40mm</option>
+                            <option value=".175">50mm</option>
+                        </select></div>
+                    <div class="input-group" style="margin-top:20px;"><span class="input-group-text">qFactor</span><input class="form-control" type="number" id="flow-sensor-2-qfactor-input"></div>
+                </div>
+                <div class="card-footer">
+                    <div class="btn-group" role="group"><button class="btn btn-danger btn-sm" id="flow-sensor-2-configure-cancel" type="button" style="margin-right:20px">Cancel</button><button class="btn btn-success btn-sm" id="flow-sensor-2-configure-submit" type="button">Save</button></div>
+                </div>
+            </div>
+            <div id="tank-sensor-1-configure" class="card display-module d-none" style="width: 18rem;margin-bottom:30px;">
+                <div class="d-inline-flex card-header">
+                    <h4 id="tank-sensor-1-config-heading" style="margin-left:10px">Tank 1 Sensor&nbsp; Config</h4>
+                </div>
+                <div class="card-body">
+                    <div class="input-group"><span class="input-group-text" id="tank-sensor-1-name-config">Name</span><input class="form-control" type="text" id="tank-sensor-1-name-input"></div>
+                    <div class="input-group" style="margin-top:20px"><span class="input-group-text">Height (m)</span><input class="form-control" type="number" id="tank-sensor-1-height-input"></div>
+                    <div class="input-group" style="margin-top:20px"><span class="input-group-text">Volume (l)</span><input class="form-control" type="number" id="tank-sensor-1-volume-input"></div>
+                </div>
+                <div class="card-footer">
+                    <div class="btn-group" role="group"><button class="btn btn-danger btn-sm" id="tank-sensor-1-configure-cancel" type="button" style="margin-right:20px">Cancel</button><button class="btn btn-success btn-sm" id="tank-sensor-1-configure-submit" type="button">Save</button></div>
+                </div>
+            </div>
+            <div id="tank-sensor-2-configure" class="card display-module d-none" style="width: 18rem;margin-bottom:30px;">
+                <div class="d-inline-flex card-header">
+                    <h4 id="tank-sensor-2-config-heading" style="margin-left:10px">Tank 2 Sensor&nbsp; Config</h4>
+                </div>
+                <div class="card-body">
+                    <div class="input-group"><span class="input-group-text" id="tank-sensor-2-name-config">Name</span><input class="form-control" type="text" id="tank-sensor-2-name-input"></div>
+                    <div class="input-group" style="margin-top:20px"><span class="input-group-text">Height (m)</span><input class="form-control" type="number" id="tank-sensor-2-height-input"></div>
+                    <div class="input-group" style="margin-top:20px"><span class="input-group-text">Volume (l)</span><input class="form-control" type="number" id="tank-sensor-2-volume-input"></div>
+                </div>
+                <div class="card-footer">
+                    <div class="btn-group" role="group"><button class="btn btn-danger btn-sm" id="tank-sensor-2-configure-cancel" type="button" style="margin-right:20px">Cancel</button><button class="btn btn-success btn-sm" id="tank-sensor-2-configure-submit" type="button">Save</button></div>
+                </div>
+            </div>
+        </div>
+        <div class="modal fade" role="dialog" tabindex="-1" id="manual-time-modal">
+            <div class="modal-dialog" role="document">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h4 class="modal-title">Configure Time Title</h4><button class="btn-close" type="button" aria-label="Close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <p>The content of your modal.</p><input id="date-input" type="datetime-local" style="margin-right:10px;">
+                    </div>
+                    <div class="modal-footer"><button class="btn btn-light" type="button" data-bs-dismiss="modal">Close</button><button class="btn btn-primary" id="manual-time-submit" type="button">Save</button></div>
+                </div>
+            </div>
+        </div>
+        <div class="modal fade" role="dialog" tabindex="-1" id="show-raw-data-modal">
+            <div class="modal-dialog" role="document">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h4 class="modal-title" id="raw-data-title"></h4><button class="btn-close" type="button" aria-label="Close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div>
+                            <ul class="nav nav-tabs" role="tablist">
+                                <li class="nav-item" role="presentation"><a class="nav-link active" role="tab" data-bs-toggle="tab" href="#raw-data-panel">Data</a></li>
+                                <li class="nav-item" role="presentation"><a class="nav-link" role="tab" data-bs-toggle="tab" href="#raw-data-json-panel">JSON</a></li>
+                            </ul>
+                            <div class="tab-content">
+                                <div class="tab-pane active" role="tabpanel" id="raw-data-panel">
+                                    <div id="raw-data-table"></div>
+                                </div>
+                                <div class="tab-pane" role="tabpanel" id="raw-data-json-panel">
+                                    <div id="raw-data-json"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="modal-footer"><button class="btn btn-light" type="button" data-bs-dismiss="modal">Close</button></div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <script src="assets/js/jquery.min.js"></script>
+    <script src="assets/bootstrap/js/bootstrap.min.js"></script>
+    <script src="js/index.js"></script>
+    <script src="assets/js/TankAndFlowConstants.js"></script>
+</body>
+
+</html>
