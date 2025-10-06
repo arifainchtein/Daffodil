@@ -23,7 +23,7 @@
 #include <BH1750.h>
 #include <DigitalStablesDataSerializer.h>
 #include "ADS1X15.h"
-#include "CHT8305.h"
+#include "SHTSensor.h"
 #include "rgb_lcd.h"
 #include <ErrorManager.h>
 #include <ErrorDefinitions.h>
@@ -74,8 +74,8 @@ String currentSSID;
 String ipAddress = "";
 boolean initiatedWifi = false;
 // #define address 0x40
-
-bool debug=false;
+SHTSensor sht;
+bool debug=true;
 DataManager dataManager(Serial, LittleFS);
 
 HourlySolarPowerData hourlySolarPowerData;
@@ -116,7 +116,7 @@ NewPing sonar(TRIGGER_PIN, ECHO_PIN, MAX_DISTANCE); // NewPing setup of pins and
 //define LORA_SAMPLES 3 // Number of samples to take
 //define CHECK_LORA_DELAY 2 // Delay between samples in ms
 
-CHT8305 CHT(0x40);
+//CHT8305 CHT(0x44);
 bool loraTxOk=false;
 
 
@@ -755,6 +755,8 @@ void setup()
   pinMode(SLEEP_SWITCH_26, OUTPUT);
   digitalWrite(SLEEP_SWITCH_26, HIGH);
 
+// Try to mount LittleFS if (!LittleFS.begin()) { Serial.println("LittleFS mount failed! Formatting..."); if (LittleFS.format()) { Serial.println("LittleFS formatted successfully."); if (LittleFS.begin()) { Serial.println("LittleFS mounted successfully after formatting."); } else { Serial.println("Failed to mount LittleFS after formatting."); } } else { Serial.println("Failed to format LittleFS."); } } else { Serial.println("LittleFS mounted successfully."); } }
+
   
 if(!LittleFS.begin(false)) { 
    if(debug)Serial.println("LittleFS Mount Failed, formatting..."); 
@@ -762,9 +764,36 @@ if(!LittleFS.begin(false)) {
   if(!LittleFS.begin(false)) { 
      if(debug)Serial.println("LittleFS Mount Failed even after formatting"); 
     return; 
-  } 
+  } else{
+     if(debug)Serial.println("After formating, LittleFS is good"); 
+  }
+ }else{
+   if(debug)Serial.println("LittleFS is good, no need to format"); 
  }
 
+ // List all files
+  File root = LittleFS.open("/");
+  File file = root.openNextFile();
+  Serial.println("Files in LittleFS:");
+  while(file){
+    Serial.print("  FILE: ");
+    Serial.print(file.name());
+    Serial.print("  SIZE: ");
+    Serial.println(file.size());
+       file = root.openNextFile();
+  }
+
+ // Check if index.html exists specifically
+  if(LittleFS.exists("/index.html")){
+    Serial.println("/index.html exists!");
+    File f = LittleFS.open("/index.html", "r");
+    Serial.print("File size: ");
+    Serial.println(f.size());
+    f.close();
+  } else {
+    Serial.println("/index.html NOT FOUND!");
+  }
+  
 print_wakeup_reason();
 dataManager.start();
 
@@ -944,7 +973,13 @@ if(debug)Serial.print("digitalStablesData.minimumEfficiencyForLed=");
   //  lcd.backlight();
   //  lcd.clear();
      lcd.setCursor(0, 0);
-  CHT.begin();
+  //CHT.begin();
+   if (sht.init()) {
+      Serial.print("sht init(): success\n");
+  } else {
+      Serial.print("sht init(): failed\n");
+  }
+   sht.setAccuracy(SHTSensor::SHT_ACCURACY_MEDIUM); // only supported by SHT3x
   ADS.begin();
   if (!ADS.begin())
   {
@@ -1012,11 +1047,22 @@ if(debug)Serial.print("digitalStablesData.minimumEfficiencyForLed=");
   
   
 
+ if (sht.readSample()) {
+      if(debug)Serial.print("SHT:");
+     if(debug) Serial.print("  RH: ");
+     if(debug) Serial.print(sht.getHumidity(), 2);
+     if(debug) Serial.print("   ");
+      if(debug)Serial.print("  T:  ");
+     if(debug) Serial.print(sht.getTemperature(), 2);
+     if(debug) Serial.print("\n");
+  } else {
+     if(debug) Serial.print("Error in readSample()\n");
+  }
+  
 
-
-  if(debug)Serial.println(CHT.getManufacturer(), HEX);
-  if(debug)Serial.println(CHT.getVersionID(), HEX);
-  if(debug)Serial.println(CHT.getVoltage());
+//  if(debug)Serial.println(CHT.getManufacturer(), HEX);
+//  if(debug)Serial.println(CHT.getVersionID(), HEX);
+//  if(debug)Serial.println(CHT.getVoltage());
 
   ADS.setGain(0);
   //
@@ -1391,7 +1437,7 @@ if(debug)Serial.print("digitalStablesData.minimumEfficiencyForLed=");
   viewTimer.start();
   remoteMonitorTimer.start();
   
-  LoRa.setSyncWord(0xF3);
+//  LoRa.setSyncWord(0xF3);
   //pinMode(WATCHDOG_WDI, OUTPUT);
  // Configure TPL5010 pins
   pinMode(TPL5010_DONE, OUTPUT);
@@ -1502,27 +1548,48 @@ if(dataManager.getDSDStoredCount()<MAXIMUM_STORED_RECORDS){
     esp_bt_controller_disable(); 
     esp_wifi_stop();
       sleepDS18B20();
-   // if(digitalStablesData.ledBrightness!=powerManager->LORA_TX_NOT_ALLOWED){
+    if(digitalStablesData.ledBrightness!=powerManager->LORA_TX_NOT_ALLOWED){
       digitalStablesData.asyncdata = 5;
       if(dataManager.getDSDStoredCount()<MAXIMUM_STORED_RECORDS){
         dataManager.storeDSDData(digitalStablesData);
       }
       sendMessage(digitalStablesData);
       
-  //  }
+    }
      LoRa.sleep();
      delay(500);
     
      digitalWrite(LORA_RESET, LOW);  
      delay(50);
       pinMode(LORA_RESET, INPUT);   
-     const int gpioOutputPins[] = {
-        0,2, 4, 5, 12, 13, 14, 15,16, 17, 18, 19, 21, 22, 23, 25, 27, 32, 33
-      };
-     //const int numPins = sizeof(gpioOutputPins) / sizeof(gpioOutputPins[0]);
-     for(int i = 0; i < 19; i++) {
-      pinMode(gpioOutputPins[i], INPUT_PULLDOWN);
-    }
+//     const int gpioOutputPins[] = {
+//        0,2, 4, 5, 12, 13, 14, 15,16, 17, 18, 19, 21, 22, 23, 25, 27, 32, 33
+//      };
+//     //const int numPins = sizeof(gpioOutputPins) / sizeof(gpioOutputPins[0]);
+//     for(int i = 0; i < 19; i++) {
+//      pinMode(gpioOutputPins[i], INPUT_PULLDOWN);
+//     
+//    }
+
+
+      gpio_reset_pin(GPIO_NUM_0);
+      gpio_reset_pin(GPIO_NUM_2);
+      gpio_reset_pin(GPIO_NUM_4);
+      gpio_reset_pin(GPIO_NUM_12);
+      gpio_reset_pin(GPIO_NUM_13);
+      gpio_reset_pin(GPIO_NUM_14);
+      gpio_reset_pin(GPIO_NUM_15);
+      gpio_reset_pin(GPIO_NUM_25);
+      gpio_reset_pin(GPIO_NUM_26);
+      gpio_reset_pin(GPIO_NUM_27);
+      gpio_reset_pin(GPIO_NUM_32);
+      gpio_reset_pin(GPIO_NUM_33);
+      gpio_reset_pin(GPIO_NUM_34);
+      gpio_reset_pin(GPIO_NUM_35);
+      gpio_reset_pin(GPIO_NUM_36);
+      gpio_reset_pin(GPIO_NUM_37);
+      gpio_reset_pin(GPIO_NUM_38);
+      gpio_reset_pin(GPIO_NUM_39);
 
     if(debug)Serial.println(" about to put ads1115 to sleep ");
     ADS.setMode(1);   
@@ -1820,7 +1887,7 @@ void restartWifi()
  // Serial.println("in ino Done starting wifi");
 }
 
-void drawError(uint8_t code)
+void drawError(uint8_t code, uint8_t color)
 {
   for (int i = 0; i < NUM_LEDS; i++)
   {
@@ -1828,7 +1895,8 @@ void drawError(uint8_t code)
   }
   FastLED.show();
 
-    leds[0] = CRGB(255,0, 0);
+     if(color==0){
+       leds[0] = CRGB(255,0, 0);
     leds[1] = CRGB(255,0, 0);
     leds[2] = CRGB(255,0, 0);
     leds[5] = CRGB(255, 0, 0);
@@ -1836,6 +1904,26 @@ void drawError(uint8_t code)
     leds[10] = CRGB(255, 0, 0);
     leds[11] = CRGB(255, 0, 0);
     leds[12] = CRGB(255, 0, 0);
+     }else if(color==1){
+       leds[0] = CRGB(255,255, 0);
+      leds[1] = CRGB(255,255, 0);
+      leds[2] = CRGB(255,255, 0);
+      leds[5] = CRGB(255, 255, 0);
+      leds[6] = CRGB(255, 255, 0);
+      leds[10] = CRGB(255, 255, 0);
+      leds[11] = CRGB(255, 255, 0);
+      leds[12] = CRGB(255, 255, 0);
+     }else{
+      leds[0] = CRGB(0,0,255);
+      leds[1] = CRGB(0,0,255);
+      leds[2] = CRGB(0,0,255);
+      leds[5] = CRGB(0,0,255);
+      leds[6] = CRGB(0,0,255);
+      leds[10] = CRGB(0,0,255);
+      leds[11] = CRGB(0,0,255);
+      leds[12] = CRGB(0,0,255);
+     }
+   
 
     // for the error is 4, 9, 13
     switch(code){
@@ -1846,7 +1934,7 @@ void drawError(uint8_t code)
         leds[9] = CRGB(0, 0, 255);
         break;
       case 2:
-        leds[13] = CRGB(0, 0, 255);
+        leds[14] = CRGB(0, 0, 255);
         break;
       
     }
@@ -2027,45 +2115,63 @@ void readI2CTemp()
   float temperature = 0;
 
   //  READ DATA
-  uint32_t start = micros();
-  int status = CHT.read();
-  uint32_t stop = micros();
+ // uint32_t start = micros();
+//  int status = CHT.read();
+//  uint32_t stop = micros();
+//
+////  Serial.print("CHT8305\t");
+////  //  DISPLAY DATA, sensor has only one decimal.
+////-  Serial.print(F("  Humidity"));
+//Serial.println(CHT.getLastError());
+//Serial.println(CHT.getManufacturer(), HEX);
+//  Serial.println(CHT.getVersionID(), HEX);
+//  Serial.println(CHT.getVoltage());
 
-//  Serial.print("CHT8305\t");
-//  //  DISPLAY DATA, sensor has only one decimal.
-//  Serial.print(F("  Humidity"));
-
-  temperature = CHT.getTemperature();
-
-  digitalStablesData.outdoortemperature = temperature;
-//  Serial.print(" Temp:");
-//  Serial.print(temperature, 1);
-  digitalStablesData.outdoorhumidity = CHT.getHumidity();
-//  Serial.print(" Hum:");
-//  Serial.println(digitalStablesData.outdoorhumidity, 1);
-
-  switch (status)
-  {
-  case CHT8305_OK:
-   // Serial.print("OK");
-    break;
-  case CHT8305_ERROR_ADDR:
-    Serial.print("Address error");
-    break;
-  case CHT8305_ERROR_I2C:
-   // Serial.print("Outdoor Temperature I2C error");
-    digitalStablesData.outdoortemperature = -99;
-    break;
-  case CHT8305_ERROR_CONNECT:
-    Serial.print("Connect error");
-    break;
-  case CHT8305_ERROR_LASTREAD:
-   // Serial.print("Last read error");
-    break;
-  default:
-    Serial.print("Unknown error");
-    break;
+  if (sht.readSample()) {
+    digitalStablesData.outdoortemperature = sht.getTemperature();
+    digitalStablesData.outdoorhumidity = sht.getHumidity();
+      Serial.print("SHT:\n");
+      Serial.print("  RH: ");
+      Serial.print(sht.getHumidity(), 2);
+      Serial.print("\n");
+      Serial.print("  T:  ");
+      Serial.print(sht.getTemperature(), 2);
+      Serial.print("\n");
+  } else {
+      Serial.print("Error in readSample()\n");
   }
+  
+ // temperature = sht.getTemperature();// CHT.getTemperature();
+
+ // digitalStablesData.outdoortemperature = temperature;
+  Serial.print(" Temp:");
+  Serial.print(digitalStablesData.outdoortemperature , 1);
+  //digitalStablesData.outdoorhumidity = sht.getHumidity();//CHT.getHumidity();
+  Serial.print(" Hum:");
+  Serial.println(digitalStablesData.outdoorhumidity, 1);
+
+//  switch (status)
+//  {
+//  case CHT8305_OK:
+//    Serial.print("OK");
+//    break;
+//  case CHT8305_ERROR_ADDR:
+//    Serial.print("Address error");
+//    break;
+//  case CHT8305_ERROR_I2C:
+//    Serial.print("Outdoor Temperature I2C error");
+//    digitalStablesData.outdoortemperature = -99;
+//    break;
+//  case CHT8305_ERROR_CONNECT:
+//    Serial.print("Connect error");
+//    break;
+//  case CHT8305_ERROR_LASTREAD:
+//    Serial.print("Last read error");
+//    break;
+//  default:
+//    Serial.print("Unknown error");
+//    break;
+//  }
   if(debug)Serial.print("\n");
 }
 
@@ -2146,7 +2252,7 @@ if(loraReceived){
     readSensorData();    
 
      int dsdStoredCount=dataManager.getDSDStoredCount();
-    if(dsdStoredCount>MAXIMUM_STORED_RECORDS){
+    if(dsdStoredCount>(int)(.7*MAXIMUM_STORED_RECORDS)){
       memoryFull=true;
     }else{
       memoryFull=false;
@@ -2208,7 +2314,7 @@ if(loraReceived){
       }
     }else{
       digitalWrite(LED_CONTROL, HIGH);
-      digitalStablesData.ledBrightness=powerManager->isLoraTxSafe(9,currentTimerRecord);
+      digitalStablesData.ledBrightness=255;//powerManager->isLoraTxSafe(9,currentTimerRecord);
       digitalStablesData.operatingStatus = OPERATING_STATUS_FULL_MODE;
       turnOffWifi=false;
     }
@@ -2688,13 +2794,25 @@ wifistatus = wifiManager.getWifiStatus();
         }
       }else if (displayStatus == SHOW_ERROR_STATUS )
       {
+        //
+           // color 0=red;
+           // 1=yellow
+           // 2=green
+           uint8_t color=0;
         if(!foundADS){
            if(debug)Serial.println("showing error with ADS");
-          drawError(0);
+          drawError(0,0);
           showError=true;
         }else if( memoryFull){
            if(debug)Serial.println("memory full");
-          drawError(1);
+           int dsdStoredCount=dataManager.getDSDStoredCount();
+           
+           if(dsdStoredCount>(int)(.7*MAXIMUM_STORED_RECORDS)){
+              memoryFull=true;
+           }else if(dsdStoredCount>(int)(.7*MAXIMUM_STORED_RECORDS)){
+              memoryFull=true;
+            }
+          drawError(1,0);
           showError=true;
         }else{
           displayStatus++; // to make sure that this is not displayed
@@ -2731,6 +2849,12 @@ wifistatus = wifiManager.getWifiStatus();
       int usingSolarPowerv = generalFunctions.getValue(command, '#', 1).toInt();
         if(usingSolarPowerv>0)usingSolarPower=true;
         else usingSolarPower=false;
+        Serial.println("Ok-usingSolarPower");
+        Serial.flush(); 
+    } else if(command.startsWith("getUsingSolarPower"))
+    {
+        Serial.print("usingSolarPower:");
+        Serial.println(usingSolarPower);
         Serial.println("Ok-usingSolarPower");
         Serial.flush(); 
     }
@@ -2797,6 +2921,7 @@ wifistatus = wifiManager.getWifiStatus();
     }
     else if (command.startsWith("SetTime"))
     {
+      //SetTime#5#10#25#1#11#27#40
       // SetTime#31#6#25#7#16#22#30
       // SetTime#1#6#25#1#19#43#00
       timeManager.setTime(command);
@@ -2833,8 +2958,9 @@ wifistatus = wifiManager.getWifiStatus();
     {
 // SetDeviceSensorConfig#CreekTub #CREE #NoSensor#Temperature#AEST-10AEDT,M10.1.0,M4.1.0/3#-37.13305556#144.47472222#410#20#50#
 //SetDeviceSensorConfig#Sceptic #SCEP #NoSensor#Temperature#AEST-10AEDT,M10.1.0,M4.1.0/3#-37.13305556#144.47472222#410#40#50#
-  //SetDeviceSensorConfig#GH Compost#GHCO #Soil Moist#Soil Temp#AEST-10AEDT,M10.1.0,M4.1.0/3#-37.13305556#144.47472222#410#20#50#
-
+  //SetDeviceSensorConfig#GH Tank#GHTP #Tank#Temp#AEST-10AEDT,M10.1.0,M4.1.0/3#-37.13305556#144.47472222#410#20#50#
+//SetDeviceSensorConfig#Big Cap #BIGC #No Sensor#No Sensor#AEST-10AEDT,M10.1.0,M4.1.0/3#-37.13305556#144.47472222#410#20#50#
+// SetDeviceSensorConfig#Test Office #TEST #No Sensor#No Sensor#AEST-10AEDT,M10.1.0,M4.1.0/3#-37.13305556#144.47472222#410#20#50#
       // SetDeviceSensorConfig#DaffOffice#OFDA#NoSensor#Temperature#AEST-10AEDT,M10.1.0,M4.1.0/3#-37.13305556#144.47472222#410#40#50#
       String devicename = generalFunctions.getValue(command, '#', 1);
       String deviceshortname = generalFunctions.getValue(command, '#', 2);
@@ -2890,7 +3016,7 @@ wifistatus = wifiManager.getWifiStatus();
     else if (command.startsWith("ConfigWifiSTA"))
     {
       // ConfigWifiSTA#ssid#password
-      // ConfigWifiSTA#MainRouter24##OfficeDaffodil#
+      // ConfigWifiSTA#MainRouter24##GHTank#
       String ssid = generalFunctions.getValue(command, '#', 1);
       String password = generalFunctions.getValue(command, '#', 2);
       String hostname = generalFunctions.getValue(command, '#', 3);
@@ -2909,7 +3035,8 @@ wifistatus = wifiManager.getWifiStatus();
     else if (command.startsWith("ConfigWifiAP"))
     {
       // ConfigWifiAP#soft_ap_ssid#soft_ap_password#hostaname
-      // ConfigWifiAP#CreekTub##CreekTub#
+      // ConfigWifiAP#GHTank##GHTank#
+      // ConfigWifiAP#TestOffice##TestOffice#
 
       String soft_ap_ssid = generalFunctions.getValue(command, '#', 1);
       String soft_ap_password = generalFunctions.getValue(command, '#', 2);
