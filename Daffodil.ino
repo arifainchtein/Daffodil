@@ -2874,10 +2874,52 @@ wifistatus = wifiManager.getWifiStatus();
           Serial.println("Current Function Value: " + functionname);
       Serial.println("Ok-printCSWData");
       Serial.flush(); 
-    }
-    else if (command.startsWith("exportDSDCSV"))
+    }else if (command.startsWith("exportDSDCSV"))
     {
       dataManager.exportDSDCSV();
+      Serial.println("Ok-exportDSDCSV");
+      Serial.flush(); 
+    }
+    else if (command.startsWith("GenerateReport"))
+    {
+      //GenerateReport#1
+       Serial.println("rawCSWValue=" + String(rawCSWValue));
+         Serial.println("cswCapVoltage=" + String(cswCapVoltage));
+         Serial.println("factor=" + String(factor));
+         Serial.println("cswOutput=" + String(cswOutput));
+         Serial.println("");
+         Serial.println("");
+         
+      int cleardata = generalFunctions.getValue(command, '#', 1).toInt();
+       String functionname="";
+         if(digitalStablesData.currentFunctionValue== FUN_1_FLOW){
+          functionname="FUN_1_FLOW";
+         }else if(digitalStablesData.currentFunctionValue== FUN_2_FLOW){
+          functionname="FUN_2_FLOW";
+         }else if(digitalStablesData.currentFunctionValue== FUN_1_FLOW_1_TANK){
+          functionname="FUN_1_FLOW_1_TANK";
+         }else if(digitalStablesData.currentFunctionValue== FUN_1_TANK){
+          functionname="FUN_1_TANK";
+         }else if(digitalStablesData.currentFunctionValue== FUN_2_TANK){
+          functionname="FUN_2_TANK";
+         }else if(digitalStablesData.currentFunctionValue== DAFFODIL_SCEPTIC_TANK){
+          functionname="DAFFODIL_SCEPTIC_TANK";
+         }else if(digitalStablesData.currentFunctionValue== DAFFODIL_WATER_TROUGH){
+          functionname="DAFFODIL_WATER_TROUGH";
+         }else if(digitalStablesData.currentFunctionValue== DAFFODIL_TEMP_SOILMOISTURE){
+          functionname="DAFFODIL_TEMP_SOILMOISTURE";
+         }else if(digitalStablesData.currentFunctionValue== DAFFODIL_LIGHT_DETECTOR){
+          functionname="DAFFODIL_LIGHT_DETECTOR";
+         }else if(digitalStablesData.currentFunctionValue== VOLTAGE_MONITOR){
+          functionname="VOLTAGE_MONITOR";
+         }
+          Serial.println("Current Function Value: " + functionname);
+          Serial.println("");
+          Serial.println("");
+          
+          dataManager.exportDSDCSV();
+      if(cleardata)dataManager.clearAllDSDData();
+      
       Serial.println("Ok-exportDSDCSV");
       Serial.flush(); 
     }
