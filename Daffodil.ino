@@ -2880,7 +2880,7 @@ wifistatus = wifiManager.getWifiStatus();
       Serial.println("Ok-exportDSDCSV");
       Serial.flush(); 
     }
-    else if (command.startsWith("GenerateReport"))
+    else if (command.startsWith("GenerateDSDReport"))
     {
       //GenerateReport#1
        Serial.println("rawCSWValue=" + String(rawCSWValue));
@@ -2920,7 +2920,7 @@ wifistatus = wifiManager.getWifiStatus();
           dataManager.exportDSDCSV();
       if(cleardata)dataManager.clearAllDSDData();
       
-      Serial.println("Ok-exportDSDCSV");
+      Serial.println("Ok-GenerateDSDReport");
       Serial.flush(); 
     }
     else if (command.startsWith("getDSDStoredCount"))
