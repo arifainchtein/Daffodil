@@ -20,7 +20,6 @@
 #include <SolarPowerData.h>
 #include <DigitalStablesData.h>
 #include <WeatherForecastManager.h>
-#include <BH1750.h>
 #include <DigitalStablesDataSerializer.h>
 #include "ADS1X15.h"
 #include "SHTSensor.h"
@@ -188,6 +187,15 @@ DigitalStablesConfigData digitalStablesConfigData;
 DigitalStablesData digitalStablesData;
 DaffodilCommandData daffodilCommandData;
 
+//
+// csw variables
+//
+   
+float rawCSWValue;
+ float factor =1;
+ int16_t cswOutput;
+ float cswCapVoltage;
+   
 PCF8563TimeManager timeManager(Serial);
 GeneralFunctions generalFunctions;
 Esp32SecretManager secretManager(timeManager);
@@ -1048,7 +1056,7 @@ if(debug)Serial.print("digitalStablesData.minimumEfficiencyForLed=");
   
 
  if (sht.readSample()) {
-      if(debug)Serial.print("SHT:");
+      if(debug )Serial.print("SHT:");
      if(debug) Serial.print("  RH: ");
      if(debug) Serial.print(sht.getHumidity(), 2);
      if(debug) Serial.print("   ");
@@ -1075,25 +1083,26 @@ if(debug)Serial.print("digitalStablesData.minimumEfficiencyForLed=");
   lcd.print(digitalStablesData.capacitorVoltage);
   if(debug)Serial.print("i setup cap=");
   if(debug)Serial.println(digitalStablesData.capacitorVoltage);
-   
- 
+
   // Config Switch
  // if(debug)Serial.print("voltage factor=");
  // if(debug)Serial.println(f);
-  float rawValue = ADS.readADC(2);
-  if(debug)Serial.print("rawValue=");
-  if(debug)Serial.println(rawValue);
-  float factor =1;
-  int16_t cswOutput = rawValue;
-  float correctedvalue = factor*rawValue;
+  rawCSWValue = ADS.readADC(2);
+  if(debug)Serial.print("rawCSWValue=");
+  if(debug)Serial.println(rawCSWValue);
+  factor =1;
+  cswCapVoltage=0;
+  cswOutput = rawCSWValue;
+  float correctedvalue = factor*rawCSWValue;
    if (digitalStablesData.capacitorVoltage > 0)
   {
-     factor = 5 / digitalStablesData.capacitorVoltage;
-    cswOutput = rawValue * factor;
+    cswCapVoltage = digitalStablesData.capacitorVoltage;
+     factor = 5 / cswCapVoltage;
+    cswOutput = rawCSWValue * factor;
   }
   lcd.setCursor(0, 1);
   lcd.print("csw=");
-  lcd.print(rawValue);
+  lcd.print(rawCSWValue);
 
   
 
@@ -1263,67 +1272,7 @@ if(debug)Serial.print("digitalStablesData.minimumEfficiencyForLed=");
 
   
   
-  if (cswOutput >= 7100)
-  {
-    digitalStablesData.currentFunctionValue = FUN_1_FLOW;
-    attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
-    secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, 12);
-  }
-  else if (cswOutput >= 6700 && cswOutput < 7100)
-  {
-    digitalStablesData.currentFunctionValue = FUN_2_FLOW;
-    attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
-    attachInterrupt(SENSOR_INPUT_2, pulseCounter2, FALLING);
-    secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, 12);
-    secretManager.readFlow2Name().toCharArray(digitalStablesData.sensor2name, 12);
-  }
-  else if (cswOutput >= 6300 && cswOutput < 6700)
-  {
-    digitalStablesData.currentFunctionValue = FUN_1_FLOW_1_TANK;
-    attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
-
-    secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, 12);
-    secretManager.readTank2Name().toCharArray(digitalStablesData.sensor2name, 12);
-  }
-  else if (cswOutput >= 5800 && cswOutput < 6300)
-  {
-    digitalStablesData.currentFunctionValue = FUN_1_TANK;
-    secretManager.readTank1Name().toCharArray(digitalStablesData.sensor1name, 12);
-  }
-  else if (cswOutput >= 5500 && cswOutput < 5800)
-  {
-    digitalStablesData.currentFunctionValue = FUN_2_TANK;
-    secretManager.readTank1Name().toCharArray(digitalStablesData.sensor1name, 12);
-    secretManager.readTank2Name().toCharArray(digitalStablesData.sensor2name, 12);
-  }
-  else if (cswOutput >= 5100 && cswOutput < 5500)
-  {
-    digitalStablesData.currentFunctionValue = DAFFODIL_SCEPTIC_TANK;
-  }
-  else if (cswOutput >= 4600 && cswOutput < 5100)
-  {
-    digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
-  }
-  else if (cswOutput >= 4300 && cswOutput < 4600)
-  {
-    digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
-  }
-  else if (cswOutput >= 3400 && cswOutput < 4200)
-  {
-   
-  }
-   else if ( cswOutput < 1000)
-  {
-     digitalStablesData.currentFunctionValue = VOLTAGE_MONITOR;
-    usingSolarPower=false;
-    if(debug)Serial.println("SELECTED VOLTAGE MONITORING");
-  }
-  else
-  {
-    digitalStablesData.currentFunctionValue = DAFFODIL_SCEPTIC_TANK;
-    lcd.setCursor(0, 3);
-    lcd.print("bad data sceptic is def");
-  }
+ 
 
  if(usingSolarPower){
     if(hourlySolarPowerData.efficiency*100>digitalStablesData.minimumEfficiencyForLed){
@@ -2130,25 +2079,25 @@ void readI2CTemp()
   if (sht.readSample()) {
     digitalStablesData.outdoortemperature = sht.getTemperature();
     digitalStablesData.outdoorhumidity = sht.getHumidity();
-      Serial.print("SHT:\n");
-      Serial.print("  RH: ");
-      Serial.print(sht.getHumidity(), 2);
-      Serial.print("\n");
-      Serial.print("  T:  ");
-      Serial.print(sht.getTemperature(), 2);
-      Serial.print("\n");
+      if(debug)Serial.print("SHT:\n");
+      if(debug)Serial.print("  RH: ");
+      if(debug)Serial.print(sht.getHumidity(), 2);
+      if(debug)Serial.print("\n");
+      if(debug)Serial.print("  T:  ");
+      if(debug)Serial.print(sht.getTemperature(), 2);
+      if(debug)Serial.print("\n");
   } else {
-      Serial.print("Error in readSample()\n");
+      if(debug)Serial.print("Error in readSample()\n");
   }
   
  // temperature = sht.getTemperature();// CHT.getTemperature();
 
  // digitalStablesData.outdoortemperature = temperature;
-  Serial.print(" Temp:");
-  Serial.print(digitalStablesData.outdoortemperature , 1);
+  if(debug)Serial.print(" Temp:");
+  if(debug)Serial.print(digitalStablesData.outdoortemperature , 1);
   //digitalStablesData.outdoorhumidity = sht.getHumidity();//CHT.getHumidity();
-  Serial.print(" Hum:");
-  Serial.println(digitalStablesData.outdoorhumidity, 1);
+  if(debug)Serial.print(" Hum:");
+  if(debug)Serial.println(digitalStablesData.outdoorhumidity, 1);
 
 //  switch (status)
 //  {
@@ -2889,6 +2838,42 @@ wifistatus = wifiManager.getWifiStatus();
       dataManager.printAllDSDData();
       Serial.println("Ok-printAllDSDData");
       Serial.flush(); 
+    }else if (command.startsWith("printCurrentDSDData"))
+    {
+      dataManager.printDigitalStablesData(digitalStablesData);
+      Serial.println("Ok-printCurrentDSDData");
+      Serial.flush(); 
+    }else if (command.startsWith("printCSWData"))
+    {
+         Serial.println("rawCSWValue=" + String(rawCSWValue));
+         Serial.println("cswCapVoltage=" + String(cswCapVoltage));
+         Serial.println("factor=" + String(factor));
+         Serial.println("cswOutput=" + String(cswOutput));
+         String functionname="";
+         if(digitalStablesData.currentFunctionValue== FUN_1_FLOW){
+          functionname="FUN_1_FLOW";
+         }else if(digitalStablesData.currentFunctionValue== FUN_2_FLOW){
+          functionname="FUN_2_FLOW";
+         }else if(digitalStablesData.currentFunctionValue== FUN_1_FLOW_1_TANK){
+          functionname="FUN_1_FLOW_1_TANK";
+         }else if(digitalStablesData.currentFunctionValue== FUN_1_TANK){
+          functionname="FUN_1_TANK";
+         }else if(digitalStablesData.currentFunctionValue== FUN_2_TANK){
+          functionname="FUN_2_TANK";
+         }else if(digitalStablesData.currentFunctionValue== DAFFODIL_SCEPTIC_TANK){
+          functionname="DAFFODIL_SCEPTIC_TANK";
+         }else if(digitalStablesData.currentFunctionValue== DAFFODIL_WATER_TROUGH){
+          functionname="DAFFODIL_WATER_TROUGH";
+         }else if(digitalStablesData.currentFunctionValue== DAFFODIL_TEMP_SOILMOISTURE){
+          functionname="DAFFODIL_TEMP_SOILMOISTURE";
+         }else if(digitalStablesData.currentFunctionValue== DAFFODIL_LIGHT_DETECTOR){
+          functionname="DAFFODIL_LIGHT_DETECTOR";
+         }else if(digitalStablesData.currentFunctionValue== VOLTAGE_MONITOR){
+          functionname="VOLTAGE_MONITOR";
+         }
+          Serial.println("Current Function Value: " + functionname);
+      Serial.println("Ok-printCSWData");
+      Serial.flush(); 
     }
     else if (command.startsWith("exportDSDCSV"))
     {
@@ -3036,7 +3021,7 @@ wifistatus = wifiManager.getWifiStatus();
     {
       // ConfigWifiAP#soft_ap_ssid#soft_ap_password#hostaname
       // ConfigWifiAP#GHTank##GHTank#
-      // ConfigWifiAP#TestOffice##TestOffice#
+      // ConfigWifiAP#BigCap##BigCap#
 
       String soft_ap_ssid = generalFunctions.getValue(command, '#', 1);
       String soft_ap_password = generalFunctions.getValue(command, '#', 2);
