@@ -2882,7 +2882,10 @@ wifistatus = wifiManager.getWifiStatus();
     }
     else if (command.startsWith("GenerateDSDReport"))
     {
+      Serial.print("Device Time:");
       //GenerateReport#1
+     timeManager.printTimeToSerial(currentTimerRecord);
+     Serial.println("");
        Serial.println("rawCSWValue=" + String(rawCSWValue));
          Serial.println("cswCapVoltage=" + String(cswCapVoltage));
          Serial.println("factor=" + String(factor));
