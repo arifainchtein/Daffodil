@@ -74,7 +74,7 @@ String ipAddress = "";
 boolean initiatedWifi = false;
 // #define address 0x40
 SHTSensor sht;
-bool debug=true;
+bool debug=false;
 DataManager dataManager(Serial, LittleFS);
 
 HourlySolarPowerData hourlySolarPowerData;
