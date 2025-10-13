@@ -2986,7 +2986,7 @@ wifistatus = wifiManager.getWifiStatus();
     }
     else if (command.startsWith("SetDeviceSensorConfig"))
     {
-// SetDeviceSensorConfig#CreekTub #CREE #NoSensor#Temperature#AEST-10AEDT,M10.1.0,M4.1.0/3#-37.13305556#144.47472222#410#20#50#
+// SetDeviceSensorConfig#Seedling #SEED #NoSensor#Temperature#AEST-10AEDT,M10.1.0,M4.1.0/3#-37.13305556#144.47472222#410#20#50#
 //SetDeviceSensorConfig#Sceptic #SCEP #NoSensor#Temperature#AEST-10AEDT,M10.1.0,M4.1.0/3#-37.13305556#144.47472222#410#40#50#
   //SetDeviceSensorConfig#GH Tank#GHTP #Tank#Temp#AEST-10AEDT,M10.1.0,M4.1.0/3#-37.13305556#144.47472222#410#20#50#
 //SetDeviceSensorConfig#Big Cap #BIGC #No Sensor#No Sensor#AEST-10AEDT,M10.1.0,M4.1.0/3#-37.13305556#144.47472222#410#20#50#
@@ -3046,7 +3046,9 @@ wifistatus = wifiManager.getWifiStatus();
     else if (command.startsWith("ConfigWifiSTA"))
     {
       // ConfigWifiSTA#ssid#password
-      // ConfigWifiSTA#MainRouter24##GHTank#
+      // ConfigWifiSTA#MainRouter24##GardenShed#
+      // ConfigWifiSTA#LivingRoom##GardenShed#
+      
       String ssid = generalFunctions.getValue(command, '#', 1);
       String password = generalFunctions.getValue(command, '#', 2);
       String hostname = generalFunctions.getValue(command, '#', 3);
