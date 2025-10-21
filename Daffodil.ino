@@ -74,7 +74,7 @@ String ipAddress = "";
 boolean initiatedWifi = false;
 // #define address 0x40
 SHTSensor sht;
-bool debug=false;
+bool debug=true;
 DataManager dataManager(Serial, LittleFS);
 
 HourlySolarPowerData hourlySolarPowerData;
@@ -765,18 +765,17 @@ void setup()
 
 // Try to mount LittleFS if (!LittleFS.begin()) { Serial.println("LittleFS mount failed! Formatting..."); if (LittleFS.format()) { Serial.println("LittleFS formatted successfully."); if (LittleFS.begin()) { Serial.println("LittleFS mounted successfully after formatting."); } else { Serial.println("Failed to mount LittleFS after formatting."); } } else { Serial.println("Failed to format LittleFS."); } } else { Serial.println("LittleFS mounted successfully."); } }
 
-  
-if(!LittleFS.begin(false)) { 
-   if(debug)Serial.println("LittleFS Mount Failed, formatting..."); 
-  LittleFS.format(); 
-  if(!LittleFS.begin(false)) { 
-     if(debug)Serial.println("LittleFS Mount Failed even after formatting"); 
-    return; 
-  } else{
-     if(debug)Serial.println("After formating, LittleFS is good"); 
-  }
+  if(!LittleFS.begin(true)) { 
+    Serial.println("LittleFS Mount Failed, formatting..."); 
+    LittleFS.format(); 
+    if(!LittleFS.begin(false)) { 
+      Serial.println("LittleFS Mount Failed even after formatting"); 
+      return; 
+    }else{
+      Serial.println("LittleFS Mount Succces after formating"); 
+    }
  }else{
-   if(debug)Serial.println("LittleFS is good, no need to format"); 
+   Serial.println("LittleFS Mount Succces"); 
  }
 
  // List all files
@@ -822,10 +821,17 @@ dataManager.start();
   double longitude = 144.47472222;
   double altitude = 410.0;
    lightMeterCorrectingFactor=3.45;
+  double maximumScepticHeight=0;
+  double throughlevelminimumcm=0;
+  double throughlevelmaximumcm=0;
   
 
   secretManager.getDeviceSensorConfig(digitalStablesData.devicename, digitalStablesData.deviceshortname, digitalStablesData.sensor1name, digitalStablesData.sensor2name, timezone, latitude, longitude, altitude,digitalStablesData.minimumEfficiencyForLed, digitalStablesData.minimumEfficiencyForWifi);
-  
+  secretManager.getTroughParameters( maximumScepticHeight, throughlevelminimumcm, throughlevelmaximumcm);
+
+    digitalStablesData.maximumScepticHeight=maximumScepticHeight;
+    digitalStablesData.throughlevelminimumcm=throughlevelminimumcm;
+    digitalStablesData.throughlevelmaximumcm=throughlevelmaximumcm;
   // timezone = "AEST-10AEDT,M10.1.0,M4.1.0/3";
    char timezoneinfo[] = "AEST-10AEDT,M10.1.0,M4.1.0/3";
   
@@ -1644,6 +1650,9 @@ void readSensorData(){
     float distance = sonar.ping_cm();
     digitalStablesData.measuredHeight = distance;
     digitalStablesData.scepticAvailablePercentage = distance * 100 / MAX_DISTANCE;
+    if(debug)Serial.print("measuredHeight=");
+    if(debug)Serial.println(digitalStablesData.measuredHeight);
+ 
     //
     // RTC_BATT_VOLT Voltage
     //
@@ -2346,7 +2355,7 @@ if(loraReceived){
     
      
   if(!turnOffWifi){
-    if(debug)Serial.print("line 2055 turning off wifi");
+    //if(debug)Serial.print("line 2055 turning off wifi");
     turnOffWifi=(digitalStablesData.capacitorVoltage < minimumWifiVoltage) && wifistatus && usingSolarPower;
   }
   if (turnOffWifi)
@@ -2518,25 +2527,19 @@ wifistatus = wifiManager.getWifiStatus();
         }
         else if (digitalStablesData.currentFunctionValue == DAFFODIL_WATER_TROUGH)
         {
-          if (digitalStablesData.scepticAvailablePercentage <= 25)
+          if (digitalStablesData.measuredHeight >=(digitalStablesData.maximumScepticHeight - digitalStablesData.throughlevelminimumcm) )
           {
             red = 255;
             green = 0;
             blue = 0;
           }
-          else if (digitalStablesData.scepticAvailablePercentage > 25 && digitalStablesData.scepticAvailablePercentage <= 50)
-          {
-            red = 255;
-            green = 255;
-            blue = 0;
-          }
-          else if (digitalStablesData.scepticAvailablePercentage > 50 && digitalStablesData.scepticAvailablePercentage <= 75)
+          else if (digitalStablesData.measuredHeight < (digitalStablesData.maximumScepticHeight - digitalStablesData.throughlevelminimumcm) && digitalStablesData.measuredHeight >= (digitalStablesData.maximumScepticHeight - digitalStablesData.throughlevelmaximumcm))
           {
             red = 0;
             green = 255;
             blue = 0;
           }
-          else if (digitalStablesData.scepticAvailablePercentage > 75)
+          else if (digitalStablesData.measuredHeight < (digitalStablesData.maximumScepticHeight - digitalStablesData.throughlevelmaximumcm))
           {
             red = 0;
             green = 0;
@@ -2792,6 +2795,18 @@ wifistatus = wifiManager.getWifiStatus();
     {
         goToSleep();
    
+    }else if(command.startsWith("SetTroughParameters"))
+    {
+      //SetTroughParameters#troughheight#throughlevelminimumcm#throughlevelmaximumcm#
+     //SetTroughParameters#69#29#39#
+       digitalStablesData.maximumScepticHeight=generalFunctions.stringToDouble(generalFunctions.getValue(command, '#', 1));
+       digitalStablesData.throughlevelminimumcm=generalFunctions.stringToDouble(generalFunctions.getValue(command, '#', 2));
+       digitalStablesData.throughlevelmaximumcm=generalFunctions.stringToDouble(generalFunctions.getValue(command, '#', 3));
+       secretManager.saveTroughParameters( digitalStablesData.maximumScepticHeight, digitalStablesData.throughlevelminimumcm, digitalStablesData.throughlevelmaximumcm);
+    
+      
+        Serial.println("Ok-SetTroughParameters");
+        Serial.flush(); 
     }
      else if(command.startsWith("usingSolarPower"))
     {
@@ -2840,6 +2855,11 @@ wifistatus = wifiManager.getWifiStatus();
       Serial.flush(); 
     }else if (command.startsWith("printCurrentDSDData"))
     {
+      Serial.println("rawCSWValue=" + String(rawCSWValue));
+         Serial.println("cswCapVoltage=" + String(cswCapVoltage));
+         Serial.println("factor=" + String(factor));
+         Serial.println("cswOutput=" + String(cswOutput));
+          Serial.println("");
       dataManager.printDigitalStablesData(digitalStablesData);
       Serial.println("Ok-printCurrentDSDData");
       Serial.flush(); 
