@@ -2797,6 +2797,7 @@ wifistatus = wifiManager.getWifiStatus();
    
     }else if(command.startsWith("SetTroughParameters"))
     {
+      // printCurrentDSDData
       //SetTroughParameters#troughheight#throughlevelminimumcm#throughlevelmaximumcm#
      //SetTroughParameters#69#29#39#
        digitalStablesData.maximumScepticHeight=generalFunctions.stringToDouble(generalFunctions.getValue(command, '#', 1));
