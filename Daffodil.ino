@@ -1649,9 +1649,9 @@ void readSensorData(){
     
     digitalStablesData.ledBrightness=powerManager->isLoraTxSafe(9,currentTimerRecord);
     float distance = sonar.ping_cm();
-    digitalStablesData.measuredHeight =   ;
+    digitalStablesData.measuredHeight =   distance;
     digitalStablesData.scepticAvailablePercentage = distance * 100 / MAX_DISTANCE;
-    if(debug)Serial.print("measuredHeight=");
+    if(debug)Serial.print("line 1654 measuredHeight=");
     if(debug)Serial.println(digitalStablesData.measuredHeight);
  
     //
