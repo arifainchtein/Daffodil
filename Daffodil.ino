@@ -23,7 +23,7 @@
 #include <DigitalStablesDataSerializer.h>
 #include "ADS1X15.h"
 #include "SHTSensor.h"
-#include "rgb_lcd.h"
+
 #include <ErrorManager.h>
 #include <ErrorDefinitions.h>
 #include <DataManager.h>
@@ -233,9 +233,7 @@ const int SHARED_SECRET_LENGTH = 27;
 char secretCode[SHARED_SECRET_LENGTH];
 bool opmode = false;
 
-//#include <LiquidCrystal_I2C.h>
-//LiquidCrystal_I2C lcd(0x27, 20, 4); // set the lcd address to 0x27 for a 16 chars and 2 line display
-rgb_lcd lcd;
+
 
 bool foundlcd = false;
  bool foundtemp = false;
@@ -630,9 +628,7 @@ int sendMessage(const T& inputData)
 {
     T dataToSend = inputData;
   
-  lcd.setCursor(0, 0);
-  lcd.clear();
-  lcd.print("Sending Lora");
+ 
   if(debug)Serial.print("sending lora sn=");
   if(debug)Serial.print(serialNumber);
   long code = secretManager.generateCode();
@@ -694,15 +690,7 @@ int sendMessage(const T& inputData)
       // If error is not due to busy channel, return the error
       result = cadResult;
       int backoff = random(MIN_BACKOFF * (1 << retries), MAX_BACKOFF * (1 << retries));
-      lcd.setCursor(0, 1);
-      lcd.clear();
-      lcd.print("Bu ");
-      lcd.print(retries + 1);
-      lcd.print(" of ");
-      lcd.print(MAX_RETRIES);
-      lcd.print(". b=");
-      lcd.print(backoff);
-      lcd.println("ms");
+     
       if(debug)Serial.print("Channel busy, retry ");
       if(debug)Serial.print(retries + 1);
       if(debug)Serial.print(" of ");
@@ -716,13 +704,12 @@ int sendMessage(const T& inputData)
       keepGoing = retries < MAX_RETRIES;
     }
   }
-  lcd.setCursor(0, 1);
+
   if (result == 99) {
     result = LORA_MAX_RETRIES_REACHED;
   }
-  lcd.setCursor(0, 1);
-  lcd.print("Lora returns ");
-  lcd.print(result);
+  //lcd.setCursor(0, 1);
+ 
   if(debug)Serial.print(" ,Lora returns ");
   if(debug)Serial.println(result);
   delay(500);
@@ -980,13 +967,8 @@ if(debug)Serial.print("digitalStablesData.minimumEfficiencyForLed=");
     }
   }
 
-  lcd.begin(16, 2);
-  //lcd.setRGB(colorR, colorG, colorB);
-    
-  //  lcd.init();
-  //  lcd.backlight();
-  //  lcd.clear();
-     lcd.setCursor(0, 0);
+   
+ 
   //CHT.begin();
    if (sht.init()) {
       Serial.print("sht init(): success\n");
@@ -1084,9 +1066,7 @@ if(debug)Serial.print("digitalStablesData.minimumEfficiencyForLed=");
   int16_t val_3 = ADS.readADC(3);
   float f = ADS.toVoltage(1); //  voltage factor
   digitalStablesData.capacitorVoltage = val_3 * f;
-  lcd.setCursor(0, 0);
-  lcd.print("cap=");
-  lcd.print(digitalStablesData.capacitorVoltage);
+ 
   if(debug)Serial.print("i setup cap=");
   if(debug)Serial.println(digitalStablesData.capacitorVoltage);
 
@@ -1106,18 +1086,11 @@ if(debug)Serial.print("digitalStablesData.minimumEfficiencyForLed=");
      factor = 5 / cswCapVoltage;
     cswOutput = rawCSWValue * factor;
   }
-  lcd.setCursor(0, 1);
-  lcd.print("csw=");
-  lcd.print(rawCSWValue);
-
-  
-
+ 
 
   if(debug)Serial.print("corrected cswOutput=");
   if(debug)Serial.println(cswOutput);
-  lcd.setCursor(0, 2);
-  lcd.print(" corr csw=");
-  lcd.print(cswOutput);
+ 
   //
   // dip switch values
   // 1234
@@ -1551,10 +1524,6 @@ if(dataManager.getDSDStoredCount()<MAXIMUM_STORED_RECORDS){
     ADS.setMode(1);   
     
      if(debug)Serial.println("  going to sleep");
-     lcd.setCursor(0, 0);
-      lcd.clear();
-      lcd.print("sleeping ");
-      lcd.print(sleep_time_us);
   
  
    // esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_OFF);
@@ -2326,34 +2295,7 @@ if(loraReceived){
     digitalStablesData.operatingStatus = OPERATING_STATUS_NO_LED;
   }
  
-  
-    lcd.print(" ");
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print(digitalStablesData.capacitorVoltage);
-    lcd.print(" ");
-    lcd.print(digitalStablesData.operatingStatus);
-    lcd.print(" ");
-    lcd.print(displayStatus);
-    lcd.print(" L");
-    lcd.print(loraLastResult); 
-    lcd.print(" ");
-    lcd.print(avgRssi);
-
-    
-    lcd.setCursor(0, 1);
-    lcd.print(digitalStablesData.ledBrightness);
-    lcd.print(" ");
-    lcd.print(hourlySolarPowerData.efficiency*100);
-    lcd.print(" ");
-    lcd.print(digitalRead(LED_CONTROL));
-    lcd.print(" ");
-    lcd.print(cadResult);
-    
-
-    
-
-    
+ 
      
   if(!turnOffWifi){
     //if(debug)Serial.print("line 2055 turning off wifi");
@@ -2657,7 +2599,7 @@ wifistatus = wifiManager.getWifiStatus();
               if (dsUploadTimer.status())
               {
                 // char secret[27];
-                //    lcd.print("Uploading to digitalstables");
+              
                 String secret = "J5KFCNCPIRCTGT2UJUZFSMQK";
                 //                    leds[2] = CRGB(0, 255, 0);
                 //                    FastLED.show();
@@ -2733,8 +2675,7 @@ wifistatus = wifiManager.getWifiStatus();
           }
     
           loraLastResult = sendMessage(digitalStablesData);
-          lcd.setCursor(10, 0);
-          lcd.print(displayStatus);
+         
           if(loraLastResult==LORA_TX_FAILED){
             drawLora(false);
           }else if(loraLastResult==LORA_OK){
