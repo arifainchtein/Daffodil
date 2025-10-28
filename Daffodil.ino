@@ -822,16 +822,16 @@ dataManager.start();
   double altitude = 410.0;
    lightMeterCorrectingFactor=3.45;
   double maximumScepticHeight=0;
-  double throughlevelminimumcm=0;
-  double throughlevelmaximumcm=0;
+  double troughlevelminimumcm=0;
+  double troughlevelmaximumcm=0;
   
 
   secretManager.getDeviceSensorConfig(digitalStablesData.devicename, digitalStablesData.deviceshortname, digitalStablesData.sensor1name, digitalStablesData.sensor2name, timezone, latitude, longitude, altitude,digitalStablesData.minimumEfficiencyForLed, digitalStablesData.minimumEfficiencyForWifi);
-  secretManager.getTroughParameters( maximumScepticHeight, throughlevelminimumcm, throughlevelmaximumcm);
+  secretManager.getTroughParameters( maximumScepticHeight, troughlevelminimumcm, troughlevelmaximumcm);
 
     digitalStablesData.maximumScepticHeight=maximumScepticHeight;
-    digitalStablesData.throughlevelminimumcm=throughlevelminimumcm;
-    digitalStablesData.throughlevelmaximumcm=throughlevelmaximumcm;
+    digitalStablesData.troughlevelminimumcm=troughlevelminimumcm;
+    digitalStablesData.troughlevelmaximumcm=troughlevelmaximumcm;
   // timezone = "AEST-10AEDT,M10.1.0,M4.1.0/3";
    char timezoneinfo[] = "AEST-10AEDT,M10.1.0,M4.1.0/3";
   
@@ -1171,7 +1171,7 @@ if(debug)Serial.print("digitalStablesData.minimumEfficiencyForLed=");
         digitalStablesData.currentFunctionValue = DAFFODIL_SCEPTIC_TANK;
         usingSolarPower=false;
     } else if (cswOutput >= 7100 && cswOutput < 7300) {
-        cswOutput = 6;  // Position 6: 00110 (R4+R10 ON)
+        // Position 6: 00110 (R4+R10 ON)
         digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
         usingSolarPower=false;
     } else if (cswOutput >= 6900 && cswOutput < 7100) {
@@ -1191,7 +1191,8 @@ if(debug)Serial.print("digitalStablesData.minimumEfficiencyForLed=");
         // Position 11: 01011 (R3+R4+R11 ON)
         usingSolarPower=false;
     } else if (cswOutput >= 5700 && cswOutput < 5900) {
-        // Position 12: 01100 (R10+R11 ON)
+      // 00110
+        digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
         usingSolarPower=false;
     } else if (cswOutput >= 5450 && cswOutput < 5700) {
         // Position 13: 01101 (R3+R10+R11 ON)
@@ -2527,19 +2528,19 @@ wifistatus = wifiManager.getWifiStatus();
         }
         else if (digitalStablesData.currentFunctionValue == DAFFODIL_WATER_TROUGH)
         {
-          if (digitalStablesData.measuredHeight >=(digitalStablesData.maximumScepticHeight - digitalStablesData.throughlevelminimumcm) )
+          if (digitalStablesData.measuredHeight >=(digitalStablesData.maximumScepticHeight - digitalStablesData.troughlevelminimumcm) )
           {
             red = 255;
             green = 0;
             blue = 0;
           }
-          else if (digitalStablesData.measuredHeight < (digitalStablesData.maximumScepticHeight - digitalStablesData.throughlevelminimumcm) && digitalStablesData.measuredHeight >= (digitalStablesData.maximumScepticHeight - digitalStablesData.throughlevelmaximumcm))
+          else if (digitalStablesData.measuredHeight < (digitalStablesData.maximumScepticHeight - digitalStablesData.troughlevelminimumcm) && digitalStablesData.measuredHeight >= (digitalStablesData.maximumScepticHeight - digitalStablesData.troughlevelmaximumcm))
           {
             red = 0;
             green = 255;
             blue = 0;
           }
-          else if (digitalStablesData.measuredHeight < (digitalStablesData.maximumScepticHeight - digitalStablesData.throughlevelmaximumcm))
+          else if (digitalStablesData.measuredHeight < (digitalStablesData.maximumScepticHeight - digitalStablesData.troughlevelmaximumcm))
           {
             red = 0;
             green = 0;
@@ -2797,12 +2798,12 @@ wifistatus = wifiManager.getWifiStatus();
    
     }else if(command.startsWith("SetTroughParameters"))
     {
-      //SetTroughParameters#troughheight#throughlevelminimumcm#throughlevelmaximumcm#
+      //SetTroughParameters#troughheight#troughlevelminimumcm#troughlevelmaximumcm#
      //SetTroughParameters#69#29#39#
        digitalStablesData.maximumScepticHeight=generalFunctions.stringToDouble(generalFunctions.getValue(command, '#', 1));
-       digitalStablesData.throughlevelminimumcm=generalFunctions.stringToDouble(generalFunctions.getValue(command, '#', 2));
-       digitalStablesData.throughlevelmaximumcm=generalFunctions.stringToDouble(generalFunctions.getValue(command, '#', 3));
-       secretManager.saveTroughParameters( digitalStablesData.maximumScepticHeight, digitalStablesData.throughlevelminimumcm, digitalStablesData.throughlevelmaximumcm);
+       digitalStablesData.troughlevelminimumcm=generalFunctions.stringToDouble(generalFunctions.getValue(command, '#', 2));
+       digitalStablesData.troughlevelmaximumcm=generalFunctions.stringToDouble(generalFunctions.getValue(command, '#', 3));
+       secretManager.saveTroughParameters( digitalStablesData.maximumScepticHeight, digitalStablesData.troughlevelminimumcm, digitalStablesData.troughlevelmaximumcm);
     
       
         Serial.println("Ok-SetTroughParameters");
@@ -3006,6 +3007,7 @@ wifistatus = wifiManager.getWifiStatus();
     }
     else if (command.startsWith("SetDeviceSensorConfig"))
     {
+     // SetDeviceSensorConfig#SumpTrough #SUMP #Tank#Temp#AEST-10AEDT,M10.1.0,M4.1.0/3#-37.13305556#144.47472222#410#20#50#
 // SetDeviceSensorConfig#Seedling #SEED #NoSensor#Temperature#AEST-10AEDT,M10.1.0,M4.1.0/3#-37.13305556#144.47472222#410#20#50#
 //SetDeviceSensorConfig#Sceptic #SCEP #NoSensor#Temperature#AEST-10AEDT,M10.1.0,M4.1.0/3#-37.13305556#144.47472222#410#40#50#
   //SetDeviceSensorConfig#GH Tank#GHTP #Tank#Temp#AEST-10AEDT,M10.1.0,M4.1.0/3#-37.13305556#144.47472222#410#20#50#
