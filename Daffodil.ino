@@ -816,6 +816,9 @@ dataManager.start();
   secretManager.getDeviceSensorConfig(digitalStablesData.devicename, digitalStablesData.deviceshortname, digitalStablesData.sensor1name, digitalStablesData.sensor2name, timezone, latitude, longitude, altitude,digitalStablesData.minimumEfficiencyForLed, digitalStablesData.minimumEfficiencyForWifi);
   secretManager.getTroughParameters( maximumScepticHeight, troughlevelminimumcm, troughlevelmaximumcm);
 
+Serial.println("line 819, maximumScepticHeight=" + String(maximumScepticHeight));
+Serial.println("line 819, troughlevelminimumcm=" + String(troughlevelminimumcm));
+Serial.println("line 819, troughlevelmaximumcm=" + String(troughlevelmaximumcm));
     digitalStablesData.maximumScepticHeight=maximumScepticHeight;
     digitalStablesData.troughlevelminimumcm=troughlevelminimumcm;
     digitalStablesData.troughlevelmaximumcm=troughlevelmaximumcm;
@@ -2745,12 +2748,16 @@ wifistatus = wifiManager.getWifiStatus();
      //SetTroughParameters#69#29#39#
       //
       // for fishtank
-     //SetTroughParameters#69#50#42#
+     //SetTroughParameters#69#42#50#
       
        digitalStablesData.maximumScepticHeight=generalFunctions.stringToDouble(generalFunctions.getValue(command, '#', 1));
        digitalStablesData.troughlevelminimumcm=generalFunctions.stringToDouble(generalFunctions.getValue(command, '#', 2));
        digitalStablesData.troughlevelmaximumcm=generalFunctions.stringToDouble(generalFunctions.getValue(command, '#', 3));
-       secretManager.saveTroughParameters( digitalStablesData.maximumScepticHeight, digitalStablesData.troughlevelminimumcm, digitalStablesData.troughlevelmaximumcm);
+       Serial.println("line 2753, maximumScepticHeight=" + String(digitalStablesData.maximumScepticHeight));
+       Serial.println("line 2753, troughlevelminimumcm=" + String(digitalStablesData.troughlevelminimumcm));
+       Serial.println("line 2753, troughlevelmaximumcm=" + String(digitalStablesData.troughlevelmaximumcm));
+       
+       secretManager.saveTroughParameters(digitalStablesData.maximumScepticHeight, digitalStablesData.troughlevelminimumcm, digitalStablesData.troughlevelmaximumcm);
     
       
         Serial.println("Ok-SetTroughParameters");
