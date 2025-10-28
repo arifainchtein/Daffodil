@@ -1649,7 +1649,7 @@ void readSensorData(){
     
     digitalStablesData.ledBrightness=powerManager->isLoraTxSafe(9,currentTimerRecord);
     float distance = sonar.ping_cm();
-    digitalStablesData.measuredHeight = distance;
+    digitalStablesData.measuredHeight =   ;
     digitalStablesData.scepticAvailablePercentage = distance * 100 / MAX_DISTANCE;
     if(debug)Serial.print("measuredHeight=");
     if(debug)Serial.println(digitalStablesData.measuredHeight);
@@ -2798,8 +2798,14 @@ wifistatus = wifiManager.getWifiStatus();
    
     }else if(command.startsWith("SetTroughParameters"))
     {
+      // for s
       //SetTroughParameters#troughheight#troughlevelminimumcm#troughlevelmaximumcm#
+     // for sumptrough
      //SetTroughParameters#69#29#39#
+      //
+      // for fishtank
+     //SetTroughParameters#69#50#42#
+      
        digitalStablesData.maximumScepticHeight=generalFunctions.stringToDouble(generalFunctions.getValue(command, '#', 1));
        digitalStablesData.troughlevelminimumcm=generalFunctions.stringToDouble(generalFunctions.getValue(command, '#', 2));
        digitalStablesData.troughlevelmaximumcm=generalFunctions.stringToDouble(generalFunctions.getValue(command, '#', 3));
