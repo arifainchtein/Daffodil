@@ -136,7 +136,7 @@ int16_t ads1115val[4] = {0, 0, 0, 0};
 OneWire oneWire(TEMPERATURE);
 DallasTemperature tempSensor(&oneWire);
 
-Timer viewTimer(5);
+Timer viewTimer(2);
 Timer remoteMonitorTimer(5);
 #define MAXIMUM_STORED_RECORDS 2000
 
