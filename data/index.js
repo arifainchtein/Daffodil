@@ -594,6 +594,71 @@ $(document).on('click','#manual-time-submit', function (){
 
 });
 
+//
+// sceptic
+//
+$(document).on('click','#daffodil-sceptic-config-icon', function (){
+   $('.display-module').removeClass('d-block').addClass('d-none');
+    $('#sceptic-configure').removeClass('d-none').addClass('d-block');
+    $('#sceptic-max-field').val(currentData.troughlevelmaximumcm);
+    $('#sceptic-min-field').val(currentData.troughlevelminimumcm);
+    $('#sceptic-height-field').val(currentData.maximumScepticHeight);
+});
+
+$(document).on('click','#set-sceptic-max-current', function (){
+    $('#sceptic-max-field').val(currentData.measuredHeight);
+});
+
+$(document).on('click','#set-sceptic-min-current', function (){
+     $('#sceptic-min-field').val(currentData.measuredHeight);
+});
+
+$(document).on('click','#sceptic-configure-cancel', function (){
+   refreshScreen();
+});
+
+$(document).on('click','#sceptic-configure-submit', function (){
+    var height =  parseFloat($('#sceptic-height-field').val());
+   var max = parseFloat($('#sceptic-max-field').val());
+   var min =  parseFloat($('#sceptic-min-field').val());
+
+    if(max<5 || min<5){
+        alert("Please input valid max and min");
+        return false;
+    }
+
+    if(max< min){
+        alert("Max has to be greater than min");
+        return false;
+    }
+
+    if(height< max){
+        alert("Max has to be smaller than the height");
+        return false;
+    }
+
+   $.ajax({
+        type: "POST",
+        url: "/DaffodilServlet",
+        data:{formName:"SetScepticRange",height:height,max:max,min:min},
+        success: function (result) {
+            currentData = JSON.parse(result);
+            refreshScreen();
+        },
+        error: function(data){
+            console.log("solo:" + JSON.stringify(data));
+            alert("There was an error processing your request:" + JSON.stringify(data));
+            return false;
+        }
+    });
+
+ });
+
+
+//
+// end of sceptic
+//
+
 $(document).on('click','.show-raw-data', function (){
     var tabledata='<table class="table table-striped">';
     var icon;
@@ -610,13 +675,11 @@ $(document).on('click','.show-raw-data', function (){
                 tabledata+=s.ssid + " rssi=" + s.rssi + " ch=" + s.channel + " " + icon + '<br>';
             }
              tabledata+='</td></tr>';
-        }
-        
+        }   
     }
     tabledata+='</table>';
     $('#raw-data-table').empty();
     $('#raw-data-table').append(tabledata);
-
     $('#raw-data-title').html(currentData.devicename);
     $('#raw-data-json').empty();
     $('#raw-data-json').append('<code>'+JSON.stringify(currentData) + '</code>');

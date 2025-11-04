@@ -74,7 +74,7 @@ String ipAddress = "";
 boolean initiatedWifi = false;
 // #define address 0x40
 SHTSensor sht;
-bool debug=true;
+bool debug=false;
 DataManager dataManager(Serial, LittleFS);
 
 HourlySolarPowerData hourlySolarPowerData;
@@ -737,13 +737,41 @@ void print_wakeup_reason() {
   }
 }
 
+void listFiles(const char * dirname) {
+  Serial.printf("Listing directory: %s\n", dirname);
+  
+  File root = LittleFS.open(dirname);
+  if(!root){
+    Serial.println("Failed to open directory");
+    return;
+  }
+  if(!root.isDirectory()){
+    Serial.println("Not a directory");
+    return;
+  }
+
+  File file = root.openNextFile();
+  while(file){
+    if(file.isDirectory()){
+      Serial.print("  DIR : ");
+      Serial.println(file.name());
+    } else {
+      Serial.print("  FILE: ");
+      Serial.print(file.name());
+      Serial.print("\tSIZE: ");
+      Serial.println(file.size());
+    }
+    file = root.openNextFile();
+  }
+}
+
 
 //
 // End of Lora Functions
 //
 void setup()
 {
-  if(debug)Serial.begin(115200);
+  Serial.begin(115200);
   Wire.begin();
   Wire.setClock(400000);
 
@@ -752,7 +780,7 @@ void setup()
 
 // Try to mount LittleFS if (!LittleFS.begin()) { Serial.println("LittleFS mount failed! Formatting..."); if (LittleFS.format()) { Serial.println("LittleFS formatted successfully."); if (LittleFS.begin()) { Serial.println("LittleFS mounted successfully after formatting."); } else { Serial.println("Failed to mount LittleFS after formatting."); } } else { Serial.println("Failed to format LittleFS."); } } else { Serial.println("LittleFS mounted successfully."); } }
 
-  if(!LittleFS.begin(true)) { 
+  if(!LittleFS.begin(false)) { 
     Serial.println("LittleFS Mount Failed, formatting..."); 
     LittleFS.format(); 
     if(!LittleFS.begin(false)) { 
@@ -764,6 +792,11 @@ void setup()
  }else{
    Serial.println("LittleFS Mount Succces"); 
  }
+
+
+listFiles("/");
+listFiles("/data/"); // If you have a data folder
+
 
  // List all files
   File root = LittleFS.open("/");
@@ -1110,14 +1143,14 @@ if(debug)Serial.print("digitalStablesData.minimumEfficiencyForLed=");
   // 1101 = 
   // 1111 = 0    // VOLTAGE_MONITOR
  
- if (cswOutput >= 8200 ) {
+ if (cswOutput >= 8300 ) {
     // Position 0: 00000 (All OFF)
         digitalStablesData.currentFunctionValue = FUN_1_FLOW;
         attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
         secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, 12);
         usingSolarPower=false;
     } else if (cswOutput >= 8000 && cswOutput <= 8200) {
-        // Position 1: 00001 (R3 ON)
+        // Position 1: 10000 (R3 ON)
         digitalStablesData.currentFunctionValue = FUN_2_FLOW;
         attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
         attachInterrupt(SENSOR_INPUT_2, pulseCounter2, FALLING);
@@ -1125,14 +1158,14 @@ if(debug)Serial.print("digitalStablesData.minimumEfficiencyForLed=");
         secretManager.readFlow2Name().toCharArray(digitalStablesData.sensor2name, 12);
         usingSolarPower=false;
     } else if (cswOutput >= 7800 && cswOutput < 8000) {
-        // Position 2: 00010 (R4 ON)
+        // Position 2: 01000 (R4 ON)
         digitalStablesData.currentFunctionValue = FUN_1_FLOW_1_TANK;
         attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
         secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, 12);
         secretManager.readTank2Name().toCharArray(digitalStablesData.sensor2name, 12);
         usingSolarPower=false;
     } else if (cswOutput >= 7690 && cswOutput < 7800) {
-         // Position 3: 00011 (R3+R4 ON)
+         // Position 3: 11000 (R3+R4 ON)
         digitalStablesData.currentFunctionValue = FUN_1_TANK;
         secretManager.readTank1Name().toCharArray(digitalStablesData.sensor1name, 12);
         usingSolarPower=false;
@@ -1143,44 +1176,44 @@ if(debug)Serial.print("digitalStablesData.minimumEfficiencyForLed=");
         secretManager.readTank2Name().toCharArray(digitalStablesData.sensor2name, 12); 
         usingSolarPower=false;
     } else if (cswOutput >= 7300 && cswOutput < 7500) {
-        // Position 5: 00101 (R3+R10 ON)
+        // Position 5: 10100 (R3+R10 ON)
         digitalStablesData.currentFunctionValue = DAFFODIL_SCEPTIC_TANK;
         usingSolarPower=false;
     } else if (cswOutput >= 7100 && cswOutput < 7300) {
-        // Position 6: 00110 (R4+R10 ON)
+        // Position 6: 01100 (R4+R10 ON)
         digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
         usingSolarPower=false;
     } else if (cswOutput >= 6900 && cswOutput < 7100) {
-        // Position 7: 00111 (R3+R4+R10 ON)
+        // Position 7: 11100 (R3+R4+R10 ON)
            digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
             usingSolarPower=false;
     } else if (cswOutput >= 6600 && cswOutput < 6900) {
-        // Position 8: 01000 (R11 ON)
+        // Position 8: 00010 (R11 ON)
         usingSolarPower=false;
     } else if (cswOutput >= 6300 && cswOutput < 6600) {
-        // Position 9: 01001 (R3+R11 ON)
+        // Position 9: 10010 (R3+R11 ON)
         usingSolarPower=false;
     } else if (cswOutput >= 6100 && cswOutput < 6300) {
         // Position 10: 01010 (R4+R11 ON)
         usingSolarPower=false;
     } else if (cswOutput >= 5900 && cswOutput < 6100) {
-        // Position 11: 01011 (R3+R4+R11 ON)
+        // Position 11: 11010 (R3+R4+R11 ON)
         usingSolarPower=false;
     } else if (cswOutput >= 5700 && cswOutput < 5900) {
       // 00110
         digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
         usingSolarPower=false;
     } else if (cswOutput >= 5450 && cswOutput < 5700) {
-        // Position 13: 01101 (R3+R10+R11 ON)
+        // Position 13: 10110 (R3+R10+R11 ON)
         usingSolarPower=false;
     } else if (cswOutput >= 5200 && cswOutput < 5450) {
         // Position 14: 01110 (R4+R10+R11 ON)
         usingSolarPower=false;
     } else if (cswOutput >= 4900 && cswOutput < 5200) {
-        // Position 15: 01111 (R3+R4+R10+R11 ON)
+        // Position 15: 11110 (R3+R4+R10+R11 ON)
         usingSolarPower=false;
     } else if (cswOutput >= 4800 && cswOutput < 4900) {
-        // Position 16: 10000 (R13 ON)
+        // Position 16: 00001 (R13 ON)
         digitalStablesData.currentFunctionValue = FUN_1_FLOW;
         attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
         secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, 12);
@@ -1194,7 +1227,7 @@ if(debug)Serial.print("digitalStablesData.minimumEfficiencyForLed=");
           secretManager.readFlow2Name().toCharArray(digitalStablesData.sensor2name, 12);
          usingSolarPower=true;
     } else if (cswOutput >= 4200 && cswOutput < 4500) {
-        // Position 18: 10010 (R4+R13 ON)
+        // Position 18: 01001 (R4+R13 ON)
          usingSolarPower=true;
           digitalStablesData.currentFunctionValue = FUN_1_FLOW_1_TANK;
           attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
@@ -1202,12 +1235,12 @@ if(debug)Serial.print("digitalStablesData.minimumEfficiencyForLed=");
           secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, 12);
           secretManager.readTank2Name().toCharArray(digitalStablesData.sensor2name, 12);
     } else if (cswOutput >= 3900 && cswOutput < 4200) {
-        // Position 19: 10011 (R3+R4+R13 ON)
+        // Position 19: 11001 (R3+R4+R13 ON)
          digitalStablesData.currentFunctionValue = FUN_1_TANK;
     secretManager.readTank1Name().toCharArray(digitalStablesData.sensor1name, 12);
          usingSolarPower=true;
     } else if (cswOutput >= 3700 && cswOutput < 3900) {
-         // Position 20: 10100 (R10+R13 ON)
+         // Position 20: 00101 (R10+R13 ON)
          digitalStablesData.currentFunctionValue = FUN_2_TANK;
     secretManager.readTank1Name().toCharArray(digitalStablesData.sensor1name, 12);
     secretManager.readTank2Name().toCharArray(digitalStablesData.sensor2name, 12);
@@ -1218,35 +1251,35 @@ if(debug)Serial.print("digitalStablesData.minimumEfficiencyForLed=");
  
          usingSolarPower=true;
     } else if (cswOutput >= 3100 && cswOutput < 3400) {
-         // Position 22: 10110 (R4+R10+R13 ON)
+         // Position 22: 01101 (R4+R10+R13 ON)
            digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
  
          usingSolarPower=true;
     } else if (cswOutput >= 2800 && cswOutput < 3100) {
-         // Position 23: 10111 (R3+R4+R10+R13 ON)
+         // Position 23: 11101 (R3+R4+R10+R13 ON)
             digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
  
          usingSolarPower=true;
     } else if (cswOutput >= 2400 && cswOutput < 2800) {
-         // Position 24: 11000 (R11+R13 ON)
+         // Position 24: 00011 (R11+R13 ON)
          usingSolarPower=true;
     } else if (cswOutput >= 2000 && cswOutput < 2400) {
-         // Position 25: 11001 (R3+R11+R13 ON)
+         // Position 25: 10011 (R3+R11+R13 ON)
          usingSolarPower=true;
     } else if (cswOutput >= 1700 && cswOutput < 2000) {
-        // Position 26: 11010 (R4+R11+R13 ON)
+        // Position 26: 01011 (R4+R11+R13 ON)
          usingSolarPower=true;
     } else if (cswOutput >= 1380 && cswOutput < 1700) {
         // Position 27: 11011 (R3+R4+R11+R13 ON)
          usingSolarPower=true;
     } else if (cswOutput >= 1100 && cswOutput < 1380) {
-        // Position 28: 11100 (R10+R11+R13 ON)
+        // Position 28: 00111 (R10+R11+R13 ON)
          usingSolarPower=true;
     } else if (cswOutput >= 700 && cswOutput < 1100) {
-         // Position 29: 11101 (R3+R10+R11+R13 ON)
+         // Position 29: 10111 (R3+R10+R11+R13 ON)
          usingSolarPower=true;
     } else if (cswOutput >= 350 && cswOutput < 700) {
-        // Position 30: 11110 (R4+R10+R11+R13 ON)
+        // Position 30:  01111 (R4+R10+R11+R13 ON)
          usingSolarPower=true;
     } else if (cswOutput < 350) {
          // Position 31: 11111 (All ON) - assuming this is very low
@@ -3023,7 +3056,7 @@ wifistatus = wifiManager.getWifiStatus();
     {
       // ConfigWifiSTA#ssid#password
       // ConfigWifiSTA#MainRouter24##GardenShed#
-      // ConfigWifiSTA#LivingRoom##GardenShed#
+      // ConfigWifiSTA#MainRouter24##TestOffice#
       
       String ssid = generalFunctions.getValue(command, '#', 1);
       String password = generalFunctions.getValue(command, '#', 2);
@@ -3045,6 +3078,7 @@ wifistatus = wifiManager.getWifiStatus();
       // ConfigWifiAP#soft_ap_ssid#soft_ap_password#hostaname
       // ConfigWifiAP#GHTank##GHTank#
       // ConfigWifiAP#BigCap##BigCap#
+      // ConfigWifiAP#TestOffice##TestOffice#
 
       String soft_ap_ssid = generalFunctions.getValue(command, '#', 1);
       String soft_ap_password = generalFunctions.getValue(command, '#', 2);
