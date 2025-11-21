@@ -74,7 +74,7 @@ String ipAddress = "";
 boolean initiatedWifi = false;
 // #define address 0x40
 SHTSensor sht;
-bool debug=false;
+bool debug=true;
 DataManager dataManager(Serial, LittleFS);
 
 HourlySolarPowerData hourlySolarPowerData;
@@ -673,9 +673,13 @@ int sendMessage(const T& inputData)
       LoRa.write((uint8_t *)&dataToSend, sizeof(T));
       digitalStablesData.asyncdata = 12;
       readSensorData();
-      if(dataManager.getDSDStoredCount()<MAXIMUM_STORED_RECORDS){
-         dataManager.storeDSDData(digitalStablesData);
+      if(debug)Serial.println("linr 676");
+      int count=dataManager.getDSDStoredCount();
+       if(debug)Serial.println("linr 678,, count=" + String(count));
+      if(count<MAXIMUM_STORED_RECORDS){
+    //     dataManager.storeDSDData(digitalStablesData);
       }
+       if(debug)Serial.println("linr 682");
   
       if (!LoRa.endPacket(true)) {
         result = LORA_TX_FAILED;
@@ -892,10 +896,10 @@ if(debug)Serial.print("digitalStablesData.minimumEfficiencyForLed=");
   digitalStablesData.secondsTime = timeManager.getCurrentTimeInSeconds(currentTimerRecord);
   digitalStablesData.asyncdata = 1;
   
-  if(dataManager.getDSDStoredCount()<MAXIMUM_STORED_RECORDS){
-    dataManager.storeDSDData(digitalStablesData);
-  }
-  
+//  if(dataManager.getDSDStoredCount()<MAXIMUM_STORED_RECORDS){
+   // dataManager.storeDSDData(digitalStablesData);
+  //}
+  Serial.println("line 898");
   
   //  const char* ntpServer = "pool.ntp.org";
   //  const long gmtOffset_sec = 36000;  // Melbourne is UTC+10
@@ -1273,11 +1277,11 @@ if(debug)Serial.print("digitalStablesData.minimumEfficiencyForLed=");
         // Position 27: 11011 (R3+R4+R11+R13 ON)
          usingSolarPower=true;
     } else if (cswOutput >= 1100 && cswOutput < 1380) {
-        // Position 28: 00111 (R10+R11+R13 ON)
+        // Position 6: 00111 (R4+R10 ON)
+        digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
          usingSolarPower=true;
     } else if (cswOutput >= 700 && cswOutput < 1100) {
-         // Position 29: 10111 (R3+R10+R11+R13 ON)
-         usingSolarPower=true;
+        
     } else if (cswOutput >= 350 && cswOutput < 700) {
         // Position 30:  01111 (R4+R10+R11+R13 ON)
          usingSolarPower=true;
@@ -1480,6 +1484,8 @@ void goToSleep(){
    
      digitalStablesData.sleepTime=seconds_sleep;
     readSensorData();
+    if(debug)Serial.println("linr 1483");
+
     digitalStablesData.ledBrightness=powerManager->isLoraTxSafe(0,currentTimerRecord);
     digitalStablesData.operatingStatus=OPERATING_STATUS_SLEEP;
     digitalStablesData.asyncdata = 4;
@@ -2214,13 +2220,13 @@ if(loraReceived){
     //
     
     readSensorData();    
-
-     int dsdStoredCount=dataManager.getDSDStoredCount();
-    if(dsdStoredCount>(int)(.7*MAXIMUM_STORED_RECORDS)){
-      memoryFull=true;
-    }else{
-      memoryFull=false;
-    }
+if(debug)Serial.println("linr 2219");
+    //  int dsdStoredCount=dataManager.getDSDStoredCount();
+    // if(dsdStoredCount>(int)(.7*MAXIMUM_STORED_RECORDS)){
+    //   memoryFull=true;
+    // }else{
+    //   memoryFull=false;
+    // }
     
       
       if(remoteMonitorTimer.status()){
@@ -2705,10 +2711,12 @@ wifistatus = wifiManager.getWifiStatus();
         {
 
           readSensorData();
+                 if(debug)Serial.println("line 2708");
+
           digitalStablesData.asyncdata=9;
-          if(dataManager.getDSDStoredCount()<MAXIMUM_STORED_RECORDS){
-            dataManager.storeDSDData(digitalStablesData);
-          }
+          // if(dataManager.getDSDStoredCount()<MAXIMUM_STORED_RECORDS){
+          //   dataManager.storeDSDData(digitalStablesData);
+          // }
     
           loraLastResult = sendMessage(digitalStablesData);
          
@@ -2778,9 +2786,9 @@ wifistatus = wifiManager.getWifiStatus();
       // for s
       //SetTroughParameters#troughheight#troughlevelminimumcm#troughlevelmaximumcm#
      // for sumptrough
-     //SetTroughParameters#69#29#39#
+     //SetTroughParameters#69#42#50#
       //
-      // for fishtank
+      // for                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            tank
      //SetTroughParameters#69#42#50#
       
        digitalStablesData.maximumScepticHeight=generalFunctions.stringToDouble(generalFunctions.getValue(command, '#', 1));
@@ -2994,6 +3002,7 @@ wifistatus = wifiManager.getWifiStatus();
     }
     else if (command.startsWith("SetDeviceSensorConfig"))
     {
+     // SetDeviceSensorConfig#FISHTANK #FISH #Tank#Temp#AEST-10AEDT,M10.1.0,M4.1.0/3#-37.13305556#144.47472222#410#20#50#
      // SetDeviceSensorConfig#SumpTrough #SUMP #Tank#Temp#AEST-10AEDT,M10.1.0,M4.1.0/3#-37.13305556#144.47472222#410#20#50#
 // SetDeviceSensorConfig#Seedling #SEED #NoSensor#Temperature#AEST-10AEDT,M10.1.0,M4.1.0/3#-37.13305556#144.47472222#410#20#50#
 //SetDeviceSensorConfig#Sceptic #SCEP #NoSensor#Temperature#AEST-10AEDT,M10.1.0,M4.1.0/3#-37.13305556#144.47472222#410#40#50#
