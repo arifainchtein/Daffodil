@@ -1181,7 +1181,7 @@ if(debug)Serial.print("digitalStablesData.minimumEfficiencyForLed=");
         usingSolarPower=false;
     } else if (cswOutput >= 7300 && cswOutput < 7500) {
         // Position 5: 10100 (R3+R10 ON)
-        digitalStablesData.currentFunctionValue = DAFFODIL_SCEPTIC_TANK;
+        digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;//DAFFODIL_SCEPTIC_TANK;
         usingSolarPower=false;
     } else if (cswOutput >= 7100 && cswOutput < 7300) {
         // Position 6: 01100 (R4+R10 ON)
