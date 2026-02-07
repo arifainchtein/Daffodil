@@ -111,7 +111,7 @@ NewPing sonar(TRIGGER_PIN, ECHO_PIN, MAX_DISTANCE); // NewPing setup of pins and
 #define MAX_RETRIES      5       // Maximum transmission retries
 #define MIN_BACKOFF      500     // Minimum backoff time in milliseconds
 #define MAX_BACKOFF      1500    // Maximum backoff time in milliseconds
-#define RSSI_THRESHOLD   -85     // RSSI threshold in dBm
+#define RSSI_THRESHOLD   -50     // RSSI threshold in dBm
 //define LORA_SAMPLES 3 // Number of samples to take
 //define CHECK_LORA_DELAY 2 // Delay between samples in ms
 
@@ -573,6 +573,7 @@ LoRaError performCAD1() {
     if (avgRssi > RSSI_THRESHOLD) {
         LoRa.idle();
         errorManager.setLoRaError(LORA_CHANNEL_BUSY);
+        drawLora(2);
         return LORA_CHANNEL_BUSY;
     }
 
@@ -1462,7 +1463,7 @@ if(debug)Serial.print("digitalStablesData.minimumEfficiencyForLed=");
   if (!LoRa.begin(433E6))
   {
    // Serial.println("Starting LoRa failed!");
-   // drawLora(false);
+   // drawLora(0);
     while (1)
       ;
   //  leds[1] = CRGB(255, 0, 0);
@@ -1470,7 +1471,7 @@ if(debug)Serial.print("digitalStablesData.minimumEfficiencyForLed=");
   else
   {
   //  Serial.println("Starting LoRa worked!");
-   // drawLora(true);
+   // drawLora(1);
     loraActive = true;
     
     
@@ -2042,22 +2043,29 @@ void drawError(uint8_t code, uint8_t color)
   FastLED.show();
 }
 
-void drawLora(boolean active)
+void drawLora(int status)
 {
   for (int i = 0; i < NUM_LEDS; i++)
   {
     leds[i] = CRGB(0, 0, 0);
   }
   FastLED.show();
-  if (active)
+  if (status==1)
   {
     leds[1] = CRGB(0, 255, 0);
     leds[6] = CRGB(0, 255, 0);
     leds[11] = CRGB(0, 255, 0);
     leds[12] = CRGB(0, 255, 0);
     // leds[13] = CRGB(0, 255, 0);
+  }else if (status==2)
+  {
+    leds[1] = CRGB(255, 255, 0);
+    leds[6] = CRGB(255, 255, 0);
+    leds[11] = CRGB(255, 255, 0);
+    leds[12] = CRGB(255, 255, 0);
+    // leds[13] = CRGB(0, 255, 0);
   }
-  else
+  else if(status==0)
   {
     leds[1] = CRGB(255, 0, 0);
     leds[6] = CRGB(255, 0, 0);
@@ -2840,7 +2848,7 @@ wifistatus = wifiManager.getWifiStatus();
         if(debug)Serial.println(loraTxOk);
         if (loraActive && loraTxOk)
         {
-
+          delay(random(100, 3000));
           readSensorData();
                  if(debug)Serial.println("line 2708");
 
@@ -2852,14 +2860,14 @@ wifistatus = wifiManager.getWifiStatus();
           loraLastResult = sendMessage(digitalStablesData);
          
           if(loraLastResult==LORA_TX_FAILED){
-            drawLora(false);
+            drawLora(0);
           }else if(loraLastResult==LORA_OK){
-            drawLora(true);
+            drawLora(1);
           }  
         }
         else
         {
-          drawLora(false);
+          drawLora(0);
         }
       }else if (displayStatus == SHOW_ERROR_STATUS )
       {
