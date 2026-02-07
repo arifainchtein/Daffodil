@@ -111,7 +111,7 @@ NewPing sonar(TRIGGER_PIN, ECHO_PIN, MAX_DISTANCE); // NewPing setup of pins and
 #define MAX_RETRIES      5       // Maximum transmission retries
 #define MIN_BACKOFF      500     // Minimum backoff time in milliseconds
 #define MAX_BACKOFF      1500    // Maximum backoff time in milliseconds
-#define RSSI_THRESHOLD   -60     // RSSI threshold in dBm
+#define RSSI_THRESHOLD   -85     // RSSI threshold in dBm
 //define LORA_SAMPLES 3 // Number of samples to take
 //define CHECK_LORA_DELAY 2 // Delay between samples in ms
 
@@ -504,6 +504,50 @@ void LoRa_rxMode()
 }
 
 LoRaError performCAD() {
+  if (!loraActive) {
+    return LORA_INIT_FAILED;
+  }
+
+  // 1. Prepare for a clean reading
+  LoRa.idle();   
+  LoRa.receive(); 
+  
+  // 2. Faster Sampling
+  // We reduce the delay and sample count to minimize "blind time"
+  const int SAMPLES = 4;
+  float rssiSum = 0;
+
+  for (int i = 0; i < SAMPLES; i++) {
+    rssiSum += LoRa.rssi();
+    delayMicroseconds(500); // Very fast check
+  }
+
+  avgRssi = rssiSum / SAMPLES;
+
+  // 3. Forgiving Threshold
+  // Using -85 allows the system to ignore background greenhouse noise
+  // but still detect another LoRa unit nearby.
+  if (avgRssi > -85) { 
+    if(debug) {
+      Serial.print("Channel Busy! RSSI: ");
+      Serial.println(avgRssi);
+    }
+    LoRa.idle();
+    return LORA_CHANNEL_BUSY;
+  }
+
+  // Clear for transmission
+  if(debug) {
+    Serial.print("Channel Clear. RSSI: ");
+    Serial.println(avgRssi);
+  }
+  
+  errorManager.clearLoRaError(LORA_CHANNEL_BUSY);
+  return LORA_OK;
+}
+
+
+LoRaError performCAD1() {
     if (!loraActive) {
         errorManager.setLoRaError(LORA_INIT_FAILED);
         return LORA_INIT_FAILED;
@@ -624,7 +668,86 @@ uint8_t calculateChecksum(const T& data) {
 }
 
 template <typename T>
-int sendMessage(const T& inputData)
+int sendMessage(const T& inputData) {
+  // 1. DATA PREPARATION (Done before LoRa starts)
+  // We work on a local copy to ensure the original data isn't modified during TX
+  T dataToSend = inputData;
+  
+  // Update internal states and read sensors BEFORE touching LoRa
+  digitalStablesData.asyncdata = 12; 
+  readSensorData(); 
+  
+  // Security and Checksum logic
+  long code = secretManager.generateCode();
+  
+  if constexpr (std::is_same<T, DigitalStablesData>::value || std::is_same<T, RequestCommand>::value) {
+    dataToSend.totpcode = code;
+    dataToSend.checksum = 0;
+    dataToSend.checksum = calculateChecksum(dataToSend);
+  }
+
+  if(debug) {
+    Serial.print("Sending LoRa SN="); Serial.print(serialNumber);
+    Serial.print(" TOTP="); Serial.print(code);
+    Serial.print(" Checksum="); Serial.println(dataToSend.checksum, HEX);
+  }
+
+  // 2. TRANSMISSION PHASE
+  LoRa_txMode();
+  
+  uint8_t result = 99;
+  int retries = 0;
+  bool keepGoing = true;
+  long startsendingtime = millis();
+
+  while (keepGoing) {
+    cadResult = performCAD();
+    
+    if (cadResult == LORA_OK) {
+      // Channel is clear, send immediately
+      LoRa.beginPacket();
+      LoRa.write((uint8_t *)&dataToSend, sizeof(T));
+      
+      // We use blocking mode (false) to ensure the packet is physically 
+      // out of the antenna before we switch back to RX mode.
+      if (!LoRa.endPacket(false)) { 
+        result = LORA_TX_FAILED;
+      } else {
+        result = LORA_OK;
+      }
+      
+      if(debug) {
+        Serial.print("TX took "); Serial.print(millis() - startsendingtime); Serial.println("ms");
+      }
+      keepGoing = false;
+    } 
+    else if (cadResult == LORA_CHANNEL_BUSY) {
+      // Channel busy? Backoff and retry
+      int backoff = random(MIN_BACKOFF * (1 << retries), MAX_BACKOFF * (1 << retries));
+      if(debug) Serial.println("Busy, waiting " + String(backoff) + "ms");
+      
+      delay(backoff);
+      retries++;
+      keepGoing = (retries < MAX_RETRIES);
+      if(!keepGoing) result = LORA_MAX_RETRIES_REACHED;
+    } 
+    else {
+      // Hardware error
+      result = cadResult;
+      keepGoing = false;
+    }
+  }
+
+  // 3. CLEANUP
+  delay(50);      // Tiny grace period for hardware stability
+  LoRa_rxMode();  // Return to listening
+  msgCount++; 
+  
+  return result;
+}
+
+template <typename T>
+int sendMessage1(const T& inputData)
 {
     T dataToSend = inputData;
   
