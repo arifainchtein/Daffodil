@@ -28,7 +28,7 @@
 #include <ErrorDefinitions.h>
 #include <DataManager.h>
 #include <LittleFS.h>
-//#include <driver/adc.h>
+#include <driver/adc.h>
 #include <BH1750.h>
 #include <Adafruit_INA219.h>
 #include <esp_sleep.h>
@@ -874,7 +874,7 @@ Serial.println("line 819, troughlevelmaximumcm=" + String(troughlevelmaximumcm))
   digitalStablesData.longitude=longitude;
 
 if(debug)Serial.print("digitalStablesData.minimumEfficiencyForLed=");
-  if(debug)Serial.println(digitalStablesData.minimumEfficiencyForLed);
+ if(debug)Serial.println(digitalStablesData.minimumEfficiencyForLed);
   
   if(debug)Serial.print("sizeof DigitalStablesData=");
   if(debug)Serial.println(sizeof(DigitalStablesData));
@@ -1293,7 +1293,8 @@ if(debug)Serial.print("digitalStablesData.minimumEfficiencyForLed=");
          usingSolarPower=false;
     } 
 
-  
+   // digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;//DAFFODIL_SCEPTIC_TANK;
+   //     usingSolarPower=false;
   
  
 
@@ -1348,9 +1349,13 @@ if(debug)Serial.print("digitalStablesData.minimumEfficiencyForLed=");
   //  Serial.println("Starting LoRa worked!");
    // drawLora(true);
     loraActive = true;
-    // Configure LoRa parameters
-   // LoRa.setSpreadingFactor(12);
-   // LoRa.setSignalBandwidth(125E3);
+    
+    
+     // Configure LoRa parameters
+        LoRa.setTxPower(14/3);
+        LoRa.setSpreadingFactor(9);
+        LoRa.enableCrc();
+        LoRa.setSignalBandwidth(125E3);
    // LoRa.setCodingRate4(8);
     if(powerManager->isLoraTxSafe(9,currentTimerRecord)!=powerManager->LORA_TX_NOT_ALLOWED)loraTxOk=true;
   }
@@ -2779,6 +2784,12 @@ wifistatus = wifiManager.getWifiStatus();
     if (command.startsWith("Ping"))
     {
       Serial.println(F("Ok-Ping"));
+    }else if(command.startsWith("debug")){
+      int debugv = generalFunctions.getValue(command, '#', 1).toInt();
+        if(debugv>0)debug=true;
+        else debug=false;
+    Serial.println("Ok-debug");
+        Serial.flush(); 
     }
     else if(command.startsWith("goToSleep"))
     {
@@ -2789,7 +2800,7 @@ wifistatus = wifiManager.getWifiStatus();
       // for s
       //SetTroughParameters#troughheight#troughlevelminimumcm#troughlevelmaximumcm#
      // for sumptrough
-     //SetTroughParameters#69#42#50#
+     //SetTroughParameters#29#39#45#
       //
       // for                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            tank
      //SetTroughParameters#69#42#50#
@@ -2821,14 +2832,7 @@ wifistatus = wifiManager.getWifiStatus();
         Serial.println("Ok-usingSolarPower");
         Serial.flush(); 
     }
-     else if(command.startsWith("debug"))
-    {
-      int debugv = generalFunctions.getValue(command, '#', 1).toInt();
-        if(debugv>0)debug=true;
-        else debug=false;
-    Serial.println("Ok-debug");
-        Serial.flush(); 
-    }
+                                            
     else if(command.startsWith("storeDSDData"))
     {
       digitalStablesData.asyncdata=10;
@@ -2858,6 +2862,7 @@ wifistatus = wifiManager.getWifiStatus();
          Serial.println("cswCapVoltage=" + String(cswCapVoltage));
          Serial.println("factor=" + String(factor));
          Serial.println("cswOutput=" + String(cswOutput));
+         Serial.println("usingSolarPower=" + String(usingSolarPower));
           Serial.println("");
       dataManager.printDigitalStablesData(digitalStablesData);
       Serial.println("Ok-printCurrentDSDData");
@@ -3010,8 +3015,8 @@ wifistatus = wifiManager.getWifiStatus();
 // SetDeviceSensorConfig#Seedling #SEED #NoSensor#Temperature#AEST-10AEDT,M10.1.0,M4.1.0/3#-37.13305556#144.47472222#410#20#50#
 //SetDeviceSensorConfig#Sceptic #SCEP #NoSensor#Temperature#AEST-10AEDT,M10.1.0,M4.1.0/3#-37.13305556#144.47472222#410#40#50#
   //SetDeviceSensorConfig#GH Tank#GHTP #Tank#Temp#AEST-10AEDT,M10.1.0,M4.1.0/3#-37.13305556#144.47472222#410#20#50#
-//SetDeviceSensorConfig#Big Cap #BIGC #No Sensor#No Sensor#AEST-10AEDT,M10.1.0,M4.1.0/3#-37.13305556#144.47472222#410#20#50#
-// SetDeviceSensorConfig#Test Office #TEST #No Sensor#No Sensor#AEST-10AEDT,M10.1.0,M4.1.0/3#-37.13305556#144.47472222#410#20#50#
+//SetDeviceSensorConfig#Creek Trough #CREEK #No Sensor#No Sensor#AEST-10AEDT,M10.1.0,M4.1.0/3#-37.13305556#144.47472222#410#20#50#
+// SetDeviceSensorConfig#Big Cap #BIGC #No Sensor#No Sensor#AEST-10AEDT,M10.1.0,M4.1.0/3#-37.13305556#144.47472222#410#20#50#
       // SetDeviceSensorConfig#DaffOffice#OFDA#NoSensor#Temperature#AEST-10AEDT,M10.1.0,M4.1.0/3#-37.13305556#144.47472222#410#40#50#
       String devicename = generalFunctions.getValue(command, '#', 1);
       String deviceshortname = generalFunctions.getValue(command, '#', 2);
@@ -3021,6 +3026,8 @@ wifistatus = wifiManager.getWifiStatus();
       String timezone = generalFunctions.getValue(command, '#', 5);
       Serial.print("deviceshortname=");
       Serial.println(deviceshortname);
+       Serial.print("devicename=");
+      Serial.println(devicename);
       double latitude=generalFunctions.stringToDouble(generalFunctions.getValue(command, '#', 6));
       double longitude=generalFunctions.stringToDouble(generalFunctions.getValue(command, '#', 7));
       double altitude=generalFunctions.stringToDouble(generalFunctions.getValue(command, '#', 8));
