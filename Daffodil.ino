@@ -111,7 +111,7 @@ NewPing sonar(TRIGGER_PIN, ECHO_PIN, MAX_DISTANCE); // NewPing setup of pins and
 #define MAX_RETRIES      5       // Maximum transmission retries
 #define MIN_BACKOFF      500     // Minimum backoff time in milliseconds
 #define MAX_BACKOFF      1500    // Maximum backoff time in milliseconds
-#define RSSI_THRESHOLD   -50     // RSSI threshold in dBm
+#define RSSI_THRESHOLD   -80     // RSSI threshold in dBm
 //define LORA_SAMPLES 3 // Number of samples to take
 //define CHECK_LORA_DELAY 2 // Delay between samples in ms
 
@@ -504,6 +504,7 @@ void LoRa_rxMode()
 }
 
 LoRaError performCAD() {
+  
   if (!loraActive) {
     return LORA_INIT_FAILED;
   }
@@ -700,7 +701,9 @@ int sendMessage(const T& inputData) {
   int retries = 0;
   bool keepGoing = true;
   long startsendingtime = millis();
-
+LoRa.idle();
+LoRa.flush();
+delay(50);
   while (keepGoing) {
     cadResult = performCAD();
     
@@ -708,17 +711,18 @@ int sendMessage(const T& inputData) {
       // Channel is clear, send immediately
       LoRa.beginPacket();
       LoRa.write((uint8_t *)&dataToSend, sizeof(T));
-      
+      long start=millis();
+
       // We use blocking mode (false) to ensure the packet is physically 
       // out of the antenna before we switch back to RX mode.
-      if (!LoRa.endPacket(false)) { 
+      if (!LoRa.endPacket(true)) { 
         result = LORA_TX_FAILED;
       } else {
         result = LORA_OK;
       }
-      
+      delay(600);
       if(debug) {
-        Serial.print("TX took "); Serial.print(millis() - startsendingtime); Serial.println("ms");
+        Serial.print ("Handover took=");  Serial.print(millis()-start);Serial.print("TX took "); Serial.print(millis() - startsendingtime); Serial.println("ms");
       }
       keepGoing = false;
     } 
@@ -741,9 +745,9 @@ int sendMessage(const T& inputData) {
 
   // 3. CLEANUP
   delay(50);      // Tiny grace period for hardware stability
-  LoRa_rxMode();  // Return to listening
+ 
   msgCount++; 
-  
+   LoRa_rxMode();  // Return to listening
   return result;
 }
 
@@ -1476,7 +1480,8 @@ if(debug)Serial.print("digitalStablesData.minimumEfficiencyForLed=");
     
     
      // Configure LoRa parameters
-        LoRa.setTxPower(14/3);
+       LoRa.setSPIFrequency(1000000);
+        LoRa.setTxPower(5);
         LoRa.setSpreadingFactor(9);
         LoRa.enableCrc();
         LoRa.setSignalBandwidth(125E3);
