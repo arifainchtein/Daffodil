@@ -28,11 +28,11 @@
 #include <ErrorDefinitions.h>
 #include <DataManager.h>
 #include <LittleFS.h>
-#include <driver/adc.h>
+//#include <driver/adc.h>
 #include <BH1750.h>
 #include <Adafruit_INA219.h>
 #include <esp_sleep.h>
-#include <driver/adc.h>
+//#include <driver/adc.h>
 
 #define RTC_CLK_OUT 4
 #define MISO 12
@@ -57,7 +57,7 @@
  #define SENSOR_INPUT_1 32
 //#define ADS115_ALERT 35
 #define TPL5010_WAKE 35
-#define RTC_BATT_VOLT ADC1_CHANNEL_0
+#define RTC_BATT_VOLT 36
 
 
 
@@ -112,6 +112,11 @@ NewPing sonar(TRIGGER_PIN, ECHO_PIN, MAX_DISTANCE); // NewPing setup of pins and
 #define MIN_BACKOFF      500     // Minimum backoff time in milliseconds
 #define MAX_BACKOFF      1500    // Maximum backoff time in milliseconds
 #define RSSI_THRESHOLD   -80     // RSSI threshold in dBm
+
+
+
+
+
 //define LORA_SAMPLES 3 // Number of samples to take
 //define CHECK_LORA_DELAY 2 // Delay between samples in ms
 
@@ -903,12 +908,19 @@ void listFiles(const char * dirname) {
 //
 void setup()
 {
+  gpio_hold_dis((gpio_num_t)LED_CONTROL);
+
+  pinMode(LED_CONTROL, OUTPUT);
+  digitalWrite(LED_CONTROL, LOW);
+  
+  pinMode(SLEEP_SWITCH_26, OUTPUT);
+  digitalWrite(SLEEP_SWITCH_26, HIGH);
+  delay(100);
   Serial.begin(115200);
   Wire.begin();
   Wire.setClock(400000);
 
-  pinMode(SLEEP_SWITCH_26, OUTPUT);
-  digitalWrite(SLEEP_SWITCH_26, HIGH);
+  
 
 // Try to mount LittleFS if (!LittleFS.begin()) { Serial.println("LittleFS mount failed! Formatting..."); if (LittleFS.format()) { Serial.println("LittleFS formatted successfully."); if (LittleFS.begin()) { Serial.println("LittleFS mounted successfully after formatting."); } else { Serial.println("Failed to mount LittleFS after formatting."); } } else { Serial.println("Failed to format LittleFS."); } } else { Serial.println("LittleFS mounted successfully."); } }
 
@@ -956,8 +968,6 @@ listFiles("/data/"); // If you have a data folder
 print_wakeup_reason();
 dataManager.start();
 
-  pinMode(LED_CONTROL, OUTPUT);
-  digitalWrite(LED_CONTROL, LOW);
 
   
 
@@ -1522,9 +1532,7 @@ if(debug)Serial.print("digitalStablesData.minimumEfficiencyForLed=");
   if(debug)Serial.println(digitalStablesConfigData.fieldId);
 
   pinMode(RTC_BATT_VOLT, INPUT);
-   adc1_config_width(ADC_WIDTH_BIT_12);
-  adc1_config_channel_atten(RTC_BATT_VOLT, ADC_ATTEN_DB_11);  // 0-3.1V range
-
+  
   opmode = digitalRead(OP_MODE);
   digitalStablesData.opMode = opmode;
 
@@ -1610,9 +1618,62 @@ void sleepDS18B20() { // Put OneWire bus in high impedance state pinMode(ONE_WIR
   oneWire.reset();      // Reset to stop conversion
 } 
 
+void goToSleep() {
+    // 1. Calculate sleep timing
+    long seconds_sleep = powerManager->calculateOptimalSleepTime(currentTimerRecord);
+    uint64_t sleep_time_us = (uint64_t)(seconds_sleep * 1000000ULL);
+    
+    if(debug) Serial.printf("Preparing sleep for %lld us\n", sleep_time_us);
 
+    // 2. Shut down high-power radios and sensors
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+    btStop();
+    
+    // Explicitly sleep the LoRa chip before cutting its power
+    // This ensures the Semtech chip is in its lowest internal state
+    LoRa.sleep(); 
+    ADS.setMode(1); // ADS1115 Power-down mode
+    sleepDS18B20();
 
-void goToSleep(){
+    // 3. Final data loggingj
+    digitalStablesData.operatingStatus = OPERATING_STATUS_SLEEP;
+    if(dataManager.getDSDStoredCount() < MAXIMUM_STORED_RECORDS) {
+        dataManager.storeDSDData(digitalStablesData);
+    }
+    
+    // 4. PREVENT LEAKAGE: Configure Pins for Deep Sleep
+    // Resetting pins or setting them to INPUT can allow current to "leak" 
+    // into sensors. We set SPI pins to a safe state.
+    pinMode(MISO, INPUT_PULLDOWN);
+    pinMode(MOSI, INPUT_PULLDOWN);
+    pinMode(SCK, INPUT_PULLDOWN);
+    pinMode(LoRa_SS, INPUT_PULLUP); // Keep CS high to keep LoRa deselected
+
+    // 5. THE CRITICAL FIX: Kill Power and HOLD it
+    // Instead of setting to INPUT (which floats), we keep it LOW as an OUTPUT.
+    digitalWrite(LED_CONTROL, LOW);
+    digitalWrite(SLEEP_SWITCH_26, LOW); 
+    
+    // This tells the RTC controller to maintain the current state of pin 26
+    // even while the main ESP32 CPU is powered off.
+    gpio_hold_en((gpio_num_t)SLEEP_SWITCH_26);
+    gpio_hold_en((gpio_num_t)LED_CONTROL);
+    
+    
+    gpio_deep_sleep_hold_en();
+
+    // 6. Enter Deep Sleep
+    if(debug) {
+        Serial.println("Power lines isolated. Entering deep sleep.");
+        Serial.flush();
+    }
+    
+    esp_sleep_enable_timer_wakeup(sleep_time_us);
+    esp_deep_sleep_start();
+}
+
+void goToSleepold(){
    
      long seconds_sleep= powerManager->calculateOptimalSleepTime(currentTimerRecord);
      uint64_t sleep_time_us = (uint64_t)(seconds_sleep * 1000000ULL);
@@ -1712,7 +1773,7 @@ if(dataManager.getDSDStoredCount()<MAXIMUM_STORED_RECORDS){
     esp_sleep_enable_timer_wakeup(sleep_time_us);
     digitalWrite(SLEEP_SWITCH_26, LOW);
     delay(100);
-    pinMode(SLEEP_SWITCH_26, INPUT);
+    pinMode(SLEEP_SWITCH_26, OUTPUT);
     delay(50);
     esp_deep_sleep_start();
 }
@@ -1757,6 +1818,31 @@ if(dataManager.getDSDStoredCount()<MAXIMUM_STORED_RECORDS){
 void handleWakeInterrupt() {
   wakeSignalReceived = true;
 } 
+
+
+float readRTCBattery() {
+ 
+    
+    // 2. Settle time for 3M total resistance
+    // adc1_get_raw((adc1_channel_t)RTC_BATT_VOLT); 
+    // delay(15); // Give the sampling cap extra time to fill
+
+    float total = 0;
+    for (int x = 0; x < 20; x++) {
+        total += analogRead(RTC_BATT_VOLT);
+        delay(2);
+    }
+    float average = total / 20.0;
+
+    // 3. Convert to voltage at pin
+    float vPin = (average / 4095.0) * Vref;
+
+    // 4. Reverse the divider: Vin = Vout / (R2 / (R1 + R2))
+    // Ratio = 2M / (1M + 2M) = 0.666
+    float rtcCoinCellVolt = vPin / (R2 / (R1 + R2));
+
+    return rtcCoinCellVolt;
+}
 
 void readSensorData(){
     //
@@ -1805,18 +1891,18 @@ void readSensorData(){
     //
     // RTC_BATT_VOLT Voltage
     //
-
+    analogSetPinAttenuation(RTC_BATT_VOLT, ADC_11db);
     float total = 0;
-    uint8_t samples = 10;
+    uint8_t samples = 20;
     for (int x = 0; x < samples; x++)
     {                                            // multiple analogue readings for averaging
-      total = total + adc1_get_raw(RTC_BATT_VOLT); // add each value to a total
-      delay(1);
+      total = total + analogRead(RTC_BATT_VOLT); // add each value to a total
+      delay(2);
     }
     float average = total / samples;
     float voltage = (average / 4095.0) * Vref;
+     if(debug)Serial.println("RTC average=" + String(average));
     // Calculate the actual voltage using the voltage divider formula
-   // float rtcBatVoltage = (voltage * (R1 + R2)) / R2;
     digitalStablesData.rtcBatVolt = (voltage * (R1 + R2)) / R2;
 //
 // current
@@ -3234,6 +3320,7 @@ wifistatus = wifiManager.getWifiStatus();
       // ConfigWifiAP#GHTank##GHTank#
       // ConfigWifiAP#BigCap##BigCap#
       // ConfigWifiAP#TestOffice##TestOffice#
+      //ConfigWifiAP#SumpTrough##SumpTrough#
 
       String soft_ap_ssid = generalFunctions.getValue(command, '#', 1);
       String soft_ap_password = generalFunctions.getValue(command, '#', 2);
@@ -3483,3 +3570,4 @@ void setApMode()
 
   FastLED.show();
 }
+
