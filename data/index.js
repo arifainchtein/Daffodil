@@ -468,7 +468,7 @@ function showDaffodil(){
 
     $('#daffodil-temp-value').html(Math.round(currentData.outdoortemperature));
     $('#daffodil-temp-units').html('C');
-    $('#daffodil-capacitor-value').html(currentData.capacitorVoltage.toFixed(2));  
+    $('#daffodil-capacitor-value').html(currentData.batteryVoltage.toFixed(2) + ' / ' + (currentData.v50Voltage || 0).toFixed(2));
     $('#daffodil-humidity-value').html(Math.round(currentData.outdoorhumidity));
     $('#daffodil-humidity-units').html('C%');
     $('#daffodil-sceptic').removeClass('d-none').addClass('d-block');
