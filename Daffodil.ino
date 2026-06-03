@@ -27,6 +27,7 @@
 #include <ErrorManager.h>
 #include <ErrorDefinitions.h>
 #include <DataManager.h>
+#include "CommaRecord.h"
 #include <LittleFS.h>
 //#include <driver/adc.h>
 #include <BH1750.h>
@@ -57,13 +58,21 @@
 
 
 
-#define SHUNT_RESISTANCE 0.050  // Shunt resistor value in Ohm
 Adafruit_INA219 ina219(0x41);
-float SHUNT_OHMS = 0.05;     // Your shunt resistor value in ohms
+float SHUNT_OHMS = 0.050;    // Shunt resistor value in Ohms — JLCPCB C2596036 50mΩ
 #define MAX_CURRENT 1.0      // Maximum expected current in Amps
-#define CURRENT_LSB 0.00003  // Current LSB in A/bit (10µA per bit for higher precision)
+#define CURRENT_LSB 0.0001   // Current LSB in A/bit — Adafruit default (100µA/bit for 32V/2A mode)
 boolean memoryFull = false;
 static volatile bool runWatchdog = true;
+
+// All survive hardware resets (TPL5010 watchdog, brownout, etc.)
+RTC_DATA_ATTR static uint32_t rtc_intended_wakeup_time = 0; // intended wakeup Unix-seconds
+RTC_DATA_ATTR static bool     rtc_comma_mode = false;       // battery critically low; skip full boot
+RTC_DATA_ATTR static bool     rtc_has_comma_data = false;   // COMMA session just ended, send recovery LoRa
+RTC_DATA_ATTR static uint32_t rtc_comma_first_time = 0;     // Unix-seconds when this COMMA session started
+RTC_DATA_ATTR static float    rtc_comma_min_voltage = 99.0f;// lowest voltage seen in this COMMA session
+RTC_DATA_ATTR static uint32_t rtc_comma_cycle_count = 0;    // number of 10-min cycles in this session
+RTC_DATA_ATTR static char     rtc_device_shortname[8] = {0};// device short name, populated on full boot
 
 String currentSSID;
 String ipAddress = "";
@@ -85,6 +94,8 @@ CRGB leds[NUM_LEDS];
 #define OPERATING_STATUS_SLEEP 1
 #define OPERATING_STATUS_NO_LED 2
 #define OPERATING_STATUS_FULL_MODE 3
+#define OPERATING_STATUS_CLOUDY 4
+#define OPERATING_STATUS_COMMA 5   // battery critically low — permanent deep sleep
 
 
 ErrorManager errorManager;
@@ -135,7 +146,7 @@ volatile bool RDY = false;
 OneWire oneWire(TEMPERATURE);
 DallasTemperature tempSensor(&oneWire);
 
-Timer viewTimer(2);
+Timer viewTimer(3);
 Timer remoteMonitorTimer(5);
 #define MAXIMUM_STORED_RECORDS 2000
 
@@ -160,24 +171,31 @@ float avgRssi = 0;
 #define SHOW_SCEPTIC 1
 #define SHOW_INTERNET_STATUS 2
 #define SEND_LORA_STATUS 3
-#define SHOW_ERROR_STATUS 4
-#define SHOW_BATTERY_STATUS 5
+#define SHOW_ERROR_STATUS 5
+#define SHOW_BATTERY_STATUS 4
 //
 // sleeping parameters
 //
 // LiFePO4 battery thresholds (Build 7: replaced supercapacitors with 3.2V LiFePO4 cell)
 #define BATTERY_CAPACITY_MAH 600.0   // usable capacity of LiFePO4 123A cell
-float sleepingVoltage = 3.15;         // Force deep sleep — cliff edge for LiFePO4 123A
+float sleepingVoltage = 3.12;         // Force deep sleep — cliff edge for LiFePO4 123A
+float commaVoltage    = 2.80;         // COMMA threshold — below this, skip all work and wait for solar recovery
 
 uint8_t numberSecondsWithMinimumWifiVoltageForStartWifi = 30;
 uint8_t currentSecondsWithWifiVoltage = 0;
 float minimumInitWifiVoltage = 3.35;  // Battery must sustain this for 30 s before WiFi starts
 //uint8_t sleepingTime = 1;
-float minimumLEDVoltage = 3.20;       // Turn off LEDs below this — warning before sleep at 3.15V
-#define MAXIMUM_LED_VOLTAGE 4658
-float minimumWifiVoltage = 3.25;      // Turn off WiFi first to preserve power for LoRa
-
+float minimumLEDVoltage = 3.18;       // Turn off LEDs below this — warning before sleep at 3.15V
+uint8_t dimLedBrightness = 20;        // Minimum brightness when LoRa TX budget is too low for full power
+uint8_t nightLedBrightness = 30;      // Minimum LED brightness (night / zero efficiency)
+float luxNightThreshold = 30.0;       // Lux below this is considered actual darkness → cap at nightLedBrightness
+float luxCloudyThreshold = 10000.0;  // Lux below this (but above night) means cloudy — used when weather data is stale
+float minimumWifiVoltage = 3.28;      // Turn off WiFi first to preserve power for LoRa
 uint8_t secondsSinceLastDataSampling = 0;
+uint16_t secondsSinceLastWeatherData = 9999; // 9999 = never received
+uint8_t cloudyDutyCyclePercent = 50;         // % of display cycles with LEDs on in CLOUDY mode
+uint8_t cloudyThreshold = 70;               // forecast cloudiness % to enter CLOUDY mode
+bool cloudyLedCycleOn = true;               // toggles each full display cycle in CLOUDY mode
 uint8_t delayTime = 10;
 #define UNIQUE_ID_SIZE 8
 bool loraActive = false;
@@ -238,6 +256,7 @@ bool foundADS = false;
 bool foundBH1750 = false;
 bool foundINA219 = false;
 bool PCF8563T = false;
+bool foundDS18B20 = false;
 
 //
 // watchdog
@@ -284,6 +303,102 @@ void IRAM_ATTR clockTick() {
 //
 // Lora Functions
 //
+
+template<typename T>
+uint8_t calculateChecksum(const T &data) {
+  uint8_t checksum = 0;
+  const uint8_t *dataPtr = (const uint8_t *)&data;
+
+  size_t checksumOffset = 0;
+  if constexpr (std::is_same<T, DigitalStablesData>::value) {
+    checksumOffset = offsetof(DigitalStablesData, checksum);
+  } else if constexpr (std::is_same<T, RequestCommand>::value) {
+    checksumOffset = offsetof(RequestCommand, checksum);
+  }
+
+  for (size_t i = 0; i < checksumOffset; i++) {
+    checksum ^= dataPtr[i];
+  }
+  for (size_t i = checksumOffset + sizeof(uint8_t); i < sizeof(T); i++) {
+    checksum ^= dataPtr[i];
+  }
+  return checksum;
+}
+
+
+
+template<typename T>
+int sendMessage(const T &inputData, bool skipCAD = false) {
+  T dataToSend = inputData;
+
+  readSensorData();
+
+  long code = secretManager.generateCode();
+
+  if constexpr (std::is_same<T, DigitalStablesData>::value || std::is_same<T, RequestCommand>::value) {
+    dataToSend.totpcode = code;
+    dataToSend.checksum = 0;
+    dataToSend.checksum = calculateChecksum(dataToSend);
+  }
+
+  if (debug) {
+    Serial.print("Sending LoRa SN=");
+    Serial.print(serialNumber);
+    Serial.print(" TOTP=");
+    Serial.print(code);
+    Serial.print(" Checksum=");
+    Serial.println(dataToSend.checksum, HEX);
+  }
+
+  LoRa_txMode();
+
+  uint8_t result = 99;
+  int retries = 0;
+  bool keepGoing = true;
+  long startsendingtime = millis();
+  LoRa.idle();
+  LoRa.flush();
+  delay(50);
+  while (keepGoing) {
+    cadResult = skipCAD ? LORA_OK : performCAD();
+
+    if (cadResult == LORA_OK) {
+      LoRa.beginPacket();
+      LoRa.write((uint8_t *)&dataToSend, sizeof(T));
+      long start = millis();
+      if (!LoRa.endPacket(false)) {
+        result = LORA_TX_FAILED;
+      } else {
+        result = LORA_OK;
+      }
+      delay(50);
+      if (debug) {
+        Serial.print("Handover took=");
+        Serial.print(millis() - start);
+        Serial.print("TX took ");
+        Serial.print(millis() - startsendingtime);
+        Serial.println("ms");
+      }
+      keepGoing = false;
+    } else if (cadResult == LORA_CHANNEL_BUSY) {
+      int backoff = random(MIN_BACKOFF * (1 << retries), MAX_BACKOFF * (1 << retries));
+      if (debug) Serial.println("Busy, waiting " + String(backoff) + "ms");
+      delay(backoff);
+      retries++;
+      keepGoing = (retries < MAX_RETRIES);
+      if (!keepGoing) result = LORA_MAX_RETRIES_REACHED;
+    } else {
+      result = cadResult;
+      keepGoing = false;
+    }
+  }
+
+  delay(50);
+  msgCount++;
+  LoRa_rxMode();
+  return result;
+}
+
 void onReceive(int packetSize) {
   //  Serial.print(" Receive lora: ");
   //     Serial.println(packetSize);
@@ -363,14 +478,14 @@ void processLora(int packetSize) {
           RequestCommand rc;
           rc.totpcode = secretManager.generateCode();
           rc.setCommand("NoData");
-          sendMessage(rc);
+          sendMessage(rc,false);
         }
         if (debug) Serial.printf("Sending %d records via LoRa...\n", actualSize);
 
         // Send each record as binary data
         for (int i = 0; i < actualSize; i++) {
           dataArray[i].totpcode = secretManager.generateCode();
-          sendMessage(dataArray[i]);
+          sendMessage(dataArray[i],false);
           // LoRa.endPacket();
           if (debug) Serial.printf("Sent record %d/%d (%d bytes)\n",
                                    i + 1, actualSize, sizeof(DigitalStablesData) + 2);  // +2 for marker and index
@@ -389,7 +504,7 @@ void processLora(int packetSize) {
         if (debug) Serial.println("received NO_DATA");
       } else if (commandcode == "SendCurrentData") {
         if (debug) Serial.println("received SendCurrentData, sending ..");
-        sendMessage(digitalStablesData);
+        sendMessage(digitalStablesData,false);
       }
     } else {
       if (debug) Serial.print(" Receive RequestCommand but invalid code: ");
@@ -404,6 +519,7 @@ void processLora(int packetSize) {
       //WeatherForecast forecasts=weatherForecastUpdate.forecasts;
       weatherForecastManager->saveForecasts(weatherForecastUpdate.forecasts);
       solarInfo->setWeatherForecast(weatherForecastUpdate.forecasts, 4);
+      secondsSinceLastWeatherData = 0;
       if (debug) Serial.println(" Receive and processed weatherForecast ");
     } else {
       if (debug) Serial.print(" Receive WeatherForecastUpdate but invalid code: ");
@@ -508,9 +624,10 @@ LoRaError performCAD() {
   avgRssi = rssiSum / SAMPLES;
 
   // 3. Forgiving Threshold
-  // Using -85 allows the system to ignore background greenhouse noise
-  // but still detect another LoRa unit nearby.
-  if (avgRssi > -85) {
+  // -50 allows operation in high-noise indoor environments.
+  // Restore to -85 for outdoor/greenhouse deployment where a real LoRa
+  // neighbour on-channel should block transmission.
+  if (avgRssi > -50) {
     if (debug) {
       Serial.print("Channel Busy! RSSI: ");
       Serial.println(avgRssi);
@@ -529,120 +646,6 @@ LoRaError performCAD() {
   return LORA_OK;
 }
 
-
-
-template<typename T>
-uint8_t calculateChecksum(const T &data) {
-  uint8_t checksum = 0;
-  const uint8_t *dataPtr = (const uint8_t *)&data;
-
-  // Get the offset of the checksum field
-  size_t checksumOffset = 0;
-  if constexpr (std::is_same<T, DigitalStablesData>::value) {
-    checksumOffset = offsetof(DigitalStablesData, checksum);
-  } else if constexpr (std::is_same<T, RequestCommand>::value) {
-    checksumOffset = offsetof(RequestCommand, checksum);
-  }
-
-  // Calculate checksum for bytes before the checksum field
-  for (size_t i = 0; i < checksumOffset; i++) {
-    checksum ^= dataPtr[i];  // XOR operation
-  }
-
-  // Calculate checksum for bytes after the checksum field
-  for (size_t i = checksumOffset + sizeof(uint8_t); i < sizeof(T); i++) {
-    checksum ^= dataPtr[i];
-  }
-
-  return checksum;
-}
-
-template<typename T>
-int sendMessage(const T &inputData) {
-  // 1. DATA PREPARATION (Done before LoRa starts)
-  // We work on a local copy to ensure the original data isn't modified during TX
-  T dataToSend = inputData;
-
-  // Update internal states and read sensors BEFORE touching LoRa
-  digitalStablesData.asyncdata = 12;
-  readSensorData();
-
-  // Security and Checksum logic
-  long code = secretManager.generateCode();
-
-  if constexpr (std::is_same<T, DigitalStablesData>::value || std::is_same<T, RequestCommand>::value) {
-    dataToSend.totpcode = code;
-    dataToSend.checksum = 0;
-    dataToSend.checksum = calculateChecksum(dataToSend);
-  }
-
-  if (debug) {
-    Serial.print("Sending LoRa SN=");
-    Serial.print(serialNumber);
-    Serial.print(" TOTP=");
-    Serial.print(code);
-    Serial.print(" Checksum=");
-    Serial.println(dataToSend.checksum, HEX);
-  }
-
-  // 2. TRANSMISSION PHASE
-  LoRa_txMode();
-
-  uint8_t result = 99;
-  int retries = 0;
-  bool keepGoing = true;
-  long startsendingtime = millis();
-  LoRa.idle();
-  LoRa.flush();
-  delay(50);
-  while (keepGoing) {
-    cadResult = performCAD();
-
-    if (cadResult == LORA_OK) {
-      // Channel is clear, send immediately
-      LoRa.beginPacket();
-      LoRa.write((uint8_t *)&dataToSend, sizeof(T));
-      long start = millis();
-
-      // We use blocking mode (false) to ensure the packet is physically
-      // out of the antenna before we switch back to RX mode.
-      if (!LoRa.endPacket(true)) {
-        result = LORA_TX_FAILED;
-      } else {
-        result = LORA_OK;
-      }
-      delay(600);
-      if (debug) {
-        Serial.print("Handover took=");
-        Serial.print(millis() - start);
-        Serial.print("TX took ");
-        Serial.print(millis() - startsendingtime);
-        Serial.println("ms");
-      }
-      keepGoing = false;
-    } else if (cadResult == LORA_CHANNEL_BUSY) {
-      // Channel busy? Backoff and retry
-      int backoff = random(MIN_BACKOFF * (1 << retries), MAX_BACKOFF * (1 << retries));
-      if (debug) Serial.println("Busy, waiting " + String(backoff) + "ms");
-
-      delay(backoff);
-      retries++;
-      keepGoing = (retries < MAX_RETRIES);
-      if (!keepGoing) result = LORA_MAX_RETRIES_REACHED;
-    } else {
-      // Hardware error
-      result = cadResult;
-      keepGoing = false;
-    }
-  }
-
-  // 3. CLEANUP
-  delay(50);  // Tiny grace period for hardware stability
-
-  msgCount++;
-  LoRa_rxMode();  // Return to listening
-  return result;
-}
 
 
 void print_wakeup_reason() {
@@ -703,8 +706,69 @@ void resetI2CDevices() {
 //
 // End of Lora Functions
 //
+// Read INA219 bus voltage directly over I2C without library initialisation.
+// Safe to call as soon as Wire.begin() has run. Returns -1 on I2C error.
+// COMMA log — individual per-cycle readings (timestamp + voltage), capped at COMMA_LOG_MAX_RECORDS.
+// Session context (first time, min voltage, cycle count) lives in RTC_DATA_ATTR vars above.
+
+void appendCommaRecord(float voltage, uint32_t nowSec) {
+  // Update session-level RTC vars
+  if (rtc_comma_first_time == 0) rtc_comma_first_time = nowSec;
+  if (voltage > 0 && voltage < rtc_comma_min_voltage) rtc_comma_min_voltage = voltage;
+  rtc_comma_cycle_count++;
+
+  CommaRecord rec;
+  rec.time    = nowSec;
+  rec.voltage = voltage;
+  strncpy(rec.devicename, rtc_device_shortname, 7);
+  rec.devicename[7] = '\0';
+
+  File rlog = LittleFS.open(COMMA_LOG_FILE, "r");
+  int existing = (rlog && rlog.size() >= sizeof(CommaRecord))
+                 ? (int)(rlog.size() / sizeof(CommaRecord)) : 0;
+  if (rlog) rlog.close();
+
+  if (existing >= COMMA_LOG_MAX_RECORDS) {
+    // Log full — drop oldest, write back remaining + new
+    CommaRecord buf[COMMA_LOG_MAX_RECORDS];
+    File rd = LittleFS.open(COMMA_LOG_FILE, "r");
+    if (rd) { rd.readBytes((char*)buf, existing * sizeof(CommaRecord)); rd.close(); }
+    File wr = LittleFS.open(COMMA_LOG_FILE, "w");
+    if (wr) {
+      wr.write((uint8_t*)(buf + 1), (existing - 1) * sizeof(CommaRecord));
+      wr.write((uint8_t*)&rec, sizeof(rec));
+      wr.close();
+    }
+  } else {
+    File log = LittleFS.open(COMMA_LOG_FILE, "a");
+    if (log) { log.write((uint8_t*)&rec, sizeof(rec)); log.close(); }
+  }
+}
+
+void clearAllCommaRecords() {
+  LittleFS.remove(COMMA_LOG_FILE);
+  rtc_comma_first_time  = 0;
+  rtc_comma_min_voltage = 99.0f;
+  rtc_comma_cycle_count = 0;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+// Matches the Adafruit INA219 getBusVoltage_V() calculation exactly:
+//   register 0x02, uint16_t, bits 15:3, 4 mV per LSB → divide by 1000 for volts.
+float quickReadBusVoltage() {
+  Wire.beginTransmission(0x41);
+  Wire.write(0x02);  // INA219 bus voltage register
+  if (Wire.endTransmission() != 0) return -1;
+  Wire.requestFrom(0x41, 2);
+  if (Wire.available() < 2) return -1;
+  uint16_t raw = ((uint16_t)Wire.read() << 8) | (uint8_t)Wire.read();
+  return (int16_t)((raw >> 3) * 4) * 0.001f;  // identical to getBusVoltage_V()
+}
+
 void setup() {
   gpio_hold_dis((gpio_num_t)LED_CONTROL);
+  gpio_hold_dis((gpio_num_t)SLEEP_SWITCH_26);  // must release or digitalWrite below has no effect
 
   pinMode(LED_CONTROL, OUTPUT);
   digitalWrite(LED_CONTROL, LOW);
@@ -713,6 +777,19 @@ void setup() {
   digitalWrite(SLEEP_SWITCH_26, HIGH);
   delay(100);
   Serial.begin(115200);
+  analogSetAttenuation(ADC_11db);  // set global default before any analogRead so channels initialize with 11dB (max ~3.9V) not the default 0dB (max 1.1V)
+
+
+  if(debug)Serial.print("DigitalStablesData size=");
+  if(debug)Serial.println(sizeof(DigitalStablesData));
+
+  if(debug)Serial.print("ChinampaData size=");
+  if(debug)Serial.println(sizeof(ChinampaData));
+
+
+  if(debug)Serial.print("seedlingMonitorData size=");
+  if(debug)Serial.println(sizeof(SeedlingMonitorData));
+  
   Wire.end(); 
   delay(10); // Give the bus a moment to settle
   Wire.begin();
@@ -788,6 +865,8 @@ void setup() {
 
 
   secretManager.getDeviceSensorConfig(digitalStablesData.devicename, digitalStablesData.deviceshortname, digitalStablesData.sensor1name, digitalStablesData.sensor2name, timezone, latitude, longitude, altitude, digitalStablesData.minimumEfficiencyForLed, digitalStablesData.minimumEfficiencyForWifi);
+  strncpy(rtc_device_shortname, digitalStablesData.deviceshortname, 7);
+  rtc_device_shortname[7] = '\0';
   secretManager.getTroughParameters(maximumScepticHeight, troughlevelminimumcm, troughlevelmaximumcm);
 
   Serial.println("line 819, maximumScepticHeight=" + String(maximumScepticHeight));
@@ -830,8 +909,65 @@ void setup() {
   timeManager.start();
   timeManager.PCF8563osc1Hz();
   currentTimerRecord = timeManager.now();
+
+  // ── Early-exit checks (Wire + RTC are ready; nothing else initialised yet) ──────────────────
+
+  uint32_t _nowSec = timeManager.getCurrentTimeInSeconds(currentTimerRecord);
+
+  // 1. TPL5010 watchdog reset during deep sleep: return to sleep for the remaining intended time.
+  //    Petting the watchdog here resets its 15-min window so it won't fire again mid-sleep.
+  //    This lets PowerManager sleep times longer than the watchdog period work transparently.
+  if (rtc_intended_wakeup_time > 0 && _nowSec < rtc_intended_wakeup_time) {
+    uint32_t _remaining = rtc_intended_wakeup_time - _nowSec;
+    if (_remaining > 0 && _remaining <= 7200) {
+      if (debug) { Serial.printf("Early wakeup — %us remaining, returning to sleep.\n", _remaining); Serial.flush(); }
+      pinMode(TPL5010_DONE, OUTPUT);
+      digitalWrite(TPL5010_DONE, HIGH);
+      delayMicroseconds(100);
+      digitalWrite(TPL5010_DONE, LOW);
+      gpio_hold_en((gpio_num_t)LED_CONTROL);
+      gpio_hold_en((gpio_num_t)SLEEP_SWITCH_26);
+      gpio_deep_sleep_hold_en();
+      esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+      esp_sleep_enable_timer_wakeup((uint64_t)_remaining * 1000000ULL);
+      esp_deep_sleep_start();
+    }
+  }
+
+  // 2. COMMA mode already active: quick voltage check — if still critically low, sleep again.
+  if (rtc_comma_mode) {
+    float _qv = quickReadBusVoltage();
+    if (_qv < 0 || _qv < commaVoltage) {
+      if (debug) { Serial.printf("COMMA: %.2fV — returning to sleep.\n", _qv); Serial.flush(); }
+      // Pet the TPL5010 watchdog so it gets a fresh 15-min window from now.
+      pinMode(TPL5010_DONE, OUTPUT);
+      digitalWrite(TPL5010_DONE, HIGH);
+      delayMicroseconds(100);
+      digitalWrite(TPL5010_DONE, LOW);
+      // Append this cycle's reading to the COMMA log.
+      appendCommaRecord(_qv, _nowSec);
+      gpio_hold_en((gpio_num_t)LED_CONTROL);
+      gpio_hold_en((gpio_num_t)SLEEP_SWITCH_26);
+      gpio_deep_sleep_hold_en();
+      rtc_intended_wakeup_time = _nowSec + 600;
+      esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+      esp_sleep_enable_timer_wakeup(600ULL * 1000000ULL);
+      esp_deep_sleep_start();
+    }
+    // Voltage recovered — exit COMMA and proceed with normal boot.
+    if (debug) { Serial.printf("COMMA exiting: voltage recovered to %.2fV\n", _qv); Serial.flush(); }
+    rtc_comma_mode = false;
+    rtc_intended_wakeup_time = 0;
+    rtc_has_comma_data = true;  // trigger LoRa summary send after LoRa is initialised
+  }
+
+  // ────────────────────────────────────────────────────────────────────────────────────────────
+
   digitalStablesData.secondsTime = timeManager.getCurrentTimeInSeconds(currentTimerRecord);
   digitalStablesData.asyncdata = 1;
+
+ 
+
 
   //  if(dataManager.getDSDStoredCount()<MAXIMUM_STORED_RECORDS){
   // dataManager.storeDSDData(digitalStablesData);
@@ -866,6 +1002,8 @@ void setup() {
 
 
   FastLED.addLeds<WS2812, LED_PIN, GRB>(leds, NUM_LEDS);
+  digitalStablesData.ledBrightness = dimLedBrightness;
+  FastLED.setBrightness(digitalStablesData.ledBrightness);
   for (int i = 0; i < NUM_LEDS; i++) {
     leds[i] = CRGB(0, 0, 0);
   }
@@ -974,9 +1112,7 @@ void setup() {
     Wire.endTransmission();
     delay(50);  // Wait for reset
 
-    // Custom calibration for 0.05 ohm shunt and 1A max current
-    // uint16_t calibrationValue = 10240; // As calculated for 0.05 ohm shunt
-    float SHUNT_OHMS = 0.05;
+    // Custom calibration for 50mΩ shunt (C2596036) and 1A max current
     //float Current_LSB = MAX_CURRENT/2^15;
     //float Current_LSB = MAX_CURRENT/32768.0;
 
@@ -1235,6 +1371,7 @@ void setup() {
 
   // uint8_t address[8];
   tempSensor.getAddress(digitalStablesData.serialnumberarray, 0);
+  foundDS18B20 = tempSensor.getDeviceCount() > 0;
   //  for (uint8_t i = 0; i < 8; i++)
   //  {
   //    serialNumber += String(digitalStablesData.serialnumberarray[i], HEX);
@@ -1273,7 +1410,7 @@ void setup() {
     LoRa.enableCrc();
     LoRa.setSignalBandwidth(125E3);
     // LoRa.setCodingRate4(8);
-    if (powerManager->isLoraTxSafe(9, currentTimerRecord) != powerManager->LORA_TX_NOT_ALLOWED) loraTxOk = true;
+    loraTxOk = true;
   }
 
   // delay(2000);
@@ -1295,8 +1432,8 @@ void setup() {
 
 
   String grp = secretManager.getGroupIdentifier();
-  char gprid[6];
-  grp.toCharArray(gprid, 6);
+  char gprid[5];
+  grp.toCharArray(gprid, 5);
   strcpy(digitalStablesData.groupidentifier, gprid);
 
   if (debug) Serial.print("Starting wifi digitalStablesConfigData.groupidentifier=");
@@ -1312,9 +1449,17 @@ void setup() {
   if (debug) Serial.println(digitalStablesConfigData.fieldId);
 
   pinMode(RTC_BATT_VOLT, INPUT);
+  analogSetPinAttenuation(RTC_BATT_VOLT, ADC_11db);  // must be set before first analogRead; default ADC_0db saturates at 1.1V giving 4.95V false reading
 
   opmode = digitalRead(OP_MODE);
-  digitalStablesData.opMode = opmode;
+  // Encode all device status into opMode byte (bit 1 updated each tick in loop).
+  digitalStablesData.opMode = (opmode       ? 0x01 : 0x00)
+                             | (foundINA219  ? 0x04 : 0x00)
+                             | (foundBH1750  ? 0x08 : 0x00)
+                             | (foundADS     ? 0x10 : 0x00)
+                             | (PCF8563T     ? 0x20 : 0x00)
+                             | (foundDS18B20 ? 0x40 : 0x00)
+                             | (foundtemp    ? 0x80 : 0x00);
 
   dsUploadTimer.start();
   digitalStablesData.dataSamplingSec = 10;
@@ -1349,6 +1494,42 @@ void setup() {
   //      0);
   // digitalWrite(WATCHDOG_WDI, LOW);
 
+
+
+
+  // COMMA recovery: send the session summary via LoRa using the RTC-preserved stats.
+  if (rtc_has_comma_data && loraActive) {
+    DigitalStablesData commaData = digitalStablesData;
+    commaData.batteryVoltage  = rtc_comma_min_voltage;
+    commaData.secondsTime     = rtc_comma_first_time;
+    commaData.sleepTime       = _nowSec - rtc_comma_first_time;
+    commaData.operatingStatus = OPERATING_STATUS_COMMA;
+    commaData.asyncdata       = 11;  // COMMA recovery summary
+    sendMessage(commaData, true);    // skipCAD — critical overnight report
+    if (debug) Serial.printf("COMMA recovery sent: minV=%.2f cycles=%u duration=%us\n",
+                             rtc_comma_min_voltage, rtc_comma_cycle_count,
+                             _nowSec - rtc_comma_first_time);
+    rtc_comma_first_time  = 0;
+    rtc_comma_min_voltage = 99.0f;
+    rtc_comma_cycle_count = 0;
+    rtc_has_comma_data    = false;
+  }
+
+  // First-time COMMA detection: LoRa is initialised here so the final message can be sent.
+  // goToSleep() will transmit operating_status=COMMA and then the device stays in
+  // the permanent quick-check loop handled by the early-exit block above.
+  if (usingSolarPower && !rtc_comma_mode) {
+    float _qv = quickReadBusVoltage();
+    if (_qv > 0 && _qv < commaVoltage) {
+      if (debug) { Serial.printf("Entering COMMA mode at %.2fV\n", _qv); Serial.flush(); }
+      rtc_comma_mode = true;
+      digitalStablesData.batteryVoltage = _qv;
+      digitalStablesData.operatingStatus = OPERATING_STATUS_COMMA;
+      appendCommaRecord(_qv, _nowSec);  // log the entry voltage
+      goToSleep();  // sends final LoRa with COMMA status, then deep sleeps
+    }
+  }
+
   boolean isSleepMode = false;
   if (usingSolarPower && hourlySolarPowerData.efficiency * 100 < digitalStablesData.minimumEfficiencyForLed) {
     isSleepMode = true;
@@ -1361,15 +1542,20 @@ void setup() {
       dataManager.storeDSDData(digitalStablesData);
     }
   }
-  // Protect battery from over-discharge (only when on solar/battery, not wall power)
-  if (usingSolarPower && digitalStablesData.batteryVoltage > 2.8 && digitalStablesData.batteryVoltage < sleepingVoltage) {
-    if (debug) Serial.print("setting sleepmode in setup because of low battery voltage=");
-    if (debug) Serial.println(digitalStablesData.batteryVoltage);
-    isSleepMode = true;
-    digitalStablesData.operatingStatus = OPERATING_STATUS_SLEEP;
-    digitalStablesData.asyncdata = 3;
-    if (dataManager.getDSDStoredCount() < MAXIMUM_STORED_RECORDS) {
-      dataManager.storeDSDData(digitalStablesData);
+  // Protect battery from over-discharge (only when on solar/battery, not wall power).
+  // batteryVoltage is 0 here (readSensorData hasn't run yet) so read it directly.
+  if (!isSleepMode && usingSolarPower) {
+    float _setupBatV = quickReadBusVoltage();
+    if (_setupBatV > 0) digitalStablesData.batteryVoltage = _setupBatV;
+    if (_setupBatV >= commaVoltage && _setupBatV < sleepingVoltage) {
+      if (debug) Serial.print("setting sleepmode in setup because of low battery voltage=");
+      if (debug) Serial.println(_setupBatV);
+      isSleepMode = true;
+      digitalStablesData.operatingStatus = OPERATING_STATUS_SLEEP;
+      digitalStablesData.asyncdata = 3;
+      if (dataManager.getDSDStoredCount() < MAXIMUM_STORED_RECORDS) {
+        dataManager.storeDSDData(digitalStablesData);
+      }
     }
   }
 
@@ -1401,32 +1587,56 @@ void sleepDS18B20() {  // Put OneWire bus in high impedance state pinMode(ONE_WI
 
 // Modified by Claude
 void goToSleep() {
-  // Heartbeat: dim "B" shows battery health — green/yellow/red at low brightness for night
+  // Heartbeat: show "B" battery status while LEDs are powered, then cut power.
   digitalWrite(LED_CONTROL, HIGH);
-  delay(20);  // let MOSFET turn on and WS2812 power supply stabilise before sending data
-  drawBatteryStatus(digitalStablesData.batteryVoltage, digitalStablesData.batteryCurrent, 40);
-  delay(1000);
+  delay(20);  // let MOSFET turn on and WS2812 power supply stabilise
+  readSensorData();                     // get fresh voltage/current before display
+  drawBatteryStatus(digitalStablesData.batteryVoltage, digitalStablesData.batteryCurrent);
+  delay(1000);                          // hold the display for 1 s so it is visible
   FastLED.clear(true);
   FastLED.show();
   delay(10);
   digitalWrite(LED_CONTROL, LOW);
 
-  // 1. Calculate sleep timing
+  // 1. Calculate sleep timing.
+  //    PowerManager returns 60 s whenever theoretical solar efficiency > 0.3 (sun is up).
+  //    On heavily overcast days this is wrong — actual lux can be 4000 while efficiency
+  //    reads 0.4 from the geometric model. When lux is below the cloudy threshold, apply
+  //    the same night formula so sleep time reflects how dark it actually is.
   long seconds_sleep = powerManager->calculateOptimalSleepTime(currentTimerRecord);
+  if (usingSolarPower && digitalStablesData.lux >= 0 && digitalStablesData.lux < luxCloudyThreshold) {
+    DailySolarData _dsd = solarInfo->getDailySolarData(currentTimerRecord);
+    int _currentMin  = currentTimerRecord.hour * 60 + currentTimerRecord.minute;
+    int _toSunrise   = (int)_dsd.sunrise - _currentMin;
+    if (_toSunrise < 0) _toSunrise += 24 * 60;
+    if (_toSunrise < 1) _toSunrise = 1;
+    if (_toSunrise > 90) {
+      int _dayLen   = max((int)_dsd.sunset - (int)_dsd.sunrise, 1);
+      int _nightMin = max(24 * 60 - _dayLen, 1);
+      long _cloudySleep = (long)(450.0f * _nightMin / _toSunrise);
+      if (_cloudySleep < 90) _cloudySleep = 90;
+      if (_cloudySleep > seconds_sleep) seconds_sleep = _cloudySleep;
+    }
+  }
+  if (seconds_sleep < 30) seconds_sleep = 30;
   uint64_t sleep_time_us = (uint64_t)(seconds_sleep * 1000000ULL);
   if (debug) Serial.printf("Preparing sleep for %lld seconds\n", seconds_sleep);
 
-  // 2. Read sensors and store final record with fresh values
-  readSensorData();
-  digitalStablesData.operatingStatus = OPERATING_STATUS_SLEEP;
+  // 2. Store final record (sensors already read above for the heartbeat display).
+  // Preserve OPERATING_STATUS_COMMA if this is the first entry into COMMA mode.
+  if (digitalStablesData.operatingStatus != OPERATING_STATUS_COMMA &&
+      digitalStablesData.operatingStatus != OPERATING_STATUS_CLOUDY) {
+    digitalStablesData.operatingStatus = OPERATING_STATUS_SLEEP;
+  }
   digitalStablesData.sleepTime = seconds_sleep;
   if (dataManager.getDSDStoredCount() < MAXIMUM_STORED_RECORDS) {
     dataManager.storeDSDData(digitalStablesData);
   }
 
-  // 3. Send final LoRa message so the hub knows we are sleeping and for how long
-  if (loraActive && powerManager->isLoraTxSafe(9, currentTimerRecord) != powerManager->LORA_TX_NOT_ALLOWED) {
-    sendMessage(digitalStablesData);
+  // 3. Send final LoRa message so the hub knows we are sleeping and for how long.
+  // skipCAD=true: this is a critical notification — don't let a busy channel silence it.
+  if (loraActive) {
+    sendMessage(digitalStablesData, true);
   }
   LoRa.sleep();
 
@@ -1461,6 +1671,17 @@ void goToSleep() {
     Serial.println("Entering deep sleep.");
     Serial.flush();
   }
+  // Pet the TPL5010 watchdog immediately before sleeping so it gets a fresh 15-min window.
+  digitalWrite(TPL5010_DONE, HIGH);
+  delayMicroseconds(100);
+  digitalWrite(TPL5010_DONE, LOW);
+
+  // Record the Unix-seconds time we expect to wake, so the early-exit block in setup()
+  // can detect and immediately dismiss TPL5010 watchdog resets during sleep.
+  {
+    RTCInfoRecord _now = timeManager.now();
+    rtc_intended_wakeup_time = timeManager.getCurrentTimeInSeconds(_now) + seconds_sleep;
+  }
   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
   esp_sleep_enable_timer_wakeup(sleep_time_us);
   esp_deep_sleep_start();
@@ -1494,7 +1715,9 @@ void readSensorData() {
   digitalStablesData.temperature = tempC;
   readI2CTemp();
   digitalStablesData.secondsTime = timeManager.getCurrentTimeInSeconds(currentTimerRecord);
-  digitalStablesData.sleepTime = powerManager->calculateOptimalSleepTime(currentTimerRecord);
+  // sleepTime is NOT set here — only goToSleep() knows the actual intended sleep duration
+  // (after applying the sanity floor). Setting it here would corrupt records stored before
+  // goToSleep() is called (e.g. the asyncdata=2 setup path).
   if (foundBH1750) {
     //      // http://community.heltec.cn/t/bh1750-light-sensor-practical-notes-problems-and-issues/1521
     //      double cal=1.13;
@@ -1510,7 +1733,25 @@ void readSensorData() {
   //    if(debug)Serial.print("lux=");
   //    if(debug)Serial.println(digitalStablesData.lux);
 
-  digitalStablesData.ledBrightness = powerManager->isLoraTxSafe(9, currentTimerRecord);
+  {
+    uint8_t br = 255;
+    // 1. Actual darkness: BH1750 measures genuine dark (night / deep shade)
+    if (foundBH1750 && digitalStablesData.lux >= 0 && digitalStablesData.lux < luxNightThreshold) {
+      br = nightLedBrightness;
+    }
+    // 2. Solar efficiency: scale within the usable [minimumEfficiencyForLed..100%] range
+    if (usingSolarPower) {
+      HourlySolarPowerData hspd = solarInfo->calculateActualPower(currentTimerRecord);
+      float minEff = digitalStablesData.minimumEfficiencyForLed / 100.0f;
+      float scaled = constrain((hspd.efficiency - minEff) / max(1.0f - minEff, 0.01f), 0.0f, 1.0f);
+      br = min(br, (uint8_t)(nightLedBrightness + scaled * (255 - nightLedBrightness)));
+    }
+    // 3. Low battery: cap to protect remaining charge
+    if (digitalStablesData.batteryVoltage < minimumWifiVoltage) {
+      br = min(br, dimLedBrightness);
+    }
+    digitalStablesData.ledBrightness = br;
+  }
   float distance = sonar.ping_cm();
   digitalStablesData.measuredHeight = distance;
   digitalStablesData.scepticAvailablePercentage = distance * 100 / MAX_DISTANCE;
@@ -1528,10 +1769,16 @@ void readSensorData() {
     delay(2);
   }
   float average = total / samples;
-  float voltage = (average / 4095.0) * Vref;
   if (debug) Serial.println("RTC average=" + String(average));
-  // Calculate the actual voltage using the voltage divider formula
-  digitalStablesData.rtcBatVolt = (voltage * (R1 + R2)) / R2;
+  if (average >= 4090) {
+    // ADC saturated — pin 36 voltage >= 3.9V; cannot be a 3V coin cell.
+    // Likely: floating pin, wrong signal source, or divider not installed.
+    digitalStablesData.rtcBatVolt = -1;
+  } else {
+    float voltage = (average / 4095.0) * Vref;
+    digitalStablesData.rtcBatVolt = (voltage * (R1 + R2)) / R2;
+  }
+  if (debug) Serial.println("RTC rtcBatVolt=" + String(digitalStablesData.rtcBatVolt));
   //
   // current
   //
@@ -1598,8 +1845,8 @@ void readSensorData() {
     digitalStablesData.batteryVoltage = busvoltage;
     digitalStablesData.batteryCurrent = calculated_current_mA;
 
-    // Estimate runtime: only meaningful when discharging (battery/boost, negative current)
-    if (calculated_current_mA < -1.0) {
+    // Estimate runtime: only meaningful when discharging (positive current = battery powering load)
+    if (calculated_current_mA > 1.0) {
       float dischargeMa = abs(calculated_current_mA);
       // Cycle-average: active phase (time since wakeup) + 60s deep sleep
       float activeSec = millis() / 1000.0;
@@ -1612,7 +1859,10 @@ void readSensorData() {
       digitalStablesData.estimatedRuntime = 0.0;  // charging or unknown
     }
   } else {
-    digitalStablesData.batteryVoltage = -99;
+    // INA219 library not available — fall back to direct I2C voltage read so that
+    // all voltage-based protections (sleep, COMMA, WiFi shutoff) still work.
+    float _fallbackV = quickReadBusVoltage();
+    digitalStablesData.batteryVoltage = (_fallbackV > 0) ? _fallbackV : -99;
     digitalStablesData.batteryCurrent = -99;
     digitalStablesData.estimatedRuntime = 0.0;
   }
@@ -1713,28 +1963,30 @@ void restartWifi() {
   // Serial.println("in ino Done starting wifi");
 }
 
-void drawBatteryStatus(float voltage, float current, uint8_t brightness) {
+void drawBatteryStatus(float voltage, float current) {
   // Battery voltage color (LiFePO4 123A zones):
   //   >= 3.35V  green  — stable, WiFi possible
   //   >= 3.25V  yellow — WiFi off, LoRa still running
   //    < 3.25V  red    — approaching sleep cliff
   CRGB batColor;
-  if (voltage >= 3.35) {
+  if (voltage >= minimumWifiVoltage) {
+    batColor = CRGB(0, 0, 255);
+  } else if (voltage >= minimumLEDVoltage && voltage <=minimumWifiVoltage) {
     batColor = CRGB(0, 255, 0);
-  } else if (voltage >= 3.25) {
+  } else if (voltage >= 3.10 && voltage <= minimumLEDVoltage) {
     batColor = CRGB(255, 200, 0);
   } else {
     batColor = CRGB(255, 0, 0);
   }
 
   // Power source indicator (INA219 current sign):
-  //   > +10mA  → solar charging battery   → green
-  //   < -10mA  → battery discharging/boost → red
+  //   < -10mA  → solar charging battery   → green
+  //   > +10mA  → battery discharging/boost → red
   //   near 0   → transition / uncertain    → blue
   CRGB srcColor;
-  if (current > 10.0) {
+  if (current < -1.0) {
     srcColor = CRGB(0, 255, 0);
-  } else if (current < -10.0) {
+  } else if (current > 1.0) {
     srcColor = CRGB(255, 0, 0);
   } else {
     srcColor = CRGB(0, 0, 255);
@@ -1747,11 +1999,15 @@ void drawBatteryStatus(float voltage, float current, uint8_t brightness) {
   //  row2: #  #  .  .  .   → 10,11
   // cols 2-3 are dark — 2-column gap between B and indicator
   for (int i = 0; i < NUM_LEDS; i++) leds[i] = CRGB(0, 0, 0);
-  leds[0]  = batColor;    // B top bar
+  leds[1]  = batColor;    // B top bar
   leds[4]  = srcColor;                         // power source indicator
-  leds[5]  = batColor;   leds[6]  = batColor;                      // B spine
-  leds[10] = batColor;  leds[11] = batColor;  // B bottom bar
-  FastLED.setBrightness(brightness);
+  leds[6]  = batColor;   leds[7]  = batColor;  // B spine
+  leds[9]  = (digitalStablesData.operatingStatus == OPERATING_STATUS_FULL_MODE) ? CRGB(0, 255, 0) :
+             (digitalStablesData.operatingStatus == OPERATING_STATUS_CLOUDY)    ? CRGB(255, 200, 0) : CRGB(0, 0, 0);
+  leds[11] = batColor;  leds[12] = batColor;   // B bottom bar
+  // LED 14: weather data freshness — green < 31 min, red otherwise (never received = red)
+  leds[14] = (secondsSinceLastWeatherData < 1860) ? CRGB(0, 255, 0) : CRGB(255, 0, 0);
+  FastLED.setBrightness(digitalStablesData.ledBrightness);
   FastLED.show();
 }
 
@@ -1759,7 +2015,6 @@ void drawError(uint8_t code, uint8_t color) {
   for (int i = 0; i < NUM_LEDS; i++) {
     leds[i] = CRGB(0, 0, 0);
   }
-  FastLED.show();
 
   if (color == 0) {
     leds[0] = CRGB(255, 0, 0);
@@ -1810,7 +2065,6 @@ void drawLora(int status) {
   for (int i = 0; i < NUM_LEDS; i++) {
     leds[i] = CRGB(0, 0, 0);
   }
-  FastLED.show();
   if (status == 1) {
     leds[1] = CRGB(0, 255, 0);
     leds[6] = CRGB(0, 255, 0);
@@ -1838,23 +2092,23 @@ void drawTemperature(uint8_t red, uint8_t green, uint8_t blue) {
   for (int i = 0; i < NUM_LEDS; i++) {
     leds[i] = CRGB(0, 0, 0);
   }
-  FastLED.show();
   uint8_t ld = 0;
   uint8_t hd = 0;
+  float t = abs(digitalStablesData.outdoortemperature);
 
-  if (digitalStablesData.outdoortemperature > 0 && digitalStablesData.outdoortemperature < 10) {
-    ld = digitalStablesData.outdoortemperature;
-  } else if (digitalStablesData.outdoortemperature >= 10 && digitalStablesData.outdoortemperature < 20) {
-    ld = digitalStablesData.outdoortemperature - 10;
+  if (t > 0 && t < 10) {
+    ld = t;
+  } else if (t >= 10 && t < 20) {
+    ld = t - 10;
     hd = 1;
-  } else if (digitalStablesData.outdoortemperature >= 20 && digitalStablesData.outdoortemperature < 30) {
-    ld = digitalStablesData.outdoortemperature - 20;
+  } else if (t >= 20 && t < 30) {
+    ld = t - 20;
     hd = 2;
-  } else if (digitalStablesData.outdoortemperature >= 30 && digitalStablesData.outdoortemperature < 40) {
-    ld = digitalStablesData.outdoortemperature - 30;
+  } else if (t >= 30 && t < 40) {
+    ld = t - 30;
     hd = 3;
-  } else if (digitalStablesData.outdoortemperature >= 40 && digitalStablesData.outdoortemperature < 50) {
-    ld = digitalStablesData.outdoortemperature - 40;
+  } else if (t >= 40 && t < 50) {
+    ld = t - 40;
     hd = 4;
   }
   if (debug) Serial.print("hd=");
@@ -1991,6 +2245,7 @@ void readI2CTemp() {
     if (debug) Serial.print("\n");
   } else {
     if (debug) Serial.print("Error in readSample()\n");
+    digitalStablesData.outdoortemperature = -99;
   }
 
   // temperature = sht.getTemperature();// CHT.getTemperature();
@@ -2085,6 +2340,7 @@ void loop() {
       processLora(loraPacketSize);
     }
     secondsSinceLastDataSampling++;
+    if (secondsSinceLastWeatherData < 9999) secondsSinceLastWeatherData++;
     //   Serial.println("ticked");
 
     viewTimer.tick();
@@ -2104,6 +2360,7 @@ void loop() {
     //   memoryFull=false;
     // }
 
+ 
 
     if (remoteMonitorTimer.status()) {
       remoteMonitorTimer.reset();
@@ -2129,12 +2386,42 @@ void loop() {
     if (usingSolarPower) {
       if (hourlySolarPowerData.efficiency * 100 > digitalStablesData.minimumEfficiencyForLed) {
         digitalWrite(LED_CONTROL, HIGH);
-        digitalStablesData.ledBrightness = powerManager->isLoraTxSafe(9, currentTimerRecord);
-        digitalStablesData.operatingStatus = OPERATING_STATUS_FULL_MODE;
-        //        digitalStablesData.asyncdata=7;
-        //         if(dataManager.getDSDStoredCount()<MAXIMUM_STORED_RECORDS){
-        //            dataManager.storeDSDData(digitalStablesData);
-        //         }
+        {
+          uint8_t br = 255;
+          // 1. Actual darkness: BH1750 measures genuine dark (night / deep shade)
+          if (foundBH1750 && digitalStablesData.lux >= 0 && digitalStablesData.lux < luxNightThreshold) {
+            br = nightLedBrightness;
+          }
+          // 2. Solar efficiency: scale within [minimumEfficiencyForLed..100%] range
+          {
+            float minEff = digitalStablesData.minimumEfficiencyForLed / 100.0f;
+            float scaled = constrain((hourlySolarPowerData.efficiency - minEff) / max(1.0f - minEff, 0.01f), 0.0f, 1.0f);
+            br = min(br, (uint8_t)(nightLedBrightness + scaled * (255 - nightLedBrightness)));
+          }
+          // 3. Low battery: cap to protect remaining charge
+          if (digitalStablesData.batteryVoltage < minimumWifiVoltage) {
+            br = min(br, dimLedBrightness);
+          }
+          digitalStablesData.ledBrightness = br;
+          FastLED.setBrightness(br);
+        }
+        {
+          bool luxSaysCloudy = foundBH1750
+                             && digitalStablesData.lux >= luxNightThreshold
+                             && digitalStablesData.lux < luxCloudyThreshold;
+          bool forecastSaysCloudy = false;
+          if (secondsSinceLastWeatherData < 1860) {
+            WeatherForecast* forecasts = weatherForecastManager->getForecasts();
+            forecastSaysCloudy = (forecasts != nullptr) && (forecasts[0].cloudiness >= cloudyThreshold);
+          }
+          digitalStablesData.operatingStatus = (luxSaysCloudy || forecastSaysCloudy)
+                                               ? OPERATING_STATUS_CLOUDY : OPERATING_STATUS_FULL_MODE;
+          // Update bit 1 (weather freshness) — all other bits set once in setup.
+          if (secondsSinceLastWeatherData < 1860)
+            digitalStablesData.opMode |=  0x02;
+          else
+            digitalStablesData.opMode &= ~0x02;
+        }
         turnOffWifi = (hourlySolarPowerData.efficiency * 100 < digitalStablesData.minimumEfficiencyForWifi) && wifistatus;
       } else {
         FastLED.clear(true);
@@ -2145,6 +2432,7 @@ void loop() {
         digitalStablesData.ledBrightness = 0;
         digitalWrite(LED_CONTROL, LOW);
         digitalStablesData.operatingStatus = OPERATING_STATUS_NO_LED;
+        if(debug)Serial.println("line 2162 turning off leds because efficiency is " + String(hourlySolarPowerData.efficiency) + " and te minimum is " + digitalStablesData.minimumEfficiencyForLed);
         turnOffWifi = true;
         //         if(dataManager.getDSDStoredCount()<MAXIMUM_STORED_RECORDS){
         //            digitalStablesData.asyncdata=8;
@@ -2153,7 +2441,8 @@ void loop() {
       }
     } else {
       digitalWrite(LED_CONTROL, HIGH);
-      digitalStablesData.ledBrightness = 255;  //powerManager->isLoraTxSafe(9,currentTimerRecord);
+      digitalStablesData.ledBrightness = 255;
+      FastLED.setBrightness(255);
       digitalStablesData.operatingStatus = OPERATING_STATUS_FULL_MODE;
       turnOffWifi = false;
     }
@@ -2173,25 +2462,41 @@ void loop() {
   }  // end of the tick block
 
 
+
+  // COMMA check in the main loop (battery may drop during active WiFi/LoRa operation).
+  if (usingSolarPower && !rtc_comma_mode &&
+      digitalStablesData.batteryVoltage > 0 && digitalStablesData.batteryVoltage < commaVoltage) {
+    if (debug) { Serial.printf("COMMA from loop at %.2fV\n", digitalStablesData.batteryVoltage); }
+    rtc_comma_mode = true;
+    digitalStablesData.operatingStatus = OPERATING_STATUS_COMMA;
+    appendCommaRecord(digitalStablesData.batteryVoltage, digitalStablesData.secondsTime);
+    goToSleep();
+  }
+
   boolean isSleepMode = false;
   if (usingSolarPower && hourlySolarPowerData.efficiency * 100 < digitalStablesData.minimumEfficiencyForLed) isSleepMode = true;
   // Protect battery from over-discharge (only when on solar/battery, not wall power)
-  if (usingSolarPower && digitalStablesData.batteryVoltage > 2.8 && digitalStablesData.batteryVoltage < sleepingVoltage) isSleepMode = true;
+  if (usingSolarPower && digitalStablesData.batteryVoltage >= commaVoltage && digitalStablesData.batteryVoltage < sleepingVoltage) isSleepMode = true;
+  // On overcast days the theoretical efficiency may still be above threshold but actual solar
+  // is insufficient to sustain continuous operation. Sleep between each LoRa pulse.
+  if (usingSolarPower && digitalStablesData.operatingStatus == OPERATING_STATUS_CLOUDY) isSleepMode = true;
   if (isSleepMode) {
-    digitalStablesData.operatingStatus = OPERATING_STATUS_SLEEP;
+    if (digitalStablesData.operatingStatus != OPERATING_STATUS_CLOUDY) {
+      digitalStablesData.operatingStatus = OPERATING_STATUS_SLEEP;
+    }
     if (debug) Serial.print("going to sleep because batteryVoltage is less than sleepingVoltage, bat=");
     if (debug) Serial.println(digitalStablesData.batteryVoltage);
+    digitalStablesData.asyncdata = 7;
     if (dataManager.getDSDStoredCount() < MAXIMUM_STORED_RECORDS) {
-      digitalStablesData.asyncdata = 7;
       dataManager.storeDSDData(digitalStablesData);
     }
-Serial.println("Calling deepsleep line 2185");
+    Serial.println("Calling deepsleep line 2185");
     goToSleep();
   }
 
 
 
-  if (usingSolarPower && digitalStablesData.batteryVoltage > 2.8 && digitalStablesData.batteryVoltage < minimumLEDVoltage && digitalRead(LED_CONTROL)) {
+  if (usingSolarPower && digitalStablesData.batteryVoltage > commaVoltage && digitalStablesData.batteryVoltage < minimumLEDVoltage && digitalRead(LED_CONTROL)) {
 
     if (debug) Serial.print("line 967 turning off leds, battery=");
     if (debug) Serial.println(digitalStablesData.batteryVoltage);
@@ -2207,50 +2512,61 @@ Serial.println("Calling deepsleep line 2185");
 
 
 
-  if (!turnOffWifi) {
-    //if(debug)Serial.print("line 2055 turning off wifi");
-    turnOffWifi = (usingSolarPower && digitalStablesData.batteryVoltage > 2.8 && digitalStablesData.batteryVoltage < minimumWifiVoltage) && wifistatus;
+  // Unconditional voltage-based WiFi shutoff: if battery is below minimumWifiVoltage,
+  // always call stop() — even if wifistatus is false (WiFi may be retrying and drawing current).
+  if (usingSolarPower && digitalStablesData.batteryVoltage > commaVoltage && digitalStablesData.batteryVoltage < minimumWifiVoltage) {
+    turnOffWifi = true;
   }
   if (turnOffWifi) {
+    wifiManager.stop();
+    WiFi.setAutoReconnect(false);
+    WiFi.disconnect(true);
+
     if (debug) Serial.print("turning off wifi battery voltage=");
     if (debug) Serial.println(digitalStablesData.v50Voltage);
-    wifiManager.stop();
-
-    if (debug) Serial.print("after wifimanager stop, eifistatus=");
+    if (debug) Serial.print("after wifimanager stop, wifistatus=");
     if (debug) Serial.println(wifiManager.getWifiStatus());
 
-    digitalStablesData.internetAvailable = false;
-    currentSecondsWithWifiVoltage = 0;
-    FastLED.clear(true);
-    for (int i = 0; i < NUM_LEDS; i++) {
-      leds[i] = CRGB(0, 0, 0);
+    // Only show the disconnect animation and reset the counter once, when actually transitioning
+    // from connected to disconnected. Without this guard, every tick below minimumWifiVoltage
+    // would re-run the animation (red WiFi → yellow 0/14 loop visible to the user).
+    if (wifistatus) {
+      digitalStablesData.internetAvailable = false;
+      currentSecondsWithWifiVoltage = 0;
+      FastLED.clear(true);
+      for (int i = 0; i < NUM_LEDS; i++) {
+        leds[i] = CRGB(0, 0, 0);
+      }
+      FastLED.show();
+      leds[1] = CRGB(255, 0, 0);
+      leds[2] = CRGB(255, 0, 0);
+      leds[3] = CRGB(255, 0, 0);
+      leds[5] = CRGB(255, 0, 0);
+      leds[9] = CRGB(255, 0, 0);
+      leds[11] = CRGB(255, 0, 0);
+      leds[12] = CRGB(255, 0, 0);
+      leds[13] = CRGB(255, 0, 0);
+      FastLED.show();
+      delay(500);
+      for (int i = 0; i < NUM_LEDS; i++) {
+        leds[i] = CRGB(0, 0, 0);
+      }
+      FastLED.show();
+      FastLED.setBrightness(digitalStablesData.ledBrightness);
+      leds[0] = CRGB(255, 255, 0);
+      leds[14] = CRGB(255, 255, 0);
+      FastLED.show();
     }
-    FastLED.show();
-    leds[1] = CRGB(255, 0, 0);
-    leds[2] = CRGB(255, 0, 0);
-    leds[3] = CRGB(255, 0, 0);
-    leds[5] = CRGB(255, 0, 0);
-    leds[9] = CRGB(255, 0, 0);
-    leds[11] = CRGB(255, 0, 0);
-    leds[12] = CRGB(255, 0, 0);
-    leds[13] = CRGB(255, 0, 0);
-    FastLED.show();
-    delay(500);
-    for (int i = 0; i < NUM_LEDS; i++) {
-      leds[i] = CRGB(0, 0, 0);
-    }
-    FastLED.show();
-    FastLED.setBrightness(digitalStablesData.ledBrightness);
-    leds[0] = CRGB(255, 255, 0);
-    leds[14] = CRGB(255, 255, 0);
-    FastLED.show();
   }
   wifistatus = wifiManager.getWifiStatus();
   boolean turnOnWifi = false;
   if (!usingSolarPower) {
     if (!wifistatus) turnOnWifi = true;
   } else {
-    turnOnWifi = (hourlySolarPowerData.efficiency * 100 > digitalStablesData.minimumEfficiencyForWifi) && (currentSecondsWithWifiVoltage >= numberSecondsWithMinimumWifiVoltageForStartWifi) && !wifistatus;
+    turnOnWifi = (hourlySolarPowerData.efficiency * 100 > digitalStablesData.minimumEfficiencyForWifi)
+              && (currentSecondsWithWifiVoltage >= numberSecondsWithMinimumWifiVoltageForStartWifi)
+              && (digitalStablesData.batteryVoltage >= minimumInitWifiVoltage)
+              && !wifistatus;
   }
 
   if (turnOnWifi) {
@@ -2270,11 +2586,13 @@ Serial.println("Calling deepsleep line 2185");
   if (staledata && wifistatus && !wifiManager.getAPStatus()) {
     // Fetch weather data and update SolarInfo
     weatherForecastManager->downloadWeatherData(solarInfo);
+    secondsSinceLastWeatherData = 0;
   }
   // if(debug)Serial.println("line 1139");
   boolean showError = false;
   if (viewTimer.status()) {
     showTemperature = !showTemperature;
+    bool cloudySkip = (digitalStablesData.operatingStatus == OPERATING_STATUS_CLOUDY && !cloudyLedCycleOn);
 
     if (debug) Serial.print("battery voltage=");
     if (debug) Serial.print(digitalStablesData.v50Voltage);
@@ -2285,12 +2603,8 @@ Serial.println("Calling deepsleep line 2185");
     if (debug) Serial.print("  digitalRead(LED_CONTROL)=");
     if (debug) Serial.println(digitalRead(LED_CONTROL));
 
-    if (digitalStablesData.ledBrightness == powerManager->LORA_TX_NOT_ALLOWED) {
-      loraTxOk = false;
-    } else {
-      loraTxOk = true;
-    }
-
+    if (!cloudySkip) {
+    loraTxOk = loraActive;
     FastLED.setBrightness(digitalStablesData.ledBrightness);
 
 
@@ -2303,7 +2617,6 @@ Serial.println("Calling deepsleep line 2185");
         for (int i = 0; i < NUM_LEDS; i++) {
           leds[i] = CRGB(0, 0, 0);
         }
-        FastLED.show();
         leds[1] = CRGB(255, 0, 0);
         leds[2] = CRGB(255, 0, 0);
         leds[3] = CRGB(255, 0, 0);
@@ -2313,11 +2626,15 @@ Serial.println("Calling deepsleep line 2185");
       } else {
         if (digitalStablesData.outdoortemperature > 0) {
           red = 0;
+          green = 255;
+          blue = 0;
+        } else if (digitalStablesData.outdoortemperature < 0) {
+          red = 0;
           green = 0;
           blue = 255;
-        } else if (digitalStablesData.outdoortemperature <= 0) {
+        } else {
           red = 255;
-          green = 0;
+          green = 255;
           blue = 0;
         }
         drawTemperature(red, green, blue);
@@ -2333,7 +2650,6 @@ Serial.println("Calling deepsleep line 2185");
       for (int i = 0; i < NUM_LEDS; i++) {
         leds[i] = CRGB(0, 0, 0);
       }
-      FastLED.show();
       if (digitalStablesData.currentFunctionValue == DAFFODIL_SCEPTIC_TANK) {
         if (digitalStablesData.scepticAvailablePercentage <= 25) {
           red = 255;
@@ -2419,7 +2735,6 @@ Serial.println("Calling deepsleep line 2185");
       for (int i = 0; i < NUM_LEDS; i++) {
         leds[i] = CRGB(0, 0, 0);
       }
-      FastLED.show();
 
       boolean displayWifi = false;
       if (!usingSolarPower) displayWifi = true;
@@ -2513,10 +2828,12 @@ Serial.println("Calling deepsleep line 2185");
       if (debug) Serial.print(loraActive);
       if (debug) Serial.print(" loraTxOk=");
       if (debug) Serial.println(loraTxOk);
-      if (loraActive && loraTxOk) {
+      if (loraActive) {
         delay(random(100, 3000));
         readSensorData();
         if (debug) Serial.println("line 2708");
+
+
 
         digitalStablesData.asyncdata = 9;
         // if(dataManager.getDSDStoredCount()<MAXIMUM_STORED_RECORDS){
@@ -2559,16 +2876,27 @@ Serial.println("Calling deepsleep line 2185");
         showError = false;
       }
     } else if (displayStatus == SHOW_BATTERY_STATUS) {
-      drawBatteryStatus(digitalStablesData.batteryVoltage, digitalStablesData.batteryCurrent, digitalStablesData.ledBrightness);
+      drawBatteryStatus(digitalStablesData.batteryVoltage, digitalStablesData.batteryCurrent);
+    }
+    } else {
+      // CLOUDY dark cycle — LEDs off for this full display cycle
+      for (int i = 0; i < NUM_LEDS; i++) leds[i] = CRGB(0, 0, 0);
+      FastLED.clear(true);
+      FastLED.show();
     }
     displayStatus++;
 
-    if (displayStatus > 5) {
+    if (displayStatus == SHOW_ERROR_STATUS && foundADS && !memoryFull) {
       displayStatus = 0;
+      if (digitalStablesData.operatingStatus == OPERATING_STATUS_CLOUDY) cloudyLedCycleOn = !cloudyLedCycleOn;
+    } else if (displayStatus > 5) {
+      displayStatus = 0;
+      if (digitalStablesData.operatingStatus == OPERATING_STATUS_CLOUDY) cloudyLedCycleOn = !cloudyLedCycleOn;
     }
 
     if (!showError) {
       viewTimer.reset();
+      clockTicked = false;  // discard ISR ticks accumulated during long LoRa TX/delay
     }
   }
 
@@ -2622,6 +2950,7 @@ Serial.println("Calling deepsleep line 2185");
     }
 
     else if (command.startsWith("storeDSDData")) {
+
       digitalStablesData.asyncdata = 10;
       int count = dataManager.storeDSDData(digitalStablesData);
       Serial.println(count);
@@ -2635,20 +2964,104 @@ Serial.println("Calling deepsleep line 2185");
       Serial.println("Ok-clearAllDSDData");
       Serial.flush();
 
+    } else if (command.startsWith("printCommaRecord")) {
+      File log = LittleFS.open(COMMA_LOG_FILE, "r");
+      int n = log ? (int)(log.size() / sizeof(CommaRecord)) : 0;
+      if (n == 0) {
+        Serial.println("No CommaRecords found");
+      } else {
+        Serial.println(String(n) + " records (newest last):");
+        for (int i = 0; i < n; i++) {
+          CommaRecord cr;
+          log.readBytes((char*)&cr, sizeof(cr));
+          Serial.println("[" + String(i + 1) + "] " + String(cr.devicename)
+                         + "  t=" + String(cr.time)
+                         + "  (" + TimeUtils::epochToString(cr.time) + ")"
+                         + "  v=" + String(cr.voltage, 3) + "V");
+        }
+        log.close();
+      }
+      Serial.println("  rtc_comma_mode=" + String(rtc_comma_mode));
+      Serial.println("  rtc_has_comma_data=" + String(rtc_has_comma_data));
+      if (rtc_comma_mode) {
+        Serial.println("  session_firstTime=" + String(rtc_comma_first_time));
+        Serial.println("  session_minVoltage=" + String(rtc_comma_min_voltage, 3) + "V");
+        Serial.println("  session_cycles=" + String(rtc_comma_cycle_count));
+      }
+      Serial.println("Ok-printCommaRecord");
+      Serial.flush();
+
+    } else if (command.startsWith("clearAllCommaRecords")) {
+      clearAllCommaRecords();
+      Serial.println("Ok-clearAllCommaRecords");
+      Serial.flush();
+
     } else if (command.startsWith("printAllDSDData")) {
       dataManager.printAllDSDData();
       Serial.println("Ok-printAllDSDData");
       Serial.flush();
     } else if (command.startsWith("printCurrentDSDData")) {
+      dataManager.printDigitalStablesData(digitalStablesData);
+      Serial.println("--- Runtime ---");
       Serial.println("rawCSWValue=" + String(rawCSWValue));
-      Serial.println("cswV50Voltage=5.0 (fixed, Build 7)");
-      Serial.println("factor=" + String(factor));
       Serial.println("cswOutput=" + String(cswOutput));
       Serial.println("usingSolarPower=" + String(usingSolarPower));
-      Serial.println("v50Voltage=" + String(digitalStablesData.v50Voltage));
-      Serial.println("batteryVoltage=" + String(digitalStablesData.batteryVoltage));
-      Serial.println("");
-      dataManager.printDigitalStablesData(digitalStablesData);
+
+      // Operating status (human-readable)
+      String osName;
+      switch (digitalStablesData.operatingStatus) {
+        case OPERATING_STATUS_SLEEP:    osName = "SLEEP";    break;
+        case OPERATING_STATUS_NO_LED:   osName = "NO_LED";   break;
+        case OPERATING_STATUS_FULL_MODE:osName = "FULL_MODE";break;
+        case OPERATING_STATUS_CLOUDY:   osName = "CLOUDY";   break;
+        case OPERATING_STATUS_COMMA:    osName = "COMMA";    break;
+        default: osName = "UNKNOWN(" + String(digitalStablesData.operatingStatus) + ")";
+      }
+      Serial.println("operatingStatus=" + osName);
+
+      // opMode bits decoded
+      uint8_t om = digitalStablesData.opMode;
+      Serial.println("opMode=0x" + String(om, HEX) + " (0b" + String(om, BIN) + ")");
+      Serial.println("  bit0 hwPin="        + String(om & 0x01 ? "1"   : "0"));
+      Serial.println("  bit1 weatherFresh=" + String(om & 0x02 ? "YES" : "NO"));
+      Serial.println("  bit2 INA219="       + String(om & 0x04 ? "OK"  : "MISSING"));
+      Serial.println("  bit3 BH1750="       + String(om & 0x08 ? "OK"  : "MISSING"));
+      Serial.println("  bit4 ADS1115="      + String(om & 0x10 ? "OK"  : "MISSING"));
+      Serial.println("  bit5 RTC="          + String(om & 0x20 ? "OK"  : "MISSING"));
+      Serial.println("  bit6 DS18B20="      + String(om & 0x40 ? "OK"  : "MISSING"));
+      Serial.println("  bit7 SHT="          + String(om & 0x80 ? "OK"  : "MISSING"));
+
+      // Weather forecast
+      Serial.println("secondsSinceLastWeatherData=" + String(secondsSinceLastWeatherData)
+                     + (secondsSinceLastWeatherData == 9999 ? " (never received)"
+                       : secondsSinceLastWeatherData < 1860  ? " (fresh)"
+                                                             : " (stale)"));
+
+      // Solar
+      HourlySolarPowerData _hspd = solarInfo->calculateActualPower(currentTimerRecord);
+      Serial.println("solarEfficiency=" + String(_hspd.efficiency * 100, 1) + "%"
+                     + "  minForLed=" + String(digitalStablesData.minimumEfficiencyForLed) + "%"
+                     + "  minForWifi=" + String(digitalStablesData.minimumEfficiencyForWifi) + "%");
+      Serial.println("lux=" + String(digitalStablesData.lux, 1)
+                     + "  luxNight<" + String(luxNightThreshold)
+                     + "  luxCloudy<" + String(luxCloudyThreshold));
+
+      // Battery thresholds
+      Serial.println("sleepingVoltage=" + String(sleepingVoltage)
+                     + "  commaVoltage=" + String(commaVoltage)
+                     + "  minWifiV=" + String(minimumWifiVoltage)
+                     + "  minInitWifiV=" + String(minimumInitWifiVoltage));
+      Serial.println("currentSecondsWithWifiVoltage=" + String(currentSecondsWithWifiVoltage)
+                     + "/" + String(numberSecondsWithMinimumWifiVoltageForStartWifi));
+
+      // COMMA state
+      Serial.println("rtc_comma_mode=" + String(rtc_comma_mode)
+                     + "  rtc_has_comma_data=" + String(rtc_has_comma_data));
+      if (rtc_comma_mode) {
+        Serial.println("  comma_firstTime=" + String(rtc_comma_first_time)
+                       + "  minV=" + String(rtc_comma_min_voltage, 3) + "V"
+                       + "  cycles=" + String(rtc_comma_cycle_count));
+      }
       Serial.println("Ok-printCurrentDSDData");
       Serial.flush();
     } else if (command.startsWith("printCSWData")) {
@@ -2752,6 +3165,8 @@ Serial.println("Calling deepsleep line 2185");
       //SetTime#25#5#25#2#22#24#30
       // SetTime#26#5#26#3#14#29#50
       // SetTime#1#6#25#1#19#43#00
+      // SetTime#29#5#26#6#11#05#40
+      
       timeManager.setTime(command);
       Serial.println("Ok-SetTime");
       Serial.flush();  // SetTime#24#1#25#6#17#21#20
@@ -2781,6 +3196,7 @@ Serial.println("Calling deepsleep line 2185");
       Serial.print("#");
       Serial.println(F("Ok-GetDeviceSensorConfig"));
     } else if (command.startsWith("SetDeviceSensorConfig")) {
+      //SetDeviceSensorConfig#TopTank#TOPT#Flow#Tank#AEST-10AEDT,M10.1.0,M4.1.0/3#-37.13305556#144.47472222#410#20#50#
       // SetDeviceSensorConfig#FISHTANK #FISH #Tank#Temp#AEST-10AEDT,M10.1.0,M4.1.0/3#-37.13305556#144.47472222#410#20#50#
       // SetDeviceSensorConfig#SumpTrough #SUMP #Tank#Temp#AEST-10AEDT,M10.1.0,M4.1.0/3#-37.13305556#144.47472222#410#20#50#
       // SetDeviceSensorConfig#Seedling #SEED #NoSensor#Temperature#AEST-10AEDT,M10.1.0,M4.1.0/3#-37.13305556#144.47472222#410#20#50#
@@ -2854,7 +3270,7 @@ Serial.println("Calling deepsleep line 2185");
     } else if (command.startsWith("ConfigWifiAP")) {
       // ConfigWifiAP#soft_ap_ssid#soft_ap_password#hostaname
       // ConfigWifiAP#GHTank##GHTank#
-      // ConfigWifiAP#BigCap##BigCap#
+      // ConfigWifiAP#TopTank##TopTank#
       // ConfigWifiAP#TestOffice##TestOffice#
       //ConfigWifiAP#SumpTrough##SumpTrough#
 
@@ -3027,32 +3443,11 @@ Serial.println("Calling deepsleep line 2185");
 void setStationMode(String ipAddress) {
   Serial.println("settting Station mode, address ");
   Serial.println(ipAddress);
-  leds[0] = CRGB(0, 0, 255);
-  FastLED.show();
 }
 
 void setApMode() {
-
-  leds[0] = CRGB(0, 0, 255);
-  FastLED.show();
   Serial.println("settting AP mode");
-  //
-  // set ap mode
-  //
-  //  wifiManager.configWifiAP("PanchoTankFlowV1", "", "PanchoTankFlowV1");
   String apAddress = wifiManager.getApAddress();
   Serial.println("settting AP mode, address ");
   Serial.println(apAddress);
-
-  for (int i = 2; i < NUM_LEDS; i++) {
-    leds[i] = CRGB(0, 0, 0);
-  }
-  leds[0] = CRGB(0, 255, 0);
-  if (loraActive) {
-    leds[1] = CRGB(0, 0, 255);
-  } else {
-    leds[1] = CRGB(255, 0, 0);
-  }
-
-  FastLED.show();
 }
