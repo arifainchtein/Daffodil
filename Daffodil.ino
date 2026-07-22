@@ -73,6 +73,10 @@ RTC_DATA_ATTR static uint32_t rtc_comma_first_time = 0;     // Unix-seconds when
 RTC_DATA_ATTR static float    rtc_comma_min_voltage = 99.0f;// lowest voltage seen in this COMMA session
 RTC_DATA_ATTR static uint32_t rtc_comma_cycle_count = 0;    // number of 10-min cycles in this session
 RTC_DATA_ATTR static char     rtc_device_shortname[8] = {0};// device short name, populated on full boot
+RTC_DATA_ATTR static bool     rtc_diagnosticsEnabled = false;      // set/cleared remotely via EnableDiagnostics/DisableDiagnostics
+RTC_DATA_ATTR static uint8_t  rtc_activeDiagnosticType = DIAGNOSTIC_TYPE_NONE;
+
+TxCurrentDiagnosticPayload pendingTxDiagnostic = {};  // filled during sendMessage(), consumed right after
 
 String currentSSID;
 String ipAddress = "";
@@ -190,6 +194,7 @@ uint8_t dimLedBrightness = 20;        // Minimum brightness when LoRa TX budget 
 uint8_t nightLedBrightness = 30;      // Minimum LED brightness (night / zero efficiency)
 float luxNightThreshold = 30.0;       // Lux below this is considered actual darkness → cap at nightLedBrightness
 float luxCloudyThreshold = 10000.0;  // Lux below this (but above night) means cloudy — used when weather data is stale
+float v50iCloudyThreshold = 4.5;     // V50_I below this during solar hours means the panel isn't harvesting enough — cloudy. Just under the ETA1061 boost-enable threshold (4.63V, MAX809L on board rev with R1 on V50_I)
 float minimumWifiVoltage = 3.28;      // Turn off WiFi first to preserve power for LoRa
 uint8_t secondsSinceLastDataSampling = 0;
 uint16_t secondsSinceLastWeatherData = 9999; // 9999 = never received
@@ -314,6 +319,8 @@ uint8_t calculateChecksum(const T &data) {
     checksumOffset = offsetof(DigitalStablesData, checksum);
   } else if constexpr (std::is_same<T, RequestCommand>::value) {
     checksumOffset = offsetof(RequestCommand, checksum);
+  } else if constexpr (std::is_same<T, DiagnosticRecord>::value) {
+    checksumOffset = offsetof(DiagnosticRecord, checksum);
   }
 
   for (size_t i = 0; i < checksumOffset; i++) {
@@ -335,7 +342,7 @@ int sendMessage(const T &inputData, bool skipCAD = false) {
 
   long code = secretManager.generateCode();
 
-  if constexpr (std::is_same<T, DigitalStablesData>::value || std::is_same<T, RequestCommand>::value) {
+  if constexpr (std::is_same<T, DigitalStablesData>::value || std::is_same<T, RequestCommand>::value || std::is_same<T, DiagnosticRecord>::value) {
     dataToSend.totpcode = code;
     dataToSend.checksum = 0;
     dataToSend.checksum = calculateChecksum(dataToSend);
@@ -363,14 +370,62 @@ int sendMessage(const T &inputData, bool skipCAD = false) {
     cadResult = skipCAD ? LORA_OK : performCAD();
 
     if (cadResult == LORA_OK) {
+      bool ledsWereOn = digitalRead(LED_CONTROL);
+      if (ledsWereOn) digitalWrite(LED_CONTROL, LOW);  // kill LEDs during TX to reduce V50 sag
       LoRa.beginPacket();
       LoRa.write((uint8_t *)&dataToSend, sizeof(T));
       long start = millis();
-      if (!LoRa.endPacket(false)) {
-        result = LORA_TX_FAILED;
-      } else {
+      bool capturingTxDiagnostic = rtc_diagnosticsEnabled && rtc_activeDiagnosticType == DIAGNOSTIC_TYPE_TX_CURRENT && foundINA219;
+      if ((debug || capturingTxDiagnostic) && foundINA219) {
+        // endPacket(false) normally blocks for the whole over-the-air window, hiding what
+        // the battery/panel are doing during actual TX. Go async and poll INA219 current
+        // through that window instead — printed when debug is on, captured into
+        // pendingTxDiagnostic (for remote retrieval via DiagnosticRecord) when a TX-current
+        // diagnostic is active. v50Voltage is sampled once, not per-loop-iteration, since it
+        // moves on a cloud-cover timescale, not a per-ms one.
+        if (capturingTxDiagnostic) {
+          pendingTxDiagnostic.sampleCount = 0;
+          pendingTxDiagnostic.v50i_mV = (uint16_t)(digitalStablesData.v50Voltage * 1000);
+          pendingTxDiagnostic.mAPre = (uint16_t)ina219.getCurrent_mA();
+        }
+        if (debug) {
+          Serial.print("TX-CURRENT pre v50i=");
+          Serial.print(digitalStablesData.v50Voltage);
+          Serial.print(" mA=");
+          Serial.println(ina219.getCurrent_mA());
+        }
+        LoRa.endPacket(true);
+        while (LoRa.isTransmitting()) {
+          uint16_t sampleMa = (uint16_t)ina219.getCurrent_mA();
+          if (debug) {
+            Serial.print("TX-CURRENT t=");
+            Serial.print(millis() - start);
+            Serial.print("ms mA=");
+            Serial.println(sampleMa);
+          }
+          if (capturingTxDiagnostic && pendingTxDiagnostic.sampleCount < DIAGNOSTIC_TX_MAX_SAMPLES) {
+            uint8_t i = pendingTxDiagnostic.sampleCount;
+            pendingTxDiagnostic.samples[i].offsetMs = (uint16_t)(millis() - start);
+            pendingTxDiagnostic.samples[i].milliamps = sampleMa;
+            pendingTxDiagnostic.sampleCount++;
+          }
+        }
+        if (capturingTxDiagnostic) {
+          pendingTxDiagnostic.mAPost = (uint16_t)ina219.getCurrent_mA();
+        }
+        if (debug) {
+          Serial.print("TX-CURRENT post mA=");
+          Serial.println(ina219.getCurrent_mA());
+        }
         result = LORA_OK;
+      } else {
+        if (!LoRa.endPacket(false)) {
+          result = LORA_TX_FAILED;
+        } else {
+          result = LORA_OK;
+        }
       }
+      if (ledsWereOn) digitalWrite(LED_CONTROL, HIGH);  // restore LEDs after TX
       delay(50);
       if (debug) {
         Serial.print("Handover took=");
@@ -505,6 +560,16 @@ void processLora(int packetSize) {
       } else if (commandcode == "SendCurrentData") {
         if (debug) Serial.println("received SendCurrentData, sending ..");
         sendMessage(digitalStablesData,false);
+      } else if (commandcode.startsWith("EnableDiagnostics")) {
+        int idx = commandcode.indexOf('#');
+        rtc_activeDiagnosticType = (idx >= 0) ? (uint8_t)commandcode.substring(idx + 1).toInt() : DIAGNOSTIC_TYPE_TX_CURRENT;
+        rtc_diagnosticsEnabled = true;
+        if (debug) Serial.print("Diagnostics enabled, type=");
+        if (debug) Serial.println(rtc_activeDiagnosticType);
+      } else if (commandcode == "DisableDiagnostics") {
+        rtc_diagnosticsEnabled = false;
+        rtc_activeDiagnosticType = DIAGNOSTIC_TYPE_NONE;
+        if (debug) Serial.println("Diagnostics disabled");
       }
     } else {
       if (debug) Serial.print(" Receive RequestCommand but invalid code: ");
@@ -1162,12 +1227,15 @@ void setup() {
 
   ADS.setGain(0);
   //
-  // Battery Voltage (Build 7: LiFePO4 cell replaces supercapacitors)
+  // V50_I (raw solar/USB input, pre-diode) — NOT battery voltage, despite the field name.
+  // On boards where R1 feeds this channel from V50_I instead of the regulated V50 rail, it
+  // tracks actual panel output: ~0V at night, sags with cloud cover, ~5V+ in full sun. Used
+  // as a real power-harvest signal for cloudy detection (see v50iCloudyThreshold below).
   int16_t val_3 = ADS.readADC(3);
   float f = ADS.toVoltage(1);  //  voltage factor
   digitalStablesData.v50Voltage = ADS.toVoltage(val_3);
 
-  if (debug) Serial.print("i setup battery=");
+  if (debug) Serial.print("i setup v50Voltage(V50_I)=");
   if (debug) Serial.println(digitalStablesData.v50Voltage);
 
   // Config Switch
@@ -1439,7 +1507,7 @@ void setup() {
   if (debug) Serial.print("Starting wifi digitalStablesConfigData.groupidentifier=");
   if (debug) Serial.println(digitalStablesData.groupidentifier);
 
-  String identifier = "daffodilTF";
+  String identifier = "Daffodil";
   char ty[identifier.length() + 1];
   identifier.toCharArray(ty, identifier.length() + 1);
   strcpy(digitalStablesData.deviceTypeId, ty);
@@ -1585,7 +1653,7 @@ void sleepDS18B20() {  // Put OneWire bus in high impedance state pinMode(ONE_WI
   oneWire.reset();      // Reset to stop conversion
 }
 
-// Modified by Claude
+
 void goToSleep() {
   // Heartbeat: show "B" battery status while LEDs are powered, then cut power.
   digitalWrite(LED_CONTROL, HIGH);
@@ -1601,10 +1669,13 @@ void goToSleep() {
   // 1. Calculate sleep timing.
   //    PowerManager returns 60 s whenever theoretical solar efficiency > 0.3 (sun is up).
   //    On heavily overcast days this is wrong — actual lux can be 4000 while efficiency
-  //    reads 0.4 from the geometric model. When lux is below the cloudy threshold, apply
-  //    the same night formula so sleep time reflects how dark it actually is.
+  //    reads 0.4 from the geometric model, and V50_I (real panel output) can be below
+  //    v50iCloudyThreshold too. When either says cloudy, apply the same night formula so
+  //    sleep time reflects how dark/underpowered it actually is.
   long seconds_sleep = powerManager->calculateOptimalSleepTime(currentTimerRecord);
-  if (usingSolarPower && digitalStablesData.lux >= 0 && digitalStablesData.lux < luxCloudyThreshold) {
+  bool _lowLightForSleep = digitalStablesData.lux >= 0 && digitalStablesData.lux < luxCloudyThreshold;
+  bool _lowV50IForSleep = foundADS && digitalStablesData.v50Voltage > 0 && digitalStablesData.v50Voltage < v50iCloudyThreshold;
+  if (usingSolarPower && (_lowLightForSleep || _lowV50IForSleep)) {
     DailySolarData _dsd = solarInfo->getDailySolarData(currentTimerRecord);
     int _currentMin  = currentTimerRecord.hour * 60 + currentTimerRecord.minute;
     int _toSunrise   = (int)_dsd.sunrise - _currentMin;
@@ -1696,7 +1767,7 @@ void handleWakeInterrupt() {
 
 void readSensorData() {
   //
-  // Capacitor Voltage
+  // V50_I (raw solar/USB input, pre-diode) — see setup() for why this isn't battery voltage.
   //
   ADS.setGain(0);
   int16_t val_3 = ADS.readADC(3);
@@ -1919,7 +1990,7 @@ void restartWifi() {
   //    digitalWrite(WATCHDOG_WDI, LOW);
   if (debug) Serial.println("getting  stationmode=");
   bool stationmode = wifiManager.getStationMode();
-  digitalStablesData.internetAvailable = wifiManager.getInternetAvailable();
+  digitalStablesData.wifiStatus = wifiManager.getWifiStatus();
   //     digitalWrite(WATCHDOG_WDI, HIGH);
   //    delay(2);
   //    digitalWrite(WATCHDOG_WDI, LOW);
@@ -2409,12 +2480,18 @@ void loop() {
           bool luxSaysCloudy = foundBH1750
                              && digitalStablesData.lux >= luxNightThreshold
                              && digitalStablesData.lux < luxCloudyThreshold;
+          // We're already inside the "solar should be up" branch (efficiency > minimumEfficiencyForLed),
+          // so a depressed V50_I here means the panel isn't harvesting despite theoretical daylight —
+          // a direct power-harvest reading, unlike lux which only measures ambient brightness.
+          bool v50iSaysCloudy = foundADS
+                              && digitalStablesData.v50Voltage > 0
+                              && digitalStablesData.v50Voltage < v50iCloudyThreshold;
           bool forecastSaysCloudy = false;
           if (secondsSinceLastWeatherData < 1860) {
             WeatherForecast* forecasts = weatherForecastManager->getForecasts();
             forecastSaysCloudy = (forecasts != nullptr) && (forecasts[0].cloudiness >= cloudyThreshold);
           }
-          digitalStablesData.operatingStatus = (luxSaysCloudy || forecastSaysCloudy)
+          digitalStablesData.operatingStatus = (luxSaysCloudy || v50iSaysCloudy || forecastSaysCloudy)
                                                ? OPERATING_STATUS_CLOUDY : OPERATING_STATUS_FULL_MODE;
           // Update bit 1 (weather freshness) — all other bits set once in setup.
           if (secondsSinceLastWeatherData < 1860)
@@ -2531,7 +2608,7 @@ void loop() {
     // from connected to disconnected. Without this guard, every tick below minimumWifiVoltage
     // would re-run the animation (red WiFi → yellow 0/14 loop visible to the user).
     if (wifistatus) {
-      digitalStablesData.internetAvailable = false;
+      digitalStablesData.wifiStatus = 0;
       currentSecondsWithWifiVoltage = 0;
       FastLED.clear(true);
       for (int i = 0; i < NUM_LEDS; i++) {
@@ -2721,8 +2798,8 @@ void loop() {
       FastLED.show();
     } else if (displayStatus == SHOW_INTERNET_STATUS) {
       wifistatus = wifiManager.getWifiStatus();
-      if (debug) Serial.print("line 1112 inside of showintenrnetstatus internetAvailable=");
-      if (debug) Serial.println(digitalStablesData.internetAvailable);
+      if (debug) Serial.print("line 1112 inside of showintenrnetstatus wifiStatus=");
+      if (debug) Serial.println(digitalStablesData.wifiStatus);
       if (debug) Serial.print("wifiManager.getAPStatus()=");
       if (debug) Serial.println(wifiManager.getAPStatus());
       if (debug) Serial.print("wifiManager.getWifiStatus()=");
@@ -2761,7 +2838,7 @@ void loop() {
           leds[11] = CRGB(0, 0, 255);
           leds[12] = CRGB(0, 0, 255);
           leds[13] = CRGB(0, 0, 255);
-          if (digitalStablesData.internetAvailable) {
+          if (digitalStablesData.wifiStatus==2) {
             leds[7] = CRGB(0, 0, 255);
           } else {
             leds[7] = CRGB(255, 0, 0);
@@ -2770,7 +2847,7 @@ void loop() {
           //
           //
 
-          if (digitalStablesData.internetAvailable) {
+          if (digitalStablesData.wifiStatus==2) {
             if (dsUploadTimer.status()) {
               // char secret[27];
 
@@ -2807,9 +2884,9 @@ void loop() {
             // but internet is not available , check again if there is a reconnection
             wifiManager.checkInternetConnectionAvailable();
 
-            digitalStablesData.internetAvailable = wifiManager.getInternetAvailable();
-            if (debug) Serial.print("after rechecking digitalstable,internetConnectionAvailable=");
-            if (debug) Serial.println(digitalStablesData.internetAvailable);
+            digitalStablesData.wifiStatus = wifiManager.getWifiStatus();
+            if (debug) Serial.print("after rechecking digitalstable,wifiStatus=");
+            if (debug) Serial.println(digitalStablesData.wifiStatus);
           }
         }
       } else {
@@ -2846,6 +2923,15 @@ void loop() {
           drawLora(0);
         } else if (loraLastResult == LORA_OK) {
           drawLora(1);
+        }
+
+        if (rtc_diagnosticsEnabled && rtc_activeDiagnosticType == DIAGNOSTIC_TYPE_TX_CURRENT && pendingTxDiagnostic.sampleCount > 0) {
+          DiagnosticRecord diagRecord;
+          memcpy(diagRecord.serialnumberarray, digitalStablesData.serialnumberarray, 8);
+          diagRecord.diagnosticType = rtc_activeDiagnosticType;
+          diagRecord.payload.txCurrent = pendingTxDiagnostic;
+          sendMessage(diagRecord);
+          pendingTxDiagnostic.sampleCount = 0;  // consumed
         }
       } else {
         drawLora(0);
