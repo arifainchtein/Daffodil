@@ -59,6 +59,7 @@
 
 
 Adafruit_INA219 ina219(0x41);
+Adafruit_INA219 solarIna219(0x45);  // Wally USB/panel current sensor — same 50mΩ shunt (LVK12R050CER) as ina219(0x41)
 float SHUNT_OHMS = 0.050;    // Shunt resistor value in Ohms — JLCPCB C2596036 50mΩ
 #define MAX_CURRENT 1.0      // Maximum expected current in Amps
 #define CURRENT_LSB 0.0001   // Current LSB in A/bit — Adafruit default (100µA/bit for 32V/2A mode)
@@ -194,7 +195,8 @@ uint8_t dimLedBrightness = 20;        // Minimum brightness when LoRa TX budget 
 uint8_t nightLedBrightness = 30;      // Minimum LED brightness (night / zero efficiency)
 float luxNightThreshold = 30.0;       // Lux below this is considered actual darkness → cap at nightLedBrightness
 float luxCloudyThreshold = 10000.0;  // Lux below this (but above night) means cloudy — used when weather data is stale
-float v50iCloudyThreshold = 4.5;     // V50_I below this during solar hours means the panel isn't harvesting enough — cloudy. Just under the ETA1061 boost-enable threshold (4.63V, MAX809L on board rev with R1 on V50_I)
+float v50iCloudyThreshold = 3.5;     // V50_I below this during solar hours means the panel isn't harvesting enough — cloudy. Lowered 2026-07-24: field data (TopTank, clear midday sun, actively charging) showed V50_I sitting at 4.09-4.47V — the old 4.5V threshold was false-triggering CLOUDY on every wake. Still wants validation against real overcast-day readings.
+float panelCurrentCloudyThreshold_mA = 15.0;  // Wally 0x45 panelCurrent below this during solar hours means cloudy. Lowered 2026-07-24: field data (TopTank, clear midday sun) showed panelCurrent as low as 22-80mA during normal charging — the old 60mA threshold was false-triggering CLOUDY. Still wants validation against real overcast-day readings.
 float minimumWifiVoltage = 3.28;      // Turn off WiFi first to preserve power for LoRa
 uint8_t secondsSinceLastDataSampling = 0;
 uint16_t secondsSinceLastWeatherData = 9999; // 9999 = never received
@@ -260,6 +262,7 @@ bool foundtemp = false;
 bool foundADS = false;
 bool foundBH1750 = false;
 bool foundINA219 = false;
+bool foundINA219Solar = false;  // Wally 0x45 panel/USB current sensor — optional, may be absent on unverified/older Wally boards
 bool PCF8563T = false;
 bool foundDS18B20 = false;
 
@@ -372,17 +375,25 @@ int sendMessage(const T &inputData, bool skipCAD = false) {
     if (cadResult == LORA_OK) {
       bool ledsWereOn = digitalRead(LED_CONTROL);
       if (ledsWereOn) digitalWrite(LED_CONTROL, LOW);  // kill LEDs during TX to reduce V50 sag
-      LoRa.beginPacket();
+      int beginPacketResult = LoRa.beginPacket();
+      // beginPacketResult==0 means LoRa.isTransmitting() already read true at this point —
+      // beginPacket() then skips resetting the FIFO pointer/length entirely, so the write()
+      // below lands on stale FIFO state. Never checked before; pollIterations has been
+      // reading 0 (radio never actually shows MODE_TX) every time this session so far.
+      if (debug) {
+        Serial.print("beginPacketResult=");
+        Serial.println(beginPacketResult);
+      }
       LoRa.write((uint8_t *)&dataToSend, sizeof(T));
       long start = millis();
       bool capturingTxDiagnostic = rtc_diagnosticsEnabled && rtc_activeDiagnosticType == DIAGNOSTIC_TYPE_TX_CURRENT && foundINA219;
-      if ((debug || capturingTxDiagnostic) && foundINA219) {
-        // endPacket(false) normally blocks for the whole over-the-air window, hiding what
-        // the battery/panel are doing during actual TX. Go async and poll INA219 current
-        // through that window instead — printed when debug is on, captured into
-        // pendingTxDiagnostic (for remote retrieval via DiagnosticRecord) when a TX-current
-        // diagnostic is active. v50Voltage is sampled once, not per-loop-iteration, since it
-        // moves on a cloud-cover timescale, not a per-ms one.
+      // Only take the async+poll path during an actual TX-current diagnostic capture — it was
+      // previously also triggered by `debug` alone (i.e. every send all session), but the async
+      // LoRa.endPacket(true) + isTransmitting() polling never once observed the radio as busy on
+      // this hardware/library combo (confirmed via pollIterations==0, every test, 2026-07-24).
+      // LoRa.endPacket(false) (the else branch below) blocks on the real IRQ_TX_DONE_MASK flag,
+      // so it's the one that's actually been transmitting correctly.
+      if (capturingTxDiagnostic && foundINA219) {
         if (capturingTxDiagnostic) {
           pendingTxDiagnostic.sampleCount = 0;
           pendingTxDiagnostic.v50i_mV = (uint16_t)(digitalStablesData.v50Voltage * 1000);
@@ -395,7 +406,9 @@ int sendMessage(const T &inputData, bool skipCAD = false) {
           Serial.println(ina219.getCurrent_mA());
         }
         LoRa.endPacket(true);
+        uint16_t pollIterations = 0;
         while (LoRa.isTransmitting()) {
+          pollIterations++;
           uint16_t sampleMa = (uint16_t)ina219.getCurrent_mA();
           if (debug) {
             Serial.print("TX-CURRENT t=");
@@ -415,8 +428,23 @@ int sendMessage(const T &inputData, bool skipCAD = false) {
         }
         if (debug) {
           Serial.print("TX-CURRENT post mA=");
-          Serial.println(ina219.getCurrent_mA());
+          Serial.print(ina219.getCurrent_mA());
+          Serial.print(" pollIterations=");
+          Serial.print(pollIterations);
+          Serial.print(" isTransmittingElapsedMs=");
+          Serial.println(millis() - start);
+          if (pollIterations == 0) {
+            // Never observed MODE_TX (0x03) in REG_OP_MODE (0x01) — dump every register so we
+            // can see what mode/IRQ state the chip actually reports right after the TX write,
+            // instead of just the boolean isTransmitting() check.
+            Serial.println("pollIterations==0 — dumping LoRa registers:");
+            LoRa.dumpRegisters(Serial);
+          }
         }
+        // pollIterations==0 means isTransmitting() never once read the radio as busy —
+        // i.e. REG_OP_MODE never showed MODE_TX after we wrote it, meaning the chip likely
+        // never actually radiated this packet even though endPacket()/the code path here
+        // reports success unconditionally (its return value is never itself meaningful).
         result = LORA_OK;
       } else {
         if (!LoRa.endPacket(false)) {
@@ -831,6 +859,48 @@ float quickReadBusVoltage() {
   return (int16_t)((raw >> 3) * 4) * 0.001f;  // identical to getBusVoltage_V()
 }
 
+// Resets an INA219 and writes the custom 50mΩ-shunt / 1A-range calibration used by both
+// ina219(0x41, battery) and solarIna219(0x45, Wally panel/USB) — same shunt part on both boards.
+void configureINA219Calibration(uint8_t i2cAddr) {
+  Wire.beginTransmission(i2cAddr);
+  Wire.write(0x00);  // Config register
+  Wire.write(0x80);  // Reset bit
+  Wire.write(0x00);
+  Wire.endTransmission();
+  delay(50);  // Wait for reset
+
+  uint16_t calibrationValue = (uint16_t)(0.04096 / (CURRENT_LSB * SHUNT_OHMS));
+
+  uint16_t config = INA219_CONFIG_BVOLTAGERANGE_32V | INA219_CONFIG_GAIN_8_320MV |  // Higher gain for better resolution
+                    INA219_CONFIG_BADCRES_12BIT | INA219_CONFIG_SADCRES_12BIT_1S_532US | INA219_CONFIG_MODE_SANDBVOLT_CONTINUOUS;
+
+  Wire.beginTransmission(i2cAddr);
+  Wire.write(0x00);  // Config register
+  Wire.write((config >> 8) & 0xFF);
+  Wire.write(config & 0xFF);
+  Wire.endTransmission();
+
+  Wire.beginTransmission(i2cAddr);
+  Wire.write(0x05);  // Calibration register
+  Wire.write((calibrationValue >> 8) & 0xFF);
+  Wire.write(calibrationValue & 0xFF);
+  Wire.endTransmission();
+}
+
+// Packs the boot-time I2C found* flags for DIAGNOSTIC_TYPE_I2C_STATUS — see bit layout
+// comment on I2CStatusDiagnosticPayload in DigitalStablesData.h.
+uint8_t buildI2CStatusMask() {
+  uint8_t mask = 0;  // bit7 reserved — DS18B20 is OneWire, not I2C, deliberately excluded here
+  if (foundlcd)         mask |= 0x01;
+  if (foundtemp)        mask |= 0x02;
+  if (foundADS)         mask |= 0x04;
+  if (foundBH1750)      mask |= 0x08;
+  if (foundINA219)      mask |= 0x10;
+  if (PCF8563T)         mask |= 0x20;
+  if (foundINA219Solar) mask |= 0x40;
+  return mask;
+}
+
 void setup() {
   gpio_hold_dis((gpio_num_t)LED_CONTROL);
   gpio_hold_dis((gpio_num_t)SLEEP_SWITCH_26);  // must release or digitalWrite below has no effect
@@ -974,7 +1044,7 @@ void setup() {
   timeManager.start();
   timeManager.PCF8563osc1Hz();
   currentTimerRecord = timeManager.now();
-
+if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
   // ── Early-exit checks (Wire + RTC are ready; nothing else initialised yet) ──────────────────
 
   uint32_t _nowSec = timeManager.getCurrentTimeInSeconds(currentTimerRecord);
@@ -1110,6 +1180,9 @@ void setup() {
       } else if (address == 65) {  // 0x41
         foundINA219 = true;
         if (debug) Serial.println("foundINA219");
+      } else if (address == 69) {  // 0x45 — Wally USB/panel current sensor, optional
+        foundINA219Solar = true;
+        if (debug) Serial.println("foundINA219Solar");
       } else if (address == 81) {  // 0x51;
         PCF8563T = true;
         if (debug) Serial.println("found PCF8563T");
@@ -1165,45 +1238,20 @@ void setup() {
   } else {
     foundINA219 = true;
     if (debug) Serial.println("initialized INA219");
-    // To use a slightly lower 32V, 1A range (higher precision on amps):
-    //ina219.setCalibration_32V_1A();
-    // Or to use a lower 16V, 400mA range (higher precision on volts and amps):
-    // ina219.setCalibration_16V_400mA();
-    // Reset the device
-    Wire.beginTransmission(0x41);
-    Wire.write(0x00);  // Config register
-    Wire.write(0x80);  // Reset bit
-    Wire.write(0x00);
-    Wire.endTransmission();
-    delay(50);  // Wait for reset
+    configureINA219Calibration(0x41);
+  }
 
-    // Custom calibration for 50mΩ shunt (C2596036) and 1A max current
-    //float Current_LSB = MAX_CURRENT/2^15;
-    //float Current_LSB = MAX_CURRENT/32768.0;
-
-    uint16_t calibrationValue = (uint16_t)(0.04096 / (CURRENT_LSB * SHUNT_OHMS));
-
-    if (debug) Serial.print("Calculated calibration value: ");
-    if (debug) Serial.println(calibrationValue);
-
-
-    // Set configuration register - try with different gain settings
-    uint16_t config = INA219_CONFIG_BVOLTAGERANGE_32V | INA219_CONFIG_GAIN_8_320MV |  // Higher gain for better resolution
-                      INA219_CONFIG_BADCRES_12BIT | INA219_CONFIG_SADCRES_12BIT_1S_532US | INA219_CONFIG_MODE_SANDBVOLT_CONTINUOUS;
-
-    // Write configuration
-    Wire.beginTransmission(0x41);
-    Wire.write(0x00);  // Config register
-    Wire.write((config >> 8) & 0xFF);
-    Wire.write(config & 0xFF);
-    Wire.endTransmission();
-
-    // Write calibration
-    Wire.beginTransmission(0x41);
-    Wire.write(0x05);  // Calibration register
-    Wire.write((calibrationValue >> 8) & 0xFF);
-    Wire.write(calibrationValue & 0xFF);
-    Wire.endTransmission();
+  // Wally USB/panel current sensor — optional. Absent on boards without the current-sensor
+  // upgrade (e.g. Wally builds before 18) or if that hardware hasn't been verified yet;
+  // panelVoltage/panelCurrent fall back to -99 in readSensorData() when this is false.
+  if (foundINA219Solar) {
+    if (!solarIna219.begin()) {
+      if (debug) Serial.println("Failed to find solar INA219 (0x45) chip");
+      foundINA219Solar = false;
+    } else {
+      if (debug) Serial.println("initialized solar INA219 (0x45)");
+      configureINA219Calibration(0x45);
+    }
   }
 
 
@@ -1273,33 +1321,33 @@ void setup() {
     // Position 0: 00000 (All OFF)
     digitalStablesData.currentFunctionValue = FUN_1_FLOW;
     attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
-    secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, 12);
+    secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
     usingSolarPower = false;
   } else if (cswOutput >= 8000 && cswOutput <= 8200) {
     // Position 1: 10000 (R3 ON)
     digitalStablesData.currentFunctionValue = FUN_2_FLOW;
     attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
     attachInterrupt(SENSOR_INPUT_2, pulseCounter2, FALLING);
-    secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, 12);
-    secretManager.readFlow2Name().toCharArray(digitalStablesData.sensor2name, 12);
+    secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
+    secretManager.readFlow2Name().toCharArray(digitalStablesData.sensor2name, sizeof(digitalStablesData.sensor2name));
     usingSolarPower = false;
   } else if (cswOutput >= 7800 && cswOutput < 8000) {
     // Position 2: 01000 (R4 ON)
     digitalStablesData.currentFunctionValue = FUN_1_FLOW_1_TANK;
     attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
-    secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, 12);
-    secretManager.readTank2Name().toCharArray(digitalStablesData.sensor2name, 12);
+    secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
+    secretManager.readTank2Name().toCharArray(digitalStablesData.sensor2name, sizeof(digitalStablesData.sensor2name));
     usingSolarPower = false;
   } else if (cswOutput >= 7690 && cswOutput < 7800) {
     // Position 3: 11000 (R3+R4 ON)
     digitalStablesData.currentFunctionValue = FUN_1_TANK;
-    secretManager.readTank1Name().toCharArray(digitalStablesData.sensor1name, 12);
+    secretManager.readTank1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
     usingSolarPower = false;
   } else if (cswOutput >= 7500 && cswOutput < 7690) {
     // Position 4: 00100 (R10 ON)
     digitalStablesData.currentFunctionValue = FUN_2_TANK;
-    secretManager.readTank1Name().toCharArray(digitalStablesData.sensor1name, 12);
-    secretManager.readTank2Name().toCharArray(digitalStablesData.sensor2name, 12);
+    secretManager.readTank1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
+    secretManager.readTank2Name().toCharArray(digitalStablesData.sensor2name, sizeof(digitalStablesData.sensor2name));
     usingSolarPower = false;
   } else if (cswOutput >= 7300 && cswOutput < 7500) {
     // Position 5: 10100 (R3+R10 ON)
@@ -1342,15 +1390,15 @@ void setup() {
     // Position 16: 00001 (R13 ON)
     digitalStablesData.currentFunctionValue = FUN_1_FLOW;
     attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
-    secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, 12);
+    secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
     usingSolarPower = true;
   } else if (cswOutput >= 4500 && cswOutput < 4800) {
     // Position 17: 10001 (R3+R13 ON)
     digitalStablesData.currentFunctionValue = FUN_2_FLOW;
     attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
     attachInterrupt(SENSOR_INPUT_2, pulseCounter2, FALLING);
-    secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, 12);
-    secretManager.readFlow2Name().toCharArray(digitalStablesData.sensor2name, 12);
+    secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
+    secretManager.readFlow2Name().toCharArray(digitalStablesData.sensor2name, sizeof(digitalStablesData.sensor2name));
     usingSolarPower = true;
   } else if (cswOutput >= 4200 && cswOutput < 4500) {
     // Position 18: 01001 (R4+R13 ON)
@@ -1358,18 +1406,18 @@ void setup() {
     digitalStablesData.currentFunctionValue = FUN_1_FLOW_1_TANK;
     attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
 
-    secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, 12);
-    secretManager.readTank2Name().toCharArray(digitalStablesData.sensor2name, 12);
+    secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
+    secretManager.readTank2Name().toCharArray(digitalStablesData.sensor2name, sizeof(digitalStablesData.sensor2name));
   } else if (cswOutput >= 3900 && cswOutput < 4200) {
     // Position 19: 11001 (R3+R4+R13 ON)
     digitalStablesData.currentFunctionValue = FUN_1_TANK;
-    secretManager.readTank1Name().toCharArray(digitalStablesData.sensor1name, 12);
+    secretManager.readTank1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
     usingSolarPower = true;
   } else if (cswOutput >= 3700 && cswOutput < 3900) {
     // Position 20: 00101 (R10+R13 ON)
     digitalStablesData.currentFunctionValue = FUN_2_TANK;
-    secretManager.readTank1Name().toCharArray(digitalStablesData.sensor1name, 12);
-    secretManager.readTank2Name().toCharArray(digitalStablesData.sensor2name, 12);
+    secretManager.readTank1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
+    secretManager.readTank2Name().toCharArray(digitalStablesData.sensor2name, sizeof(digitalStablesData.sensor2name));
     usingSolarPower = true;
   } else if (cswOutput >= 3400 && cswOutput < 3700) {
     // Position 21: 10101 (R3+R10+R13 ON)
@@ -1460,13 +1508,13 @@ void setup() {
   // }
   // FastLED.show();
   if (!LoRa.begin(433E6)) {
-    // Serial.println("Starting LoRa failed!");
+    if(debug)Serial.println("Starting LoRa failed!");
     // drawLora(0);
     while (1)
       ;
     //  leds[1] = CRGB(255, 0, 0);
   } else {
-    //  Serial.println("Starting LoRa worked!");
+    if(debug)  Serial.println("Starting LoRa worked!");
     // drawLora(1);
     loraActive = true;
 
@@ -1480,6 +1528,10 @@ void setup() {
     // LoRa.setCodingRate4(8);
     loraTxOk = true;
   }
+  // Set once per wake cycle here rather than relying solely on restartWifi(), which only
+  // runs when WiFi is actually (re)started — otherwise digitalStablesData.loraActive stays
+  // at its zero-init default on cycles where WiFi doesn't turn on, even though LoRa is active.
+  digitalStablesData.loraActive = loraActive;
 
   // delay(2000);
 
@@ -1628,18 +1680,22 @@ void setup() {
   }
 
 
+  // Cycle the radio through receive() at least once before any TX is attempted this boot —
+  // going straight from LoRa.begin() to a cold transmit (as the isSleepMode branch below used
+  // to do) left REG_OP_MODE never actually showing MODE_TX (pollIterations=0, confirmed via
+  // TX-CURRENT diagnostics 2026-07-24): the SX127x's PLL/AGC apparently needs a receive cycle
+  // first. sendMessage() itself switches back to idle/TX mode via LoRa_txMode(), so this is
+  // safe to do unconditionally before goToSleep()'s send too.
+  if (loraActive) {
+    LoRa.onReceive(onReceive);
+    LoRa.receive();
+  }
+
   if (isSleepMode) {
     Serial.println("Calling deepsleep line 1378");
     goToSleep();
   } else {
     digitalStablesData.operatingStatus = OPERATING_STATUS_NO_LED;
-    if (loraActive) {
-      // LoRa_rxMode();
-      // LoRa.setSyncWord(0xF3);
-      LoRa.onReceive(onReceive);
-      // put the radio into receive mode
-      LoRa.receive();
-    }
   }
   if (debug) Serial.println(F("Finished Setup"));
 }
@@ -1659,6 +1715,7 @@ void goToSleep() {
   digitalWrite(LED_CONTROL, HIGH);
   delay(20);  // let MOSFET turn on and WS2812 power supply stabilise
   readSensorData();                     // get fresh voltage/current before display
+  digitalStablesData.ledBrightness = 125;  // fixed heartbeat brightness — loop()'s adaptive value never ran on this path
   drawBatteryStatus(digitalStablesData.batteryVoltage, digitalStablesData.batteryCurrent);
   delay(1000);                          // hold the display for 1 s so it is visible
   FastLED.clear(true);
@@ -1670,12 +1727,13 @@ void goToSleep() {
   //    PowerManager returns 60 s whenever theoretical solar efficiency > 0.3 (sun is up).
   //    On heavily overcast days this is wrong — actual lux can be 4000 while efficiency
   //    reads 0.4 from the geometric model, and V50_I (real panel output) can be below
-  //    v50iCloudyThreshold too. When either says cloudy, apply the same night formula so
-  //    sleep time reflects how dark/underpowered it actually is.
+  //    v50iCloudyThreshold too. When any of these say cloudy, apply the same night formula
+  //    so sleep time reflects how dark/underpowered it actually is.
   long seconds_sleep = powerManager->calculateOptimalSleepTime(currentTimerRecord);
   bool _lowLightForSleep = digitalStablesData.lux >= 0 && digitalStablesData.lux < luxCloudyThreshold;
   bool _lowV50IForSleep = foundADS && digitalStablesData.v50Voltage > 0 && digitalStablesData.v50Voltage < v50iCloudyThreshold;
-  if (usingSolarPower && (_lowLightForSleep || _lowV50IForSleep)) {
+  bool _lowPanelCurrentForSleep = foundINA219Solar && digitalStablesData.panelCurrent >= 0 && digitalStablesData.panelCurrent < panelCurrentCloudyThreshold_mA;
+  if (usingSolarPower && (_lowLightForSleep || _lowV50IForSleep || _lowPanelCurrentForSleep)) {
     DailySolarData _dsd = solarInfo->getDailySolarData(currentTimerRecord);
     int _currentMin  = currentTimerRecord.hour * 60 + currentTimerRecord.minute;
     int _toSunrise   = (int)_dsd.sunrise - _currentMin;
@@ -1691,7 +1749,7 @@ void goToSleep() {
   }
   if (seconds_sleep < 30) seconds_sleep = 30;
   uint64_t sleep_time_us = (uint64_t)(seconds_sleep * 1000000ULL);
-  if (debug) Serial.printf("Preparing sleep for %lld seconds\n", seconds_sleep);
+  if (debug) Serial.printf("Preparing sleep for %ld seconds\n", seconds_sleep);
 
   // 2. Store final record (sensors already read above for the heartbeat display).
   // Preserve OPERATING_STATUS_COMMA if this is the first entry into COMMA mode.
@@ -1704,20 +1762,25 @@ void goToSleep() {
     dataManager.storeDSDData(digitalStablesData);
   }
 
-  // 3. Send final LoRa message so the hub knows we are sleeping and for how long.
-  // skipCAD=true: this is a critical notification — don't let a busy channel silence it.
-  if (loraActive) {
-    sendMessage(digitalStablesData, true);
-  }
-  LoRa.sleep();
-
-  // 4. Shut down WiFi and wait for it to fully stop before cutting power
+  // 3. Shut down WiFi and wait for it to fully stop BEFORE the final LoRa send — WiFi AP
+  // activity (beaconing, or still ramping up if just started this boot) can draw enough
+  // current to destabilize the power rail during TX (this board has already shown a real
+  // brownout during ConfigWifiAP), which could silently corrupt/suppress the LoRa transmit
+  // without either endPacket() call's return value being checked.
   WiFi.softAPdisconnect(true);
   WiFi.disconnect(true);
   WiFi.mode(WIFI_OFF);
   while (WiFi.getMode() != WIFI_OFF || WiFi.status() == WL_CONNECTED) {
     delay(100);
   }
+
+  // 4. Send final LoRa message so the hub knows we are sleeping and for how long.
+  // skipCAD=true: this is a critical notification — don't let a busy channel silence it.
+  // WiFi is fully off by this point (see step 3) so it can't contend for power during TX.
+  if (loraActive) {
+    sendMessage(digitalStablesData, true);
+  }
+  LoRa.sleep();
 
   // 5. Shut down remaining peripherals
   btStop();
@@ -1825,7 +1888,6 @@ void readSensorData() {
   }
   float distance = sonar.ping_cm();
   digitalStablesData.measuredHeight = distance;
-  digitalStablesData.scepticAvailablePercentage = distance * 100 / MAX_DISTANCE;
   if (debug) Serial.print("line 1654 measuredHeight=");
   if (debug) Serial.println(digitalStablesData.measuredHeight);
 
@@ -1936,6 +1998,22 @@ void readSensorData() {
     digitalStablesData.batteryVoltage = (_fallbackV > 0) ? _fallbackV : -99;
     digitalStablesData.batteryCurrent = -99;
     digitalStablesData.estimatedRuntime = 0.0;
+  }
+
+  // Wally USB/panel current sensor (0x45) — optional, not present on every board yet.
+  // -99 sentinel (matches batteryCurrent's convention) when the sensor wasn't detected.
+  if (foundINA219Solar) {
+    digitalStablesData.panelVoltage = solarIna219.getBusVoltage_V();
+    digitalStablesData.panelCurrent = solarIna219.getCurrent_mA();
+    if (debug) {
+      Serial.print("panelVoltage=");
+      Serial.print(digitalStablesData.panelVoltage);
+      Serial.print(" panelCurrent=");
+      Serial.println(digitalStablesData.panelCurrent);
+    }
+  } else {
+    digitalStablesData.panelVoltage = -99;
+    digitalStablesData.panelCurrent = -99;
   }
 
   /*
@@ -2486,12 +2564,18 @@ void loop() {
           bool v50iSaysCloudy = foundADS
                               && digitalStablesData.v50Voltage > 0
                               && digitalStablesData.v50Voltage < v50iCloudyThreshold;
+          // Wally USB/panel current — a direct current reading, immune to the leakage-floor
+          // ambiguity V50_I has (see panelVoltage/panelCurrent design notes): genuinely ~0mA
+          // with no real panel output, unlike voltage which can float from charger leakage.
+          bool panelCurrentSaysCloudy = foundINA219Solar
+                              && digitalStablesData.panelCurrent >= 0
+                              && digitalStablesData.panelCurrent < panelCurrentCloudyThreshold_mA;
           bool forecastSaysCloudy = false;
           if (secondsSinceLastWeatherData < 1860) {
             WeatherForecast* forecasts = weatherForecastManager->getForecasts();
             forecastSaysCloudy = (forecasts != nullptr) && (forecasts[0].cloudiness >= cloudyThreshold);
           }
-          digitalStablesData.operatingStatus = (luxSaysCloudy || v50iSaysCloudy || forecastSaysCloudy)
+          digitalStablesData.operatingStatus = (luxSaysCloudy || v50iSaysCloudy || panelCurrentSaysCloudy || forecastSaysCloudy)
                                                ? OPERATING_STATUS_CLOUDY : OPERATING_STATUS_FULL_MODE;
           // Update bit 1 (weather freshness) — all other bits set once in setup.
           if (secondsSinceLastWeatherData < 1860)
@@ -2551,18 +2635,31 @@ void loop() {
   }
 
   boolean isSleepMode = false;
-  if (usingSolarPower && hourlySolarPowerData.efficiency * 100 < digitalStablesData.minimumEfficiencyForLed) isSleepMode = true;
+  if (usingSolarPower && hourlySolarPowerData.efficiency * 100 < digitalStablesData.minimumEfficiencyForLed){
+    isSleepMode = true;
+      if (debug) Serial.print("line 2601 isSleepMode=true because of effciency");
+  } 
   // Protect battery from over-discharge (only when on solar/battery, not wall power)
-  if (usingSolarPower && digitalStablesData.batteryVoltage >= commaVoltage && digitalStablesData.batteryVoltage < sleepingVoltage) isSleepMode = true;
+  if (usingSolarPower && digitalStablesData.batteryVoltage >= commaVoltage && digitalStablesData.batteryVoltage < sleepingVoltage) {
+    isSleepMode = true;
+    if (debug) Serial.print("line 2604 isSleepMode=true because of low battery voltage");
+  }
   // On overcast days the theoretical efficiency may still be above threshold but actual solar
   // is insufficient to sustain continuous operation. Sleep between each LoRa pulse.
-  if (usingSolarPower && digitalStablesData.operatingStatus == OPERATING_STATUS_CLOUDY) isSleepMode = true;
+  if (usingSolarPower && digitalStablesData.operatingStatus == OPERATING_STATUS_CLOUDY){
+     isSleepMode = true;
+      if (debug) Serial.print("line 2609 isSleepMode=true because of is cloudy");
+  }
   if (isSleepMode) {
     if (digitalStablesData.operatingStatus != OPERATING_STATUS_CLOUDY) {
       digitalStablesData.operatingStatus = OPERATING_STATUS_SLEEP;
     }
-    if (debug) Serial.print("going to sleep because batteryVoltage is less than sleepingVoltage, bat=");
-    if (debug) Serial.println(digitalStablesData.batteryVoltage);
+    if (debug) Serial.print("going to sleep, bat=");
+    if (debug) Serial.print(digitalStablesData.batteryVoltage);
+    if (debug) Serial.print(" efficiency=");
+    if (debug) Serial.print(hourlySolarPowerData.efficiency);
+    if (debug) Serial.print(" operatingStatus=");
+    if (debug) Serial.println(digitalStablesData.operatingStatus);
     digitalStablesData.asyncdata = 7;
     if (dataManager.getDSDStoredCount() < MAXIMUM_STORED_RECORDS) {
       dataManager.storeDSDData(digitalStablesData);
@@ -2717,9 +2814,12 @@ void loop() {
         drawTemperature(red, green, blue);
       }
     } else if (displayStatus == SHOW_SCEPTIC) {
+      // scepticAvailablePercentage was dropped from DigitalStablesData (it was purely derived,
+      // never needed on the wire) — recomputed locally here from measuredHeight, same formula.
+      float scepticAvailablePercentage = digitalStablesData.measuredHeight * 100 / MAX_DISTANCE;
       if (debug) Serial.print("showing scepotic=");
       if (debug) Serial.print(" percentage: ");
-      if (debug) Serial.println(digitalStablesData.scepticAvailablePercentage);
+      if (debug) Serial.println(scepticAvailablePercentage);
       red = 255;
       green = 0;
       blue = 255;
@@ -2728,19 +2828,19 @@ void loop() {
         leds[i] = CRGB(0, 0, 0);
       }
       if (digitalStablesData.currentFunctionValue == DAFFODIL_SCEPTIC_TANK) {
-        if (digitalStablesData.scepticAvailablePercentage <= 25) {
+        if (scepticAvailablePercentage <= 25) {
           red = 255;
           green = 0;
           blue = 0;
-        } else if (digitalStablesData.scepticAvailablePercentage > 25 && digitalStablesData.scepticAvailablePercentage <= 50) {
+        } else if (scepticAvailablePercentage > 25 && scepticAvailablePercentage <= 50) {
           red = 255;
           green = 255;
           blue = 0;
-        } else if (digitalStablesData.scepticAvailablePercentage > 50 && digitalStablesData.scepticAvailablePercentage <= 75) {
+        } else if (scepticAvailablePercentage > 50 && scepticAvailablePercentage <= 75) {
           red = 0;
           green = 255;
           blue = 0;
-        } else if (digitalStablesData.scepticAvailablePercentage > 75) {
+        } else if (scepticAvailablePercentage > 75) {
           red = 0;
           green = 0;
           blue = 255;
@@ -2932,6 +3032,14 @@ void loop() {
           diagRecord.payload.txCurrent = pendingTxDiagnostic;
           sendMessage(diagRecord);
           pendingTxDiagnostic.sampleCount = 0;  // consumed
+        } else if (rtc_diagnosticsEnabled && rtc_activeDiagnosticType == DIAGNOSTIC_TYPE_I2C_STATUS) {
+          // No sampling window needed — the found* flags are already known from the boot-time
+          // I2C scan, so this sends on the very next cycle after EnableDiagnostics#2.
+          DiagnosticRecord diagRecord;
+          memcpy(diagRecord.serialnumberarray, digitalStablesData.serialnumberarray, 8);
+          diagRecord.diagnosticType = rtc_activeDiagnosticType;
+          diagRecord.payload.i2cStatus.deviceFoundMask = buildI2CStatusMask();
+          sendMessage(diagRecord);
         }
       } else {
         drawLora(0);
@@ -3310,8 +3418,8 @@ void loop() {
       uint8_t devicenamelength = devicename.length() + 1;
       devicename.toCharArray(digitalStablesData.devicename, devicenamelength);
       deviceshortname.toCharArray(digitalStablesData.deviceshortname, deviceshortname.length() + 1);
-      sensor1name.toCharArray(digitalStablesData.sensor1name, sensor1name.length() + 1);
-      sensor2name.toCharArray(digitalStablesData.sensor2name, sensor2name.length() + 1);
+      sensor1name.toCharArray(digitalStablesData.sensor1name, min(sensor1name.length() + 1, sizeof(digitalStablesData.sensor1name)));
+      sensor2name.toCharArray(digitalStablesData.sensor2name, min(sensor2name.length() + 1, sizeof(digitalStablesData.sensor2name)));
 
       Serial.print(F("digitalStablesData.minimumEfficiencyForLed="));
       Serial.println(digitalStablesData.minimumEfficiencyForLed);
@@ -3440,6 +3548,28 @@ void loop() {
     } else if (command.startsWith("GetSerialNumber")) {
       Serial.println(serialNumber);
       Serial.flush();
+    } else if (command.startsWith("SetProductDefinition")) {
+      // SetProductDefinition#<name>#<powerSource>#<battery>#<pcbs>#<firmware>
+      String pdName = generalFunctions.getValue(command, '#', 1);
+      String pdPowerSource = generalFunctions.getValue(command, '#', 2);
+      String pdBattery = generalFunctions.getValue(command, '#', 3);
+      String pdPcbs = generalFunctions.getValue(command, '#', 4);
+      String pdFirmware = generalFunctions.getValue(command, '#', 5);
+      secretManager.saveProductDefinition(pdName, pdPowerSource, pdBattery, pdPcbs, pdFirmware);
+      Serial.println("Ok-SetProductDefinition");
+      Serial.flush();
+      delay(delayTime);
+    } else if (command.startsWith("GetProductDefinition")) {
+      String pdName, pdPowerSource, pdBattery, pdPcbs, pdFirmware;
+      secretManager.getProductDefinition(pdName, pdPowerSource, pdBattery, pdPcbs, pdFirmware);
+      unsigned long commissionDate = secretManager.getCommissionDate();
+      if (commissionDate == 0) {
+        commissionDate = timeManager.getCurrentTimeInSeconds(timeManager.now());
+        secretManager.setCommissionDate(commissionDate);
+      }
+      Serial.println("Ok-GetProductDefinition#" + pdName + "#" + pdPowerSource + "#" + pdBattery + "#" + pdPcbs + "#" + pdFirmware + "#" + String(commissionDate));
+      Serial.flush();
+      delay(delayTime);
     } else if (command.startsWith("PulseStart")) {
       inPulse = true;
       Serial.println("Ok-PulseStart");
