@@ -2101,6 +2101,10 @@ void restartWifi() {
   //    delay(2);
   //    digitalWrite(WATCHDOG_WDI, LOW);
 
+  // Local ipAddress shadows the file-scope one GetIpAddress reports over serial -
+  // without this the global stayed permanently "" no matter what happened above.
+  ::ipAddress = ipAddress;
+
   digitalStablesData.loraActive = loraActive;
   uint8_t ipl = ipAddress.length() + 1;
   char ipa[ipl];
@@ -3567,7 +3571,15 @@ void loop() {
         commissionDate = timeManager.getCurrentTimeInSeconds(timeManager.now());
         secretManager.setCommissionDate(commissionDate);
       }
-      Serial.println("Ok-GetProductDefinition#" + pdName + "#" + pdPowerSource + "#" + pdBattery + "#" + pdPcbs + "#" + pdFirmware + "#" + String(commissionDate));
+      // WiFi params configured via Upload Firmware (ConfigWifiSTA/ConfigWifiAP), persisted
+      // by WifiManager::configWifiSTA/configWifiAP through secretManager.saveWifiParameters().
+      String pdSSID = secretManager.getSSID();
+      String pdWifiPassword = secretManager.getWifiPassword();
+      String pdSoftAPSSID = secretManager.getSoftAPSSID();
+      String pdSoftAPPassword = secretManager.getSoftAPPASS();
+      String pdHostName = secretManager.getHostName();
+      String pdStationMode = secretManager.getStationMode() ? "Station" : "AccessPoint";
+      Serial.println("Ok-GetProductDefinition#" + pdName + "#" + pdPowerSource + "#" + pdBattery + "#" + pdPcbs + "#" + pdFirmware + "#" + String(commissionDate) + "#" + pdSSID + "#" + pdWifiPassword + "#" + pdSoftAPSSID + "#" + pdSoftAPPassword + "#" + pdHostName + "#" + pdStationMode);
       Serial.flush();
       delay(delayTime);
     } else if (command.startsWith("PulseStart")) {
@@ -3593,6 +3605,13 @@ void loop() {
     } else if (command.startsWith("GetIpAddress")) {
       Serial.println(ipAddress);
       Serial.println("Ok-GetIpAddress");
+      Serial.flush();
+      delay(delayTime);
+    } else if (command.startsWith("RestartWifi")) {
+      // Was never wired up to a serial command - UploadFirmwareProcessingHandler has
+      // been sending this and getting the generic "Command Not Found" fallback.
+      restartWifi();
+      Serial.println("Ok-RestartWifi");
       Serial.flush();
       delay(delayTime);
     } else if (command.startsWith("GetSensorData")) {

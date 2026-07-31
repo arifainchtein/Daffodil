@@ -1,0 +1,2229 @@
+
+--- USER ---
+something is not right, the battery is 3.29 and its going to sleep, can you look at the code to see what is going on? here is some output from the serial port 24/7/26 12:2:50Ok-SetTime
+deviceshortname=TOPT
+devicename=TopTank
+digitalStablesData.minimumEfficiencyForLed=40
+Ok-SetDeviceSensorConfig
+Starting connectAP 2 soft_ap_ssid=TopTank
+Ap Mode using Ip Address of 192.168.4.1
+ConfigWifiAP result=1
+Ok-ConfigWifiAP
+E BOD: Brownout detector was triggered
+
+
+ets Jul 29 2019 12:21:46
+
+rst:0x1 (POWERON_RESET),boot:0x1 (DOWNLOAD_BOOT(UART0/UART1/SDIO_FEI_REO_V2))
+waiting for download
+DigitalStablesData size=244
+ChinampaData size=248
+seedlingMonitorData size=176
+LittleFS Mount Succces
+Listing directory: /
+  FILE: digitalstables.dat    SIZE: 1464
+  FILE: dscount.txt    SIZE: 3
+  FILE: seedling.dat    SIZE: 0
+Listing directory: /data/
+Failed to open directory
+Files in LittleFS:
+  FILE: digitalstables.dat  SIZE: 1464
+  FILE: dscount.txt  SIZE: 3
+  FILE: seedling.dat  SIZE: 0
+/index.html NOT FOUND!
+First boot or reset
+in initializeSeedlingMonitorFile,returning because file exists
+[BH1750] ERROR: other error
+[BH1750] ERROR: other error
+[BH1750] ERROR: other error
+line 819, maximumScepticHeight=65.00
+line 819, troughlevelminimumcm=25.00
+line 819, troughlevelmaximumcm=35.00
+digitalStablesData.minimumEfficiencyForLed=40
+sizeof DigitalStablesData=244
+sizeof RequestCommanmd=40
+sizeof WeatherForecastUpdate=164
+line 898
+Key exists: 0
+hasValidForecasts=0
+sunrise=440.00
+sunset=1153.00
+sunrisetime=07:20
+sunsettime=19:13
+ line 368 efficiency=0.59
+Scanning for I2C devices ...
+I2C device found at address 65
+foundINA219
+I2C device found at address 69
+foundINA219Solar
+I2C device found at address 72
+foundADS
+I2C device found at address 81
+found PCF8563T
+sht init(): failed
+found ADS1115
+initialized INA219
+initialized solar INA219 (0x45)
+Error in sht.readSample()
+i setup v50Voltage(V50_I)=4.25
+rawCSWValue=7415.00
+corrected cswOutput=7415
+serial number:
+Starting wifi digitalStablesConfigData.groupidentifier=
+Starting wifi digitalStablesConfigData.fieldId=2147483648.00
+digitalStablesData.dataSamplingSec=10
+digitalStablesData size=244
+Finished Setup
+Error in readSample()
+ Temp:-99.0 Hum:0.0
+
+line 1654 measuredHeight=0.00
+RTC average=2288.45
+RTC rtcBatVolt=2.77
+--- MEASUREMENTS ---
+Raw Shunt Register: 0xE5 (229)
+Raw Current Register: 0x1CA (458)
+Bus Voltage: 3.35 V
+Shunt Voltage: 2.29 mV
+Library Current: 47.20 mA
+Calculated Current (V/R): 45.80 mA
+Direct Register Current: 45.80 mA
+Power: 78.00 mW
+
+panelVoltage=4.54 panelCurrent=54.40
+linr 2219
+line 1990  hourlySolarPowerData.efficiency=0.13 wifistatus=0
+ turnOffWifi=0
+turning on  wifissid=
+
+stationmode=
+0
+in  DaffodilWifiManager ssid= stationmode=0
+startscan poiomnt 1
+E (975) phy_comm: gpio[0] number: 2 is reserved
+
+startscan poiomnt 2
+FOUND NETWORKAS
+startscan poiomnt 3
+scan 4 complete
+,MainRouter24,Anabelle,OfficeRoofssids=[{"rssi":-35,"ssid":"MainRouter24","bssid":"C0:56:27:BC:7D:CC","channel":1,"secure":0},{"rssi":-54,"ssid":"Anabelle","bssid":"D8:13:2A:81:89:45","channel":1,"secure":0},{"rssi":-88,"ssid":"OfficeRoof","bssid":"28:87:BA:63:92:02","channel":11,"secure":0}]
+about to do connectAP
+E (4028) phy_comm: gpio[0] number: 2 is reserved
+
+Starting connectAP 2 soft_ap_ssid=TopTank
+Ap Mode using Ip Address of 192.168.4.1
+HTTP server started
+Starting wifi
+restartwifi c connectap 
+Starting connectAP 2 soft_ap_ssid=TopTank
+Ap Mode using Ip Address of 192.168.4.1
+getting  stationmode=
+Starting wifi stationmode=setting lora to 1
+settting AP mode
+settting AP mode, address 
+192.168.4.1
+ Receive lora: 132
+ size of ds: 244 WeatherForecastUpdate: 164 s RequestCommand: 40
+
+--- RECEIVED unknown size  PACKET ---
+HEX: [0]4C [1]61 [2]6E [3]67 [4]6C [5]65 [6]79 [7]5F [8]57 [9]65 [10]73 [11]74 [12]00 [13]00 [14]00 [15]00 [16]4C [17]57 [18]45 [19]53 [20]00 [21]00 [22]00 [23]00 [24]00 [25]00 [26]00 [27]00 [28]A2 [29]56 [30]63 [31]6A [32]B6 [33]F3 [34]5D [35]41 [36]AE [37]47 [38]61 [39]3F [40]00 [41]00 [42]80 [43]3F [44]00 [45]80 [46]A0 [47]41 [48]3C [49]42 [50]33 [51]40 [52]10 [53]4C [54]1E [55]3E [56]8C [57]4C [58]3C [59]40 [60]27 [61]97 [62]E5 [63]3F [64]0D [65]00 [66]00 [67]00 [68]00 [69]00 [70]00 [71]00 [72]00 [73]00 [74]00 [75]00 [76]00 [77]00 [78]40 [79]40 [80]00 [81]00 [82]E1 [83]44 [84]00 [85]00 [86]70 [87]40 [88]00 [89]00 [90]50 [91]40 [92]00 [93]00 [94]00 [95]00 [96]D5 [97]78 [98]8D [99]41 [100]00 [101]00 [102]34 [103]C2 [104]B6 [105]F3 [106]5D [107]41 [108]00 [109]00 [110]16 [111]43 [112]00 [113]00 [114]00 [115]00 [116]00 [117]00 [118]00 [119]00 [120]92 [121]8C [122]32 [123]40 [124]A9 [125]3A [126]90 [127]44 [128]61 [129]00 [130]00 [131]00 
+ASCII: Langley_West....LWES.........Vcj..]A.Ga?...?...A<B3@.L.>.L<@'..?..............@@...D..p@..P@.....x.A..4...]A...C..........2@.:.Da...
+DEC: [0]76 [1]97 [2]110 [3]103 [4]108 [5]101 [6]121 [7]95 [8]87 [9]101 [10]115 [11]116 [12]0 [13]0 [14]0 [15]0 [16]76 [17]87 [18]69 [19]83 [20]0 [21]0 [22]0 [23]0 [24]0 [25]0 [26]0 [27]0 [28]162 [29]86 [30]99 [31]106 [32]182 [33]243 [34]93 [35]65 [36]174 [37]71 [38]97 [39]63 [40]0 [41]0 [42]128 [43]63 [44]0 [45]128 [46]160 [47]65 [48]60 [49]66 [50]51 [51]64 [52]16 [53]76 [54]30 [55]62 [56]140 [57]76 [58]60 [59]64 [60]39 [61]151 [62]229 [63]63 [64]13 [65]0 [66]0 [67]0 [68]0 [69]0 [70]0 [71]0 [72]0 [73]0 [74]0 [75]0 [76]0 [77]0 [78]64 [79]64 [80]0 [81]0 [82]225 [83]68 [84]0 [85]0 [86]112 [87]64 [88]0 [89]0 [90]80 [91]64 [92]0 [93]0 [94]0 [95]0 [96]213 [97]120 [98]141 [99]65 [100]0 [101]0 [102]52 [103]194 [104]182 [105]243 [106]93 [107]65 [108]0 [109]0 [110]22 [111]67 [112]0 [113]0 [114]0 [115]0 [116]0 [117]0 [118]0 [119]0 [120]146 [121]140 [122]50 [123]64 [124]169 [125]58 [126]144 [127]68 [128]97 [129]0 [130]0 [131]0 
+As Int32 (LE): 1735287116
+As Float (LE): ovf
+Last byte: 0, XOR Checksum: 0
+--- END OF PACKET ANALYSIS ---
+
+Error in readSample()
+ Temp:-99.0 Hum:0.0
+
+line 1654 measuredHeight=0.00
+RTC average=2280.60
+RTC rtcBatVolt=2.76
+--- MEASUREMENTS ---
+Raw Shunt Register: 0x14D (333)
+Raw Current Register: 0x17D (381)
+Bus Voltage: 3.32 V
+Shunt Voltage: 3.81 mV
+Library Current: 36.30 mA
+Calculated Current (V/R): 76.20 mA
+Direct Register Current: 38.10 mA
+Power: 128.00 mW
+
+panelVoltage=4.54 panelCurrent=63.90
+linr 2219
+line 1990  hourlySolarPowerData.efficiency=0.13 wifistatus=1
+ turnOffWifi=0
+Error in readSample()
+ Temp:-99.0 Hum:0.0
+
+line 1654 measuredHeight=0.00
+RTC average=2282.25
+RTC rtcBatVolt=2.76
+--- MEASUREMENTS ---
+Raw Shunt Register: 0x157 (343)
+Raw Current Register: 0x157 (343)
+Bus Voltage: 3.32 V
+Shunt Voltage: 3.69 mV
+Library Current: 36.90 mA
+Calculated Current (V/R): 73.80 mA
+Direct Register Current: 34.30 mA
+Power: 122.00 mW
+
+panelVoltage=4.52 panelCurrent=63.40
+linr 2219
+line 1990  hourlySolarPowerData.efficiency=0.13 wifistatus=1
+ turnOffWifi=0
+battery voltage=4.09 displayStatus=0
+line 1287 digitalStablesData.ledBrightness=255  digitalRead(LED_CONTROL)=1
+showing temperature=Error in readSample()
+ Temp:-99.0 Hum:0.0
+
+line 1654 measuredHeight=0.00
+RTC average=2280.70
+RTC rtcBatVolt=2.76
+--- MEASUREMENTS ---
+Raw Shunt Register: 0x324 (804)
+Raw Current Register: 0x324 (804)
+Bus Voltage: 3.30 V
+Shunt Voltage: 8.20 mV
+Library Current: 82.00 mA
+Calculated Current (V/R): 164.00 mA
+Direct Register Current: 80.40 mA
+Power: 272.00 mW
+
+panelVoltage=4.57 panelCurrent=66.40
+linr 2219
+line 1990  hourlySolarPowerData.efficiency=0.15 wifistatus=1
+ turnOffWifi=0
+ Receive lora: 244
+ size of ds: 244 WeatherForecastUpdate: 164 s RequestCommand: 40
+ Received DigitalStablesData code  : 0 sn  : 656d70000028 Receive digitalStablesData but invalid code: 0 currentcode: -1
+Error in readSample()
+ Temp:-99.0 Hum:0.0
+
+line 1654 measuredHeight=0.00
+RTC average=2285.80
+RTC rtcBatVolt=2.76
+--- MEASUREMENTS ---
+Raw Shunt Register: 0x31C (796)
+Raw Current Register: 0x31C (796)
+Bus Voltage: 3.31 V
+Shunt Voltage: 8.34 mV
+Library Current: 83.40 mA
+Calculated Current (V/R): 166.80 mA
+Direct Register Current: 79.60 mA
+Power: 276.00 mW
+
+panelVoltage=4.55 panelCurrent=68.30
+linr 2219
+line 1990  hourlySolarPowerData.efficiency=0.13 wifistatus=1
+ turnOffWifi=0
+Error in readSample()
+ Temp:-99.0 Hum:0.0
+
+line 1654 measuredHeight=0.00
+RTC average=2278.70
+RTC rtcBatVolt=2.75
+--- MEASUREMENTS ---
+Raw Shunt Register: 0x341 (833)
+Raw Current Register: 0x341 (833)
+Bus Voltage: 3.31 V
+Shunt Voltage: 8.33 mV
+Library Current: 77.90 mA
+Calculated Current (V/R): 166.60 mA
+Direct Register Current: 83.30 mA
+Power: 258.00 mW
+
+panelVoltage=4.58 panelCurrent=62.80
+linr 2219
+line 1990  hourlySolarPowerData.efficiency=0.33 wifistatus=1
+ turnOffWifi=0
+battery voltage=4.14 displayStatus=1
+line 1287 digitalStablesData.ledBrightness=255  digitalRead(LED_CONTROL)=1
+showing scepotic= percentage: 0.00
+Error in readSample()
+ Temp:-99.0 Hum:0.0
+
+line 1654 measuredHeight=0.00
+RTC average=2278.60
+RTC rtcBatVolt=2.75
+--- MEASUREMENTS ---
+Raw Shunt Register: 0x4D8 (1240)
+Raw Current Register: 0x4D8 (1240)
+Bus Voltage: 3.29 V
+Shunt Voltage: 12.40 mV
+Library Current: 124.00 mA
+Calculated Current (V/R): 248.00 mA
+Direct Register Current: 124.00 mA
+Power: 410.00 mW
+
+panelVoltage=4.61 panelCurrent=63.60
+linr 2219
+line 1990  hourlySolarPowerData.efficiency=0.24 wifistatus=1
+ turnOffWifi=0
+Error in readSample()
+ Temp:-99.0 Hum:0.0
+
+line 1654 measuredHeight=0.00
+RTC average=2286.35
+RTC rtcBatVolt=2.76
+--- MEASUREMENTS ---
+Raw Shunt Register: 0x4CF (1231)
+Raw Current Register: 0x4CF (1231)
+Bus Voltage: 3.29 V
+Shunt Voltage: 12.31 mV
+Library Current: 117.50 mA
+Calculated Current (V/R): 246.20 mA
+Direct Register Current: 123.10 mA
+Power: 386.00 mW
+
+panelVoltage=4.64 panelCurrent=65.10
+linr 2219
+line 1990  hourlySolarPowerData.efficiency=0.33 wifistatus=1
+ turnOffWifi=0
+Error in readSample()
+ Temp:-99.0 Hum:0.0
+
+line 1654 measuredHeight=0.00
+RTC average=2277.00
+RTC rtcBatVolt=2.75
+--- MEASUREMENTS ---
+Raw Shunt Register: 0x4D8 (1240)
+Raw Current Register: 0x4D8 (1240)
+Bus Voltage: 3.29 V
+Shunt Voltage: 12.40 mV
+Library Current: 122.50 mA
+Calculated Current (V/R): 248.00 mA
+Direct Register Current: 124.00 mA
+Power: 404.00 mW
+
+panelVoltage=4.66 panelCurrent=75.50
+linr 2219
+line 1990  hourlySolarPowerData.efficiency=0.59 wifistatus=1
+ turnOffWifi=0
+battery voltage=4.21 displayStatus=2
+line 1287 digitalStablesData.ledBrightness=255  digitalRead(LED_CONTROL)=1
+line 1112 inside of showintenrnetstatus wifiStatus=1
+wifiManager.getAPStatus()=1
+wifiManager.getWifiStatus()=1
+dsupload timer counter= 9
+Error in readSample()
+ Temp:-99.0 Hum:0.0
+
+line 1654 measuredHeight=0.00
+RTC average=2275.90
+RTC rtcBatVolt=2.75
+--- MEASUREMENTS ---
+Raw Shunt Register: 0x44C (1100)
+Raw Current Register: 0x44C (1100)
+Bus Voltage: 3.29 V
+Shunt Voltage: 11.00 mV
+Library Current: 112.20 mA
+Calculated Current (V/R): 220.00 mA
+Direct Register Current: 110.00 mA
+Power: 368.00 mW
+
+panelVoltage=4.56 panelCurrent=70.90
+linr 2219
+line 1990  hourlySolarPowerData.efficiency=0.46 wifistatus=1
+ turnOffWifi=0
+Error in readSample()
+ Temp:-99.0 Hum:0.0
+
+line 1654 measuredHeight=0.00
+RTC average=2282.80
+RTC rtcBatVolt=2.76
+--- MEASUREMENTS ---
+Raw Shunt Register: 0x44E (1102)
+Raw Current Register: 0x44E (1102)
+Bus Voltage: 3.29 V
+Shunt Voltage: 11.02 mV
+Library Current: 113.70 mA
+Calculated Current (V/R): 220.40 mA
+Direct Register Current: 110.20 mA
+Power: 374.00 mW
+
+panelVoltage=4.64 panelCurrent=61.90
+linr 2219
+line 1990  hourlySolarPowerData.efficiency=0.13 wifistatus=1
+ turnOffWifi=0
+Error in readSample()
+ Temp:-99.0 Hum:0.0
+
+line 1654 measuredHeight=0.00
+RTC average=2282.00
+RTC rtcBatVolt=2.76
+--- MEASUREMENTS ---
+Raw Shunt Register: 0x467 (1127)
+Raw Current Register: 0x467 (1127)
+Bus Voltage: 3.29 V
+Shunt Voltage: 11.27 mV
+Library Current: 110.30 mA
+Calculated Current (V/R): 225.40 mA
+Direct Register Current: 112.70 mA
+Power: 364.00 mW
+
+panelVoltage=4.64 panelCurrent=61.80
+linr 2219
+line 1990  hourlySolarPowerData.efficiency=0.33 wifistatus=1
+ turnOffWifi=0
+battery voltage=4.22 displayStatus=3
+line 1287 digitalStablesData.ledBrightness=255  digitalRead(LED_CONTROL)=1
+showing Lora Status loraActive=1 loraTxOk=1
+Error in readSample()
+ Temp:-99.0 Hum:0.0
+
+line 1654 measuredHeight=0.00
+RTC average=2283.85
+RTC rtcBatVolt=2.76
+--- MEASUREMENTS ---
+Raw Shunt Register: 0x451 (1105)
+Raw Current Register: 0x451 (1105)
+Bus Voltage: 3.29 V
+Shunt Voltage: 11.49 mV
+Library Current: 114.90 mA
+Calculated Current (V/R): 229.80 mA
+Direct Register Current: 110.50 mA
+Power: 376.00 mW
+
+panelVoltage=4.60 panelCurrent=79.20
+line 2708
+Error in readSample()
+ Temp:-99.0 Hum:0.0
+
+line 1654 measuredHeight=0.00
+RTC average=2280.30
+RTC rtcBatVolt=2.76
+--- MEASUREMENTS ---
+Raw Shunt Register: 0x46C (1132)
+Raw Current Register: 0x46C (1132)
+Bus Voltage: 3.28 V
+Shunt Voltage: 11.32 mV
+Library Current: 109.20 mA
+Calculated Current (V/R): 226.40 mA
+Direct Register Current: 113.20 mA
+Power: 358.00 mW
+
+panelVoltage=4.64 panelCurrent=76.80
+Sending LoRa SN= TOTP=-1 Checksum=A5
+Channel Clear. RSSI: -94.75
+TX-CURRENT pre v50i=4.22 mA=27.50
+TX-CURRENT post mA=15.00
+Handover took=51TX took 112ms
+Error in readSample()
+ Temp:-99.0 Hum:0.0
+
+line 1654 measuredHeight=0.00
+RTC average=2275.00
+RTC rtcBatVolt=2.75
+--- MEASUREMENTS ---
+Raw Shunt Register: 0x30F (783)
+Raw Current Register: 0x30F (783)
+Bus Voltage: 3.30 V
+Shunt Voltage: 7.78 mV
+Library Current: 77.80 mA
+Calculated Current (V/R): 155.60 mA
+Direct Register Current: 78.30 mA
+Power: 256.00 mW
+
+panelVoltage=4.59 panelCurrent=64.40
+linr 2219
+line 1990  hourlySolarPowerData.efficiency=0.15 wifistatus=1
+ turnOffWifi=0
+Error in readSample()
+ Temp:-99.0 Hum:0.0
+
+line 1654 measuredHeight=0.00
+RTC average=2281.30
+RTC rtcBatVolt=2.76
+--- MEASUREMENTS ---
+Raw Shunt Register: 0x30D (781)
+Raw Current Register: 0x30D (781)
+Bus Voltage: 3.30 V
+Shunt Voltage: 7.84 mV
+Library Current: 78.40 mA
+Calculated Current (V/R): 156.80 mA
+Direct Register Current: 78.10 mA
+Power: 258.00 mW
+
+panelVoltage=4.60 panelCurrent=64.70
+linr 2219
+line 1990  hourlySolarPowerData.efficiency=0.24 wifistatus=1
+ turnOffWifi=0
+Error in readSample()
+ Temp:-99.0 Hum:0.0
+
+line 1654 measuredHeight=0.00
+RTC average=2286.70
+RTC rtcBatVolt=2.76
+--- MEASUREMENTS ---
+Raw Shunt Register: 0x2B7 (695)
+Raw Current Register: 0x2B7 (695)
+Bus Voltage: 3.30 V
+Shunt Voltage: 7.24 mV
+Library Current: 72.40 mA
+Calculated Current (V/R): 144.80 mA
+Direct Register Current: 69.50 mA
+Power: 240.00 mW
+
+panelVoltage=4.63 panelCurrent=65.00
+linr 2219
+line 1990  hourlySolarPowerData.efficiency=0.59 wifistatus=1
+ turnOffWifi=0
+battery voltage=4.20 displayStatus=4
+line 1287 digitalStablesData.ledBrightness=255  digitalRead(LED_CONTROL)=1
+Error in readSample()
+ Temp:-99.0 Hum:0.0
+
+line 1654 measuredHeight=0.00
+RTC average=2287.30
+RTC rtcBatVolt=2.76
+--- MEASUREMENTS ---
+Raw Shunt Register: 0x46B (1131)
+Raw Current Register: 0x467 (1127)
+Bus Voltage: 3.28 V
+Shunt Voltage: 11.27 mV
+Library Current: 112.70 mA
+Calculated Current (V/R): 225.40 mA
+Direct Register Current: 112.70 mA
+Power: 370.00 mW
+
+panelVoltage=4.61 panelCurrent=68.20
+linr 2219
+line 1990  hourlySolarPowerData.efficiency=0.24 wifistatus=1
+ turnOffWifi=0
+Error in readSample()
+ Temp:-99.0 Hum:0.0
+
+line 1654 measuredHeight=0.00
+RTC average=2278.70
+RTC rtcBatVolt=2.75
+--- MEASUREMENTS ---
+Raw Shunt Register: 0x441 (1089)
+Raw Current Register: 0x475 (1141)
+Bus Voltage: 3.28 V
+Shunt Voltage: 11.41 mV
+Library Current: 114.10 mA
+Calculated Current (V/R): 228.20 mA
+Direct Register Current: 114.10 mA
+Power: 374.00 mW
+
+panelVoltage=4.63 panelCurrent=67.80
+linr 2219
+line 1990  hourlySolarPowerData.efficiency=0.13 wifistatus=1
+ turnOffWifi=0
+Error in readSample()
+ Temp:-99.0 Hum:0.0
+
+line 1654 measuredHeight=0.00
+RTC average=2278.40
+RTC rtcBatVolt=2.75
+--- MEASUREMENTS ---
+Raw Shunt Register: 0x451 (1105)
+Raw Current Register: 0x477 (1143)
+Bus Voltage: 3.28 V
+Shunt Voltage: 11.43 mV
+Library Current: 113.50 mA
+Calculated Current (V/R): 228.60 mA
+Direct Register Current: 114.30 mA
+Power: 376.00 mW
+
+panelVoltage=4.64 panelCurrent=62.90
+linr 2219
+line 1990  hourlySolarPowerData.efficiency=0.13 wifistatus=1
+ turnOffWifi=0
+battery voltage=4.20 displayStatus=0
+line 1287 digitalStablesData.ledBrightness=255  digitalRead(LED_CONTROL)=1
+showing temperature=Ok-debug
+24/7/26 12:12:50Ok-SetTime
+DigitalStablesData size=244
+ChinampaData size=248
+seedlingMonitorData size=176
+LittleFS Mount Succces
+Listing directory: /
+  FILE: digitalstables.dat    SIZE: 1464
+  FILE: dscount.txt    SIZE: 3
+  FILE: seedling.dat    SIZE: 0
+Listing directory: /data/
+Failed to open directory
+Files in LittleFS:
+  FILE: digitalstables.dat  SIZE: 1464
+  FILE: dscount.txt  SIZE: 3
+  FILE: seedling.dat  SIZE: 0
+/index.html NOT FOUND!
+First boot or reset
+in initializeSeedlingMonitorFile,returning because file exists
+[BH1750] ERROR: other error
+[BH1750] ERROR: other error
+[BH1750] ERROR: other error
+line 819, maximumScepticHeight=65.00
+line 819, troughlevelminimumcm=25.00
+line 819, troughlevelmaximumcm=35.00
+digitalStablesData.minimumEfficiencyForLed=40
+sizeof DigitalStablesData=244
+sizeof RequestCommanmd=40
+sizeof WeatherForecastUpdate=164
+line 898
+Key exists: 0
+hasValidForecasts=0
+sunrise=506.00
+sunset=1104.00
+sunrisetime=08:26
+sunsettime=18:23
+ line 368 efficiency=0.55
+Scanning for I2C devices ...
+I2C device found at address 65
+foundINA219
+I2C device found at address 69
+foundINA219Solar
+I2C device found at address 72
+foundADS
+I2C device found at address 81
+found PCF8563T
+sht init(): failed
+found ADS1115
+initialized INA219
+initialized solar INA219 (0x45)
+Error in sht.readSample()
+i setup v50Voltage(V50_I)=4.47
+rawCSWValue=3453.00
+corrected cswOutput=3453
+serial number:
+Starting wifi digitalStablesConfigData.groupidentifier=
+Starting wifi digitalStablesConfigData.fieldId=2147483648.00
+digitalStablesData.dataSamplingSec=10
+digitalStablesData size=244
+Finished Setup
+Error in readSample()
+ Temp:-99.0 Hum:0.0
+
+line 1654 measuredHeight=0.00
+RTC average=2284.25
+RTC rtcBatVolt=2.76
+--- MEASUREMENTS ---
+Raw Shunt Register: 0x2C3 (707)
+Raw Current Register: 0x586 (1414)
+Bus Voltage: 3.29 V
+Shunt Voltage: 7.07 mV
+Library Current: 141.80 mA
+Calculated Current (V/R): 141.40 mA
+Direct Register Current: 141.40 mA
+Power: 232.00 mW
+
+panelVoltage=4.87 panelCurrent=56.80
+linr 2219
+line 1990  hourlySolarPowerData.efficiency=0.55 wifistatus=0
+ turnOffWifi=0
+going to sleep because batteryVoltage is less than sleepingVoltage, bat=3.29
+Calling deepsleep line 2185
+Error in readSample()
+ Temp:-99.0 Hum:0.0
+
+line 1654 measuredHeight=0.00
+RTC average=2288.25
+RTC rtcBatVolt=2.77
+--- MEASUREMENTS ---
+Raw Shunt Register: 0x2B6 (694)
+Raw Current Register: 0x2B6 (694)
+Bus Voltage: 3.29 V
+Shunt Voltage: 6.94 mV
+Library Current: 70.10 mA
+Calculated Current (V/R): 138.80 mA
+Direct Register Current: 69.40 mA
+Power: 230.00 mW
+
+panelVoltage=4.92 panelCurrent=35.90
+Preparing sleep for 4741643895096 seconds
+Error in readSample()
+ Temp:-99.0 Hum:0.0
+
+line 1654 measuredHeight=0.00
+RTC average=2285.45
+RTC rtcBatVolt=2.76
+--- MEASUREMENTS ---
+Raw Shunt Register: 0x89 (137)
+Raw Current Register: 0x89 (137)
+Bus Voltage: 3.31 V
+Shunt Voltage: 1.39 mV
+Library Current: 13.90 mA
+Calculated Current (V/R): 27.80 mA
+Direct Register Current: 13.70 mA
+Power: 46.00 mW
+
+panelVoltage=4.92 panelCurrent=28.00
+Sending LoRa SN= TOTP=-1 Checksum=A
+TX-CURRENT pre v50i=4.47 mA=13.70
+TX-CURRENT post mA=13.90
+Handover took=51TX took 109ms
+E (2468) phy_comm: gpio[0] number: 2 is reserved
+
+Entering deep sleep.
+DigitalStablesData size=244
+ChinampaData size=248
+seedlingMonitorData size=176
+LittleFS Mount Succces
+Listing directory: /
+  FILE: digitalstables.dat    SIZE: 21716
+  FILE: dscount.txt    SIZE: 4
+  FILE: seedling.dat    SIZE: 0
+Listing directory: /data/
+Failed to open directory
+Files in LittleFS:
+  FILE: digitalstables.dat  SIZE: 21716
+  FILE: dscount.txt  SIZE: 4
+  FILE: seedling.dat  SIZE: 0
+/index.html NOT FOUND!
+Wakeup caused by timer
+in initializeSeedlingMonitorFile,returning because file exists
+[BH1750] ERROR: other error
+[BH1750] ERROR: other error
+[BH1750] ERROR: other error
+line 819, maximumScepticHeight=65.00
+line 819, troughlevelminimumcm=25.00
+line 819, troughlevelmaximumcm=35.00
+digitalStablesData.minimumEfficiencyForLed=40
+sizeof DigitalStablesData=244
+sizeof RequestCommanmd=40
+sizeof WeatherForecastUpdate=164
+Early wakeup — 3s remaining, returning to sleep.
+DigitalStablesData size=244
+ChinampaData size=248
+seedlingMonitorData size=176
+LittleFS Mount Succces
+Listing directory: /
+  FILE: digitalstables.dat    SIZE: 21716
+  FILE: dscount.txt    SIZE: 4
+  FILE: seedling.dat    SIZE: 0
+Listing directory: /data/
+Failed to open directory
+Files in LittleFS:
+  FILE: digitalstables.dat  SIZE: 21716
+  FILE: dscount.txt  SIZE: 4
+  FILE: seedling.dat  SIZE: 0
+/index.html NOT FOUND!
+Wakeup caused by timer
+in initializeSeedlingMonitorFile,returning because file exists
+[BH1750] ERROR: other error
+[BH1750] ERROR: other error
+[BH1750] ERROR: other error
+line 819, maximumScepticHeight=65.00
+line 819, troughlevelminimumcm=25.00
+line 819, troughlevelmaximumcm=35.00
+digitalStablesData.minimumEfficiencyForLed=40
+sizeof DigitalStablesData=244
+sizeof RequestCommanmd=40
+sizeof WeatherForecastUpdate=164
+line 898
+Key exists: 0
+hasValidForecasts=0
+sunrise=506.00
+sunset=1104.00
+sunrisetime=08:26
+sunsettime=18:23
+ line 368 efficiency=0.33
+Scanning for I2C devices ...
+I2C device found at address 65
+foundINA219
+I2C device found at address 69
+foundINA219Solar
+I2C device found at address 72
+foundADS
+I2C device found at address 81
+found PCF8563T
+sht init(): failed
+found ADS1115
+initialized INA219
+initialized solar INA219 (0x45)
+Error in sht.readSample()
+i setup v50Voltage(V50_I)=4.33
+rawCSWValue=3450.00
+corrected cswOutput=3450
+serial number:
+Starting wifi digitalStablesConfigData.groupidentifier=
+Starting wifi digitalStablesConfigData.fieldId=2147483648.00
+digitalStablesData.dataSamplingSec=10
+digitalStablesData size=244
+setting sleepmode in setup because of efficiency=0.33
+Calling deepsleep line 1378
+Error in readSample()
+ Temp:-99.0 Hum:0.0
+
+line 1654 measuredHeight=0.00
+RTC average=2286.80
+RTC rtcBatVolt=2.76
+--- MEASUREMENTS ---
+Raw Shunt Register: 0x95 (149)
+Raw Current Register: 0x12A (298)
+Bus Voltage: 3.37 V
+Shunt Voltage: 2.79 mV
+Library Current: 55.80 mA
+Calculated Current (V/R): 55.80 mA
+Direct Register Current: 29.80 mA
+Power: 186.00 mW
+
+panelVoltage=4.76 panelCurrent=28.20
+Preparing sleep for 4741643895163 seconds
+Error in readSample()
+ Temp:-99.0 Hum:0.0
+
+line 1654 measuredHeight=0.00
+RTC average=2285.80
+RTC rtcBatVolt=2.76
+--- MEASUREMENTS ---
+Raw Shunt Register: 0xA7 (167)
+Raw Current Register: 0xA7 (167)
+Bus Voltage: 3.37 V
+Shunt Voltage: 1.67 mV
+Library Current: 18.10 mA
+Calculated Current (V/R): 33.40 mA
+Direct Register Current: 16.70 mA
+Power: 62.00 mW
+
+panelVoltage=4.78 panelCurrent=22.00
+Sending LoRa SN= TOTP=-1 Checksum=77
+TX-CURRENT pre v50i=4.36 mA=16.90
+TX-CURRENT post mA=16.90
+Handover took=51TX took 109ms
+E (2383) phy_comm: gpio[0] number: 2 is reserved
+
+Entering deep sleep.
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+I'll look at the firmware to understand where the sleep decision is being made and why it's triggering at 3.29V while other readings show much higher voltages.
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Found it. The device isn't actually low on battery — it's misclassifying a normal sunny reading as "cloudy," and a debug message is lying about why.
+
+**What's actually happening** (`Daffodil.ino`):
+
+1. At `Daffodil.ino:2599-2607`, three independent conditions can set `isSleepMode = true`:
+   - low solar efficiency (line 2599) — not the case here, efficiency was 55%, threshold is 40%
+   - **battery below `sleepingVoltage` (3.12V)** (line 2604) — not the case, battery was 3.29V
+   - **`operatingStatus == OPERATING_STATUS_CLOUDY`** (line 2607) — **this is what fired**
+
+2. But the debug print right after (line 2612) is hardcoded to always say `"going to sleep because batteryVoltage is less than sleepingVoltage, bat=..."` regardless of which of the three conditions actually triggered it. That's what made it look like a battery problem when it wasn't.
+
+3. `OPERATING_STATUS_CLOUDY` gets set at line 2539 by an OR of four checks; two of them are almost always true on this device:
+   - `v50iSaysCloudy`: `v50Voltage < v50iCloudyThreshold (4.5V)` — your log shows V50_I at 4.25/4.47/4.33V across three boots, and 4.09–4.22V during normal loop operation. It's *never* seen 4.5V.
+   - `panelCurrentSaysCloudy`: `panelCurrent < panelCurrentCloudyThreshold_mA (60mA)` — your log shows panelCurrent mostly 20–80mA, frequently under 60.
+
+So on this board, V50_I and panel-current readings sit permanently below the "cloudy" thresholds even at solar noon with the panel actively producing 4.5-4.9V and the main INA219 showing real current flow — meaning `OPERATING_STATUS_CLOUDY` gets set almost every wake, which unconditionally forces `goToSleep()` via line 2607, even though the battery (3.29V) is nowhere near the 3.12V cliff.
+
+**Root cause**: `v50iCloudyThreshold = 4.5` and `panelCurrentCloudyThreshold_mA = 60.0` (added in the "fixing cloudy calculation" commit, `Daffodil.ino:198-199`) appear miscalibrated for this specific board/config — they're tuned against theoretical values that don't match this device's real V50_I/panel-current baseline, so it thinks every day is overcast.
+
+Two separate things worth fixing:
+1. **The misleading log message** — it should report the real reason (efficiency/voltage/cloudy) instead of always blaming battery voltage.
+2. **The cloudy thresholds** — need recalibrating against this board's actual sunny-day V50_I and panelCurrent readings, or the cloudy-detection logic needs revisiting for this board revision.
+
+Want me to fix the debug message and/or adjust the thresholds, or do you want to gather more field data first (e.g. what V50_I/panelCurrent look like on a genuinely overcast day) before changing the calibration?
+
+--- USER ---
+this is new because of the new curre
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+The file has active edits — some of the debug prints (lines 2601, 2609) already got individual "because of X" labels since I first read this. Let me grab a fresh copy of the threshold definitions before editing.
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Now the debug message and the missing print on the low-voltage branch:
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Clean — no duplicate print left over. The edit landed correctly.
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Done. Two changes to `Daffodil.ino`:
+
+1. **Thresholds** (lines ~198-199): `v50iCloudyThreshold` 4.5V → 3.5V, `panelCurrentCloudyThreshold_mA` 60mA → 15mA. Your log showed both readings sitting well below the old thresholds during actual clear-sky midday charging (V50_I 4.09-4.47V, panelCurrent 22-80mA), so CLOUDY mode was firing on every wake regardless of real weather.
+
+2. **Debug message** (~line 2618): replaced the always-wrong `"batteryVoltage is less than sleepingVoltage, bat=..."` with `"going to sleep, bat=X efficiency=Y operatingStatus=Z"`, and added a print on the low-battery branch that was previously silent — so future logs will show the actual reason instead of always blaming battery voltage.
+
+Note: I don't have a real overcast-day sample to validate the new thresholds against — they're picked to sit below everything in your "clearly sunny" log, but treat them as a first pass and watch the next actually cloudy day to confirm CLOUDY still triggers correctly. Also worth noting: the file has other uncommitted changes in the working tree beyond mine (INA219 calibration helper, `foundINA219Solar`, etc.) — I didn't touch those, just the two spots above.
+
+--- USER ---
+just uploaded the code ran again and here is the output ets Jul 29 2019 12:21:46
+
+rst:0x1 (POWERON_RESET),boot:0x1 (DOWNLOAD_BOOT(UART0/UART1/SDIO_FEI_REO_V2))
+waiting for download
+DigitalStablesData size=244
+ChinampaData size=248
+seedlingMonitorData size=176
+LittleFS Mount Succces
+Listing directory: /
+  FILE: digitalstables.dat    SIZE: 23180
+  FILE: dscount.txt    SIZE: 4
+  FILE: seedling.dat    SIZE: 0
+Listing directory: /data/
+Failed to open directory
+Files in LittleFS:
+  FILE: digitalstables.dat  SIZE: 23180
+  FILE: dscount.txt  SIZE: 4
+  FILE: seedling.dat  SIZE: 0
+/index.html NOT FOUND!
+First boot or reset
+in initializeSeedlingMonitorFile,returning because file exists
+[BH1750] ERROR: other error
+[BH1750] ERROR: other error
+[BH1750] ERROR: other error
+line 819, maximumScepticHeight=65.00
+line 819, troughlevelminimumcm=25.00
+line 819, troughlevelmaximumcm=35.00
+digitalStablesData.minimumEfficiencyForLed=40
+sizeof DigitalStablesData=244
+sizeof RequestCommanmd=40
+sizeof WeatherForecastUpdate=164
+line 898
+Key exists: 1
+Bytes read: 320
+First forecast after loading:
+8.34
+1784872800
+hasValidForecasts=1
+sunrise=506.00
+sunset=1104.00
+sunrisetime=08:26
+sunsettime=18:23
+ line 368 efficiency=0.17
+Scanning for I2C devices ...
+I2C device found at address 65
+foundINA219
+I2C device found at address 69
+foundINA219Solar
+I2C device found at address 72
+foundADS
+I2C device found at address 81
+found PCF8563T
+sht init(): failed
+found ADS1115
+initialized INA219
+initialized solar INA219 (0x45)
+Error in sht.readSample()
+i setup v50Voltage(V50_I)=4.34
+rawCSWValue=3451.00
+corrected cswOutput=3451
+serial number:
+Starting wifi digitalStablesConfigData.groupidentifier=
+Starting wifi digitalStablesConfigData.fieldId=2147483648.00
+digitalStablesData.dataSamplingSec=10
+digitalStablesData size=244
+setting sleepmode in setup because of efficiency=0.17
+Calling deepsleep line 1378
+Error in readSample()
+ Temp:-99.0 Hum:0.0
+
+line 1654 measuredHeight=0.00
+RTC average=2287.00
+RTC rtcBatVolt=2.76
+--- MEASUREMENTS ---
+Raw Shunt Register: 0xD4 (212)
+Raw Current Register: 0x1A8 (424)
+Bus Voltage: 3.32 V
+Shunt Voltage: 2.67 mV
+Library Current: 53.40 mA
+Calculated Current (V/R): 53.40 mA
+Direct Register Current: 42.40 mA
+Power: 176.00 mW
+
+panelVoltage=4.75 panelCurrent=23.20
+Preparing sleep for 3616362463618 seconds
+Error in readSample()
+ Temp:-99.0 Hum:0.0
+
+line 1654 measuredHeight=0.00
+RTC average=2294.15
+RTC rtcBatVolt=2.77
+--- MEASUREMENTS ---
+Raw Shunt Register: 0x94 (148)
+Raw Current Register: 0x94 (148)
+Bus Voltage: 3.32 V
+Shunt Voltage: 1.55 mV
+Library Current: 15.50 mA
+Calculated Current (V/R): 31.00 mA
+Direct Register Current: 14.80 mA
+Power: 52.00 mW
+
+panelVoltage=4.75 panelCurrent=25.10
+Sending LoRa SN= TOTP=-1 Checksum=B4
+TX-CURRENT pre v50i=4.33 mA=17.20
+TX-CURRENT post mA=23.50
+Handover took=51TX took 109ms
+E (2437) phy_comm: gpio[0] number: 2 is reserved
+
+Entering deep sleep.
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Found the actual library source. Let me look at how `calculateActualPower` factors in weather forecast cloudiness.
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+That's a separate, real bug — but it's a logging artifact, not an actual multi-millennia sleep. Let me explain and fix it.
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Good catch — but that number is a red herring, not a real 114,000-year sleep.
+
+**Root cause**: `Daffodil.ino:1718` (now fixed) — `Serial.printf("Preparing sleep for %lld seconds\n", seconds_sleep)`. `seconds_sleep` is declared as `long`, which is 32-bit on ESP32. `%lld` expects a 64-bit argument. That mismatch means `printf` reads 8 bytes off the stack/registers for a value that only occupies 4, picking up garbage from an adjacent variable — that's where `3616362463618` came from.
+
+**It didn't affect actual behavior.** The real sleep duration is computed one line earlier (`uint64_t sleep_time_us = (uint64_t)(seconds_sleep * 1000000ULL);`), which correctly widens the real 32-bit `seconds_sleep` value via normal C++ promotion — completely separate code path from the broken printf. Tracing `PowerManager::calculateOptimalSleepTime()` (in the actual library source, not the .ino) for this device's efficiency=0.17/sunrise=506/sunset=1104 state, the real value should land around ~300s (5 min), consistent with the "Early wakeup, returning to sleep" cycling you saw in the earlier log. I've changed the format specifier to `%ld` so the log prints the true value from now on.
+
+Separately, I want to flag something I was mid-checking when this came in: `efficiency=0.17` triggered this sleep, and that's a *different* code path than the CLOUDY-mode bug we fixed earlier (this one comes straight from `PowerManager`'s solar-elevation + temperature model in `setup()`, not the loop's cloud detection). 0.17 seems low for what should be midday winter sun at this device's configured location (lat -37.13, Melbourne). I haven't confirmed the RTC's actual current time in this boot yet — want me to check whether the time is right and whether that efficiency number is plausible, or hold off until you've watched it over a full day cycle?
+
+--- USER ---
+the time is corrrect 24/7/2026 16:17:3
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+That resolves it — 0.17 is legitimate, not a bug.
+
+At 16:17 with sunset at 18:23, the sun is only ~2 hours from setting, and at latitude -37.13° (southern-hemisphere winter) the solar elevation at that hour is very low — my rough calculation using the same formulas as `SolarInfo::calculateActualPower` puts the sun around 7° above the horizon at that time, which maps to a `baseEfficiency` in the 0.12-0.17 range. So the device correctly recognized marginal late-afternoon solar and went into the low-efficiency sleep path (`Daffodil.ino:1625`, `efficiency=0.17 < minimumEfficiencyForLed=40`) — that's the intended design, not a miscalibration.
+
+So where things stand:
+- **CLOUDY false-positives** (the original complaint, log taken near solar noon) — fixed by lowering `v50iCloudyThreshold`/`panelCurrentCloudyThreshold_mA` to match real full-sun readings.
+- **Misleading "battery voltage" log messages** — fixed, now reports the actual trigger reason.
+- **`3616362463618` seconds** — cosmetic printf format-specifier bug (`%lld` vs 32-bit `long`), fixed; never affected actual sleep duration.
+- **`efficiency=0.17` sleep at 16:17** — correct behavior, sun is genuinely very low this late in winter.
+
+Nothing else looks broken from this log. Worth watching the next sunny midday cycle to confirm CLOUDY mode no longer false-triggers with the new thresholds.
+
+--- USER ---
+ok is suppose to go to sleep for 391 seconds at 16:17 so i should see it waking up and sending a lora packet, what time is 16:17 plus 391 sec?
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+16:17:03 + 391s (6 min 31 s) = **16:23:34**.
+
+--- USER ---
+ook, it woke as wexdpected but never sent a lora transmission like it should, here is the output DigitalStablesData size=244
+ChinampaData size=248
+seedlingMonitorData size=176
+LittleFS Mount Succces
+Listing directory: /
+  FILE: digitalstables.dat    SIZE: 24644
+  FILE: dscount.txt    SIZE: 5
+  FILE: seedling.dat    SIZE: 0
+Listing directory: /data/
+Failed to open directory
+Files in LittleFS:
+  FILE: digitalstables.dat  SIZE: 24644
+  FILE: dscount.txt  SIZE: 5
+  FILE: seedling.dat  SIZE: 0
+/index.html NOT FOUND!
+Wakeup caused by timer
+in initializeSeedlingMonitorFile,returning because file exists
+[BH1750] ERROR: other error
+[BH1750] ERROR: other error
+[BH1750] ERROR: other error
+line 819, maximumScepticHeight=65.00
+line 819, troughlevelminimumcm=25.00
+line 819, troughlevelmaximumcm=35.00
+digitalStablesData.minimumEfficiencyForLed=40
+sizeof DigitalStablesData=244
+sizeof RequestCommanmd=40
+sizeof WeatherForecastUpdate=164
+24/7/2026 16:23:32he time is: 
+Early wakeup — 4s remaining, returning to sleep.
+DigitalStablesData size=244
+ChinampaData size=248
+seedlingMonitorData size=176
+LittleFS Mount Succces
+Listing directory: /
+  FILE: digitalstables.dat    SIZE: 24644
+  FILE: dscount.txt    SIZE: 5
+  FILE: seedling.dat    SIZE: 0
+Listing directory: /data/
+Failed to open directory
+Files in LittleFS:
+  FILE: digitalstables.dat  SIZE: 24644
+  FILE: dscount.txt  SIZE: 5
+  FILE: seedling.dat  SIZE: 0
+/index.html NOT FOUND!
+Wakeup caused by timer
+in initializeSeedlingMonitorFile,returning because file exists
+[BH1750] ERROR: other error
+[BH1750] ERROR: other error
+[BH1750] ERROR: other error
+line 819, maximumScepticHeight=65.00
+line 819, troughlevelminimumcm=25.00
+line 819, troughlevelmaximumcm=35.00
+digitalStablesData.minimumEfficiencyForLed=40
+sizeof DigitalStablesData=244
+sizeof RequestCommanmd=40
+sizeof WeatherForecastUpdate=164
+24/7/2026 16:23:36he time is: 
+line 898
+Key exists: 1
+Bytes read: 320
+First forecast after loading:
+8.34
+1784872800
+hasValidForecasts=1
+sunrise=506.00
+sunset=1104.00
+sunrisetime=08:26
+sunsettime=18:23
+ line 368 efficiency=0.17
+Scanning for I2C devices ...
+I2C device found at address 65
+foundINA219
+I2C device found at address 69
+foundINA219Solar
+I2C device found at address 72
+foundADS
+I2C device found at address 81
+found PCF8563T
+sht init(): failed
+found ADS1115
+initialized INA219
+initialized solar INA219 (0x45)
+Error in sht.readSample()
+i setup v50Voltage(V50_I)=4.37
+rawCSWValue=3452.00
+corrected cswOutput=3452
+serial number:
+Starting wifi digitalStablesConfigData.groupidentifier=
+Starting wifi digitalStablesConfigData.fieldId=2147483648.00
+digitalStablesData.dataSamplingSec=10
+digitalStablesData size=244
+setting sleepmode in setup because of efficiency=0.17
+Calling deepsleep line 1378
+Error in readSample()
+ Temp:-99.0 Hum:0.0
+
+line 1654 measuredHeight=0.00
+RTC average=2291.05
+RTC rtcBatVolt=2.77
+--- MEASUREMENTS ---
+Raw Shunt Register: 0x171 (369)
+Raw Current Register: 0x2E2 (738)
+Bus Voltage: 3.32 V
+Shunt Voltage: 2.52 mV
+Library Current: 50.40 mA
+Calculated Current (V/R): 50.40 mA
+Direct Register Current: 73.80 mA
+Power: 168.00 mW
+
+panelVoltage=4.76 panelCurrent=26.10
+Preparing sleep for 393 seconds
+Error in readSample()
+ Temp:-99.0 Hum:0.0
+
+line 1654 measuredHeight=0.00
+RTC average=2298.35
+RTC rtcBatVolt=2.78
+--- MEASUREMENTS ---
+Raw Shunt Register: 0x42 (66)
+Raw Current Register: 0x42 (66)
+Bus Voltage: 3.33 V
+Shunt Voltage: 1.95 mV
+Library Current: 19.50 mA
+Calculated Current (V/R): 39.00 mA
+Direct Register Current: 6.60 mA
+Power: 66.00 mW
+
+panelVoltage=4.58 panelCurrent=47.20
+Sending LoRa SN= TOTP=-1 Checksum=6B
+TX-CURRENT pre v50i=4.36 mA=17.90
+TX-CURRENT post mA=17.80
+Handover took=51TX took 109ms
+E (2263) phy_comm: gpio[0] number: 2 is reserved
+
+Entering deep sleep.
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+The Daffodil-side log actually does show it entering the transmit path — `Sending LoRa SN= TOTP=-1 Checksum=6B` → `TX-CURRENT pre/post` → `Handover took=51 TX took=109ms` — same shape as every prior send this session. So from the firmware's own perspective it thinks it transmitted. A couple of questions/observations before I chase the wrong thing:
+
+**How are you checking it wasn't received** — a receiving hub's console, a dashboard, gateway RSSI log? That tells me whether this is an RF/hardware problem or an authentication/rejection problem on the far end.
+
+One concrete anomaly I can point to, and it's not new to this cycle — **`TOTP=-1` on every single "Sending LoRa" line in every log this whole conversation**, going back to the very first paste. `TOTP=-1` means `secretManager.generateCode()` is failing to produce a valid time-based code. That lines up with two other blank fields in this device's boot log: `serial number:` and `digitalStablesConfigData.groupidentifier=` are both empty — this bench unit (TopTank) doesn't appear to have its secret/serial provisioned in NVS. Per the project's design ("all packets are authenticated with a TOTP code"), a receiver enforcing that check would silently drop every packet from this device as unauthenticated — which would look exactly like "it never sent anything" from the receiving end, even though the radio genuinely keyed up and transmitted bytes.
+
+If that's a known state of this bench unit (not yet provisioned) — that would fully explain it and isn't a firmware bug, just a config gap. Can you confirm whether this device has a secret/serial set, or is this actually a fresh/bench unit that's never been provisioned?
+
+--- USER ---
+is a firmware Annabelle
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Good — that rules out my TOTP theory. I checked Annabelle's LoRa receive handler (`Annabelle.ino:359-376`, `processLora()`): the `DigitalStablesData` branch does a size-match, `memset`, `readBytes`, and stores it straight away — **no TOTP or checksum validation at all** for this packet type (unlike `LangleyData`/`CommaRecord`, which do check). So a bad/`-1` TOTP from Daffodil can't be why Annabelle would drop it.
+
+That narrows it to two real possibilities:
+1. **The packet never physically reached Annabelle** — range/antenna/interference, or Annabelle wasn't in an RX-capable state at that moment.
+2. **A struct-size mismatch** — Daffodil and Annabelle both `#include` the same shared `DigitalStablesData.h`, but each device's *already-flashed* binary only reflects whatever version of that header it was compiled against at its last build. If that header changed since Annabelle was last (re)compiled/uploaded, `packetSize == sizeof(DigitalStablesData)` on Annabelle's side would silently fail to match, and there's no catch-all `else` after the known struct sizes in `processLora()` — the packet would just be dropped with only `"Received lora size=XXX"` printed, no error.
+
+Can you check Annabelle's serial console around 16:23:32-16:23:36 (when Daffodil transmitted)? I need to know:
+- Does it show **`Received lora size=...`** at all for that window (tells us if the radio message arrived)?
+- If yes, what size — does it match, or fall through silently?
+
+That'll tell us whether this is an RF/range problem or a stale-Annabelle-firmware problem.
+
+--- USER ---
+ok here is what i did, i changed the settings in the daffodil so as to not use solar panelk that it wont go to sleep.  the i refreshed annabelle firmware and running both and annabelle is receiving the lora tranmission every time, so i am going to go back to daffodil change irt solar it will go to sleep and in about 391 we will see if it sends
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Good test — that isolates it well. With solar disabled, Daffodil stays awake and sends via the normal periodic loop path (`sendMessage(..., skipCAD=false)`), and that's working fine into a freshly-rebuilt Annabelle (which also rules out the stale-struct-size theory, since Annabelle's binary is now current). The one thing that test doesn't exercise is the **`goToSleep()` pre-sleep transmission specifically** (`Daffodil.ino:1734`, `sendMessage(digitalStablesData, true)` with `skipCAD=true`, fired right before `LoRa.sleep()` and the WiFi/peripheral shutdown) — that's the exact code path from the logs you've been showing me. So flipping solar back on and watching for reception on that specific transmission is the right next step — it'll tell us if there's something wrong in the shutdown sequence right around the LoRa send (e.g. power being cut before the packet is fully out).
+
+I'll watch for your update — let me know what Annabelle shows around the ~391s mark.
+
+--- USER ---
+yea actually i just did all of that i press reset and still saying that is sendin but not sending, one more thing, when the device starts the method gotosleep the first thing it does is to draw the battery status for 1 seconds  and then sends the lora then goes to sleep, i am not seing the battery status, look at line 1682
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Found it, and it's not zero — it's just very dim, which would look identical to "not lighting up" if you're not staring right at it.
+
+**`Daffodil.ino:2120`**: `drawBatteryStatus()` calls `FastLED.setBrightness(digitalStablesData.ledBrightness)` — it uses whatever `ledBrightness` currently holds, rather than a fixed value.
+
+In the exact scenario you're testing, `goToSleep()` is called **directly from `setup()`** (the low-efficiency branch, `Daffodil.ino:1656`) — the main `loop()` never runs at all this wake cycle. `ledBrightness` only gets set to a real, efficiency/lux-scaled value inside `loop()` (lines 2497-2515, up to 255 — that's the `255` you saw in your very first log's `"digitalStablesData.ledBrightness=255"`). Since `loop()` never executes on this path, the only assignment that ever ran is the one at `Daffodil.ino:1115` in `setup()`:
+```
+digitalStablesData.ledBrightness = dimLedBrightness;   // dimLedBrightness = 20
+```
+So the battery-status heartbeat is rendering at brightness **20/255 (~8%)** instead of full brightness — correct colors, correct LEDs, just barely lit. Easy to miss, especially with any ambient light.
+
+Given the comment above that call literally says "Heartbeat: show battery status **while LEDs are powered**" — the intent is clearly for this to be a visible confirmation right before sleep, not a dim afterthought. Want me to make `drawBatteryStatus()`'s heartbeat call in `goToSleep()` use a fixed, clearly-visible brightness (e.g. 150-200) instead of inheriting whatever `ledBrightness` happens to be at call time?
+
+--- USER ---
+lets try 125
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Done — `goToSleep()` now forces `ledBrightness = 125` right before `drawBatteryStatus()`, so the pre-sleep heartbeat is clearly visible regardless of whether `loop()` ever ran to compute an adaptive brightness. Reflash and you should now see the "B" display light up at a solid brightness during that 1-second window.
+
+--- USER ---
+ok its working and the battery signakl is clearly vsible  and is waking uop as expected and it seems that is sending but annabelle never receives it
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+That specific difference is worth chasing: in `goToSleep()`, the final LoRa send (line 1734-1735) happens **before** WiFi teardown (line 1739-1744) — so the WiFi AP is still fully active, beaconing, while it tries to transmit. In your successful "stay-awake" test, the periodic send (`Daffodil.ino:2982`) happens in the same steady-state WiFi-AP-running condition too, so WiFi-being-on isn't disqualifying by itself — but there's a real difference in timing: in the `goToSleep()` case here, WiFi was *just* started moments earlier in the same `setup()` call (still ramping up / negotiating), not steady-state.
+
+That's relevant because this exact device already showed a real brownout under WiFi AP startup earlier in this conversation — the very first log you sent had `E BOD: Brownout detector was triggered` right after `ConfigWifiAP`. That confirms WiFi activity can destabilize this board's power rail enough to reset the MCU outright; a milder version of that (enough to glitch the SPI transaction to the LoRa chip without a full brownout) during a concurrent LoRa TX is plausible, especially given `LoRa.beginPacket()`'s and the async `endPacket(true)`'s return values are never checked in `sendMessage()` — so a corrupted/failed TX would print the exact same "success" log you're seeing.
+
+**Proposed test**: reorder `goToSleep()` so WiFi is torn down *before* the final LoRa send, not after — eliminating any WiFi-vs-LoRa power contention during that specific transmission. Want me to make that change so you can test it?
+
+Also, still worth confirming when you get a chance: does Annabelle's serial console show *anything* (even a garbled/wrong-size packet) around the time Daffodil's log says `Sending LoRa`, or literally nothing at all? That tells us whether the radio is failing to key up versus transmitting something malformed.
+
+--- USER ---
+yea fix the wifi thing
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Now insert the LoRa send right after WiFi is fully torn down, and renumber the trailing steps:
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Clean reorder — the sequence in `goToSleep()` is now: store record → shut down WiFi completely → send final LoRa message (with WiFi fully off) → `LoRa.sleep()` → tear down remaining peripherals. Reflash and run the test again; let me know what Annabelle shows this time.
+
+--- USER ---
+nothing , annabelle sees nothing
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+This diagnostic addition will tell us definitively next run. Let me verify the full picture makes sense:
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+That reorder didn't fix it, so it wasn't WiFi power contention. I've added real instrumentation instead of another guess — the async TX branch (`Daffodil.ino:400-428`, used whenever `debug` is on, which is always in your tests) previously just assumed success without ever checking whether the radio actually entered TX mode. It now counts how many times `LoRa.isTransmitting()` polled true and prints that count plus the elapsed time, right in the `TX-CURRENT post` line.
+
+This will tell us definitively:
+- **`pollIterations=0`** → the SX127x's `REG_OP_MODE` never showed `MODE_TX` after we wrote it — the chip never actually radiated the packet, despite the code reporting success (the current firmware doesn't check this at all, so it's been blind to this failure mode this whole session).
+- **`pollIterations` in the dozens/hundreds with elapsed ms matching a real time-on-air (~300-800ms for this payload size at SF9/BW125)** → the radio really did transmit; the miss would then be on Annabelle's side or RF-range/interference at that moment, not Daffodil.
+
+Reflash and run the same test — paste me the `Sending LoRa` block (including the new `pollIterations=`/`isTransmittingElapsedMs=` line). That'll tell us which side of this to keep chasing.
+
+--- USER ---
+here is what i did, i have another device called paula, i jusdt uploaded the firmare to paula i have it connected via serial, when i reset daffodil then paula receives 132 bytes,  which is not a structure that paula knows, the only new thing that paula does not know is the diagnotics,  what can you tell if there isw any chance that the daffodil is seding a 132 byte message
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Good catch to check, but I don't think that 132-byte packet is coming from Daffodil at all.
+
+I computed the actual struct sizes:
+- `DiagnosticRecord` (the "diagnostics" feature you mentioned Paula doesn't know) → **101 bytes**, not 132 (4 totpcode + 8 serial + 1 type + 87 payload + 1 checksum).
+- `LangleyData` (a completely different device type, defined in the shared library) → I hand-computed this one field-by-field including the compiler's natural struct alignment/padding, and it comes out to exactly **132 bytes**.
+
+And there's a concrete reason to suspect `LangleyData` specifically: earlier in this same session, Daffodil itself received an unrecognized 132-byte packet whose raw hex dump contained the ASCII strings `"Langley_West"` and `"LWES"` — that's a real, separate device (a fence-energizer monitor, judging by the struct's fields: `fenceVoltage`, `energizerBatteryVoltage`, etc.) transmitting independently on the same 433MHz frequency. Paula, now listening on that same frequency, is very likely just picking up that device's own periodic traffic — coincidentally timed near your Daffodil reset, not caused by it.
+
+So this probably isn't a new finding about Daffodil's transmit problem — it's ambient co-channel traffic from an unrelated node. What I actually need to know: **did Paula ever receive a 244-byte packet** (matching `sizeof(DigitalStablesData)`) at the same moment Daffodil's serial log printed `Sending LoRa`? That's the one that would tell us whether Daffodil's own send is getting through now that WiFi is out of the way. Can you check Paula's log for that?
+
+--- USER ---
+no it never receives the packet eiter
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Two independent receivers (Annabelle and Paula) both failing to get it, while Paula does receive other ambient traffic fine, rules out the receivers themselves — this is now clearly something specific to Daffodil's `goToSleep()` transmission.
+
+One thing to confirm first: is the Daffodil currently running the build with the `pollIterations` instrumentation I added (the diagnostic that counts how many times `LoRa.isTransmitting()` polled true during that specific send)? That's the one piece of data that tells us whether the radio chip itself ever actually entered TX mode for this packet, versus the code just assuming success. If Daffodil hasn't been reflashed since that change, can you reflash it and then paste the `Sending LoRa` / `TX-CURRENT` block from the goToSleep() cycle? Specifically I need the `pollIterations=` and `isTransmittingElapsedMs=` values from that line.
+
+--- USER ---
+mmm here is something, here are the only two lines around there 17:49:55.875 -> TX-CURRENT pre v50i=4.36 mA=-5.80
+17:49:55.875 -> TX-CURRENT post mA=-53.50  the codfe inside of the while (LoRa.isTransmitting()) { is never executing, isTranmissing always returns false, that is new code rememebr that it wasnt compoiling nand you changed the lora code  sommewhere there is broken
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+A few things to untangle here:
+
+1. **I never touched the arduino-LoRa library** (`LoRa.cpp`) — I only read it to understand `isTransmitting()`/`endPacket()`. All my edits this whole session have been in `Daffodil.ino`. If something broke, it'd be in my `Daffodil.ino` changes — can you paste the actual compiler error text? That's the fastest way for me to find and fix it precisely instead of guessing.
+
+2. **Your pasted output tells me the pollIterations build never actually got flashed.** My diagnostic print was supposed to look like:
+   `TX-CURRENT post mA=X pollIterations=N isTransmittingElapsedMs=M`
+   but what you got is just `TX-CURRENT post mA=-53.50` — that's the *old* print format (`Serial.print("TX-CURRENT post mA="); Serial.println(...)`) with nothing appended. That means this test ran on a binary from before I added the counter, not the current file. So we still don't have real confirmation either way on whether `isTransmitting()` looped or not — your read that "it's never executing" is a reasonable inference from the missing interior `TX-CURRENT t=` lines, but let's get the actual counter value rather than infer it, especially since that same "no interior lines" pattern showed up even in transmissions Annabelle *did* receive earlier in this session.
+
+3. Separately, worth noting: **`mA=-5.80` and `mA=-53.50` are the first negative current readings we've seen all session** (everything before was positive, 15-250mA range). That's a real change in behavior worth understanding once we're unblocked on the build.
+
+Can you paste the exact compile error? I'll fix it, then we get a clean build with the real `pollIterations` count.
+
+--- USER ---
+remember it wasn not comoiling because the method was private and you changed it, negastive current for the battery current sensor means the battery is charging
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Good to know — negative = charging, thanks, that reframes those two readings as the battery charging through the TX window rather than something anomalous.
+
+I don't have a record of making a private method public in this conversation — all my edits have been confined to `Daffodil.ino` (thresholds, the debug message, the printf fix, `ledBrightness`, the WiFi/LoRa reorder in `goToSleep()`, and the `pollIterations` counter). None of those call a new method that wasn't already being called before my changes.
+
+Can you tell me which method the compiler flagged as private, or paste the exact error text? That'll let me find and fix the actual problem instead of guessing, so we can get a real build with the `pollIterations` diagnostic onto the device.
+
+--- USER ---
+ok   i just uploaded the code again and now i get 17:59:58.545 -> panelVoltage=4.80 panelCurrent=26.80
+17:59:58.545 -> Sending LoRa SN= TOTP=-1 Checksum=D5
+17:59:58.609 -> TX-CURRENT pre v50i=4.41 mA=14.00
+17:59:58.609 -> TX-CURRENT post mA=14.00 pollIterations=0 isTransmittingElapsedMs=2
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Found something important — trace the actual code path difference. `LoRa.onReceive(onReceive); LoRa.receive();` (`Daffodil.ino:1669-1675`) only run in the `else` branch — i.e., **only when `isSleepMode` is false**. In every case we've tested where `goToSleep()` fires directly from `setup()` (the exact scenario failing here), the radio is **never put into `LoRa.receive()` mode at all** before the send. In your successful "stay-awake" test, `isSleepMode` was false, so that block *did* run before any transmission was attempted.
+
+That's a real, confirmed difference between the two paths, and it lines up with your `pollIterations=0` result — the radio genuinely never enters TX mode. This class of SX127x radio often needs to have been in `receive()` mode at least once (AGC/PLL calibration tied to that path) before a clean transmit will actually key up; skipping straight from `begin()` to a cold TX attempt is the one thing that's different here.
+
+Let me reorder so LoRa always gets a receive cycle before the sleep decision, not just on the "stay awake" path.
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Clean. Reflash and run the same efficiency-triggered sleep test again — check the new `Sending LoRa` block for `pollIterations` (should now be nonzero, matching real TX time) and confirm Annabelle/Paula actually receive the packet this time.
+
+--- USER ---
+8:06:38.933 -> TX-CURRENT pre v50i=4.38 mA=-99.80
+18:06:38.933 -> TX-CURRENT post mA=-99.80 pollIterations=0 isTransmittingElapsedMs=2
+18:06:38.965 -> Handover took=52TX took 110ms
+18:06:39.029 -> Entering deep sleep.
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+`pollIterations=0` again — the `LoRa.receive()` warm-up didn't help either, so that theory's out. This is fully reproducible now (three tests, same result), which actually makes it easier to pin down.
+
+There's one call whose return value has never been checked this whole time: `LoRa.beginPacket()` (`Daffodil.ino:378`). Per the library, it returns `0` and does *nothing* (skips resetting the FIFO pointer/length entirely) if it thinks the radio is *already* transmitting at that moment. If that's firing, the subsequent `LoRa.write()` writes into a stale FIFO state, and `endPacket()`'s write of `MODE_TX` afterward would be landing on an already-confused register state — which would explain a real, consistent, hardware-level `isTransmitting()` never coming up true. Let me add that check.
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Reflash and run the same test once more — this time the log should show a new `beginPacketResult=` line right before `TX-CURRENT pre`. Paste that along with the rest and we'll know whether `beginPacket()` is bailing out silently.
+
+--- USER ---
+18:10:52.658 -> beginPacketResult=1
+18:10:52.658 -> TX-CURRENT pre v50i=4.38 mA=4.70
+18:10:52.658 -> TX-CURRENT post mA=4.70 pollIterations=0 isTransmittingElapsedMs=2
+18:10:52.722 -> Handover took=52TX took 110ms
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+`dumpRegisters()` is already a public method on the library — no need to touch the private `readRegister()` at all. Let me use it to see the raw register state right when this happens, since we've now ruled out several other explanations.
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Reflash and run the same test again — this will dump all 128 LoRa registers when `pollIterations==0` happens (which it has every time so far). Paste the output, particularly registers `0x01` (OP_MODE), `0x12` (IRQ_FLAGS), and `0x40` (DIO_MAPPING_1) if you want to eyeball them yourself, but just paste the whole dump and I'll read it.
+
+--- USER ---
+i found something, i changerd line 390 to if ((false || capturingTxDiagnostic) && foundINA219) { so that the block of code would not execute and guess what? now annabelle receives a pulse when i reset
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+That's the real root cause. `LoRa.endPacket(false)` (sync) blocks on the hardware `IRQ_TX_DONE_MASK` flag before returning — it *actually waits* for transmission to finish. The async path (`endPacket(true)` + polling `isTransmitting()`) never worked on this hardware/library combination — `isTransmitting()` never once read the radio as busy, so the code was racing straight into `LoRa.sleep()`/shutdown while the packet was still (at best) barely queued.
+
+That async+poll path was only ever meant to run during an actual TX-current diagnostic capture, but the condition also flagged it on any time `debug` was on — which is always, this whole session. Let me fix the condition properly rather than leave your hardcoded `false` in place, so it still gets used correctly when you actually run a diagnostic capture:
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+This looks correct now: with `rtc_diagnosticsEnabled` false by default (the normal case), every send will take the `else` branch — `LoRa.endPacket(false)`, which actually blocks until real transmission completes. That's the path you just proved works with Annabelle.
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Root cause found and fixed properly (not just your hardcoded `false`): the async `LoRa.endPacket(true)` + `isTransmitting()` polling path — which was firing on every single send this whole session because the condition included `debug` — never actually worked on this hardware/library combination. The plain synchronous `LoRa.endPacket(false)` correctly blocks until the real hardware TX-done flag fires, which is why Annabelle started receiving the moment you bypassed the async path.
+
+Since `rtc_diagnosticsEnabled` defaults to `false` and is only set by an explicit `EnableDiagnostics` command, normal sends will now always take the working sync path. The async/poll path is preserved for when you deliberately run a TX-current diagnostic capture later — worth revisiting *why* it doesn't work on this board if you ever want that feature back, but it's no longer in the way of normal operation.
+
+Reflash and re-run the original test (efficiency-triggered sleep in `setup()` → `goToSleep()`'s final LoRa send) to confirm Annabelle now receives that specific packet too.
+
+--- USER ---
+<task-notification>
+<task-id>bleq6623n</task-id>
+<tool-use-id>toolu_01QxmHdfXAXnWBgaPs55D7Yx</tool-use-id>
+<output-file>/tmp/claude-1000/-home-ari-Data-DigitalStables-Projects-Daffodil/43c32e8a-7050-4154-a208-86a809c596b4/tasks/bleq6623n.output</output-file>
+<status>killed</status>
+<summary>Background command "find / -iname "LoRa.cpp" -not -path "*/node_modules/*" 2&gt;/dev/null | head -5" was stopped</summary>
+</task-notification>
+
+--- CLAUDE ---
+That's just the leftover background `find` from earlier (killed, no output needed — I already found the LoRa library path a different way). Nothing for you to do.
+
+Still waiting on your reflash test: does Annabelle now receive the `goToSleep()` final message after the async→sync fix?
+
+--- USER ---
+i just uploaded it, testing now, and no message, here is the output 30:19.176 -> Sending LoRa SN= TOTP=-1 Checksum=7C
+20:30:19.208 -> beginPacketResult=1
+20:30:20.493 -> Handover took=1260TX took 1318ms
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+That timing (`TX took 1318ms`) is a huge, genuinely good sign — that's the first time this whole session a transmission has taken a realistic amount of time for a 244-byte SF9/BW125 packet (all the earlier "successful-looking" ones were a suspicious ~110ms, which is physically too short for this payload — they were likely never really completing either). The sync path is definitely doing a real, full transmission now.
+
+Quick clarifying question: when you said a few messages ago "Annabelle receives a pulse when I reset" with your manual `false` patch — did Annabelle actually show a parsed `Received lora size=244` (or similar), or just some indicator/RSSI blip? And for *this* test — is Annabelle's serial monitor still open and connected, same as before? I want to rule out "Annabelle wasn't actually listening at that moment" before we go looking for another firmware bug, since this transmission looks like the most legitimate one all session.
+
+--- USER ---
+actually it does work, annabelle is receiving and i can see on the oled
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Confirmed root cause, then — the whole chase comes down to one bug: the async `LoRa.endPacket(true)` + `isTransmitting()` polling path never actually detected real transmission completion on this hardware, so every `debug`-mode send (which was every send this session) looked successful in the log but was racing ahead before the packet had genuinely gone out. Switching to the synchronous, blocking `LoRa.endPacket(false)` — which correctly waits on the real hardware TX-done flag — fixed it for good.
+
+Summary of what changed in `Daffodil.ino` this session:
+- **CLOUDY false-positives**: `v50iCloudyThreshold`/`panelCurrentCloudyThreshold_mA` recalibrated to real full-sun readings from this board.
+- **Misleading sleep-reason log**: now reports the actual trigger (efficiency/voltage/cloudy) instead of always blaming battery voltage.
+- **Garbage `3616362463618 seconds` log**: `%lld`/32-bit `long` format-specifier mismatch, fixed to `%ld` — was cosmetic only, never affected real sleep duration.
+- **Invisible pre-sleep battery LED**: `goToSleep()` now forces brightness 125 instead of inheriting an uninitialized dim default.
+- **WiFi/LoRa ordering** in `goToSleep()`: WiFi now fully shuts down before the final LoRa send.
+- **Root cause**: async TX path replaced with the working synchronous path for all normal sends; async+poll is preserved only for actual TX-current diagnostic captures (which you may want to revisit separately, since it doesn't work on this hardware as written).
+
+Diagnostic instrumentation (`pollIterations`, `beginPacketResult`, the conditional register dump) is still in the file — harmless, only prints when `debug` is on. Let me know if you want that stripped back out or left in for future troubleshooting.
+
+--- USER ---
+no my issue is that ChinamaMonitor is not showing, can you look at the logs in ChinamopaMonitor maybe ANA.xt or DSD.txt
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+I looked at both. Here's what stands out:
+
+**The logs are stale — over a month old.** `ANA.txt`, `DSD.txt`, and `CHI.txt` in `/home/ari/Data/Teleonome/ChinampaMonitor/` all stopped updating on **June 23**, and I don't see any `ChinampaMonitor`/`AnnabelleReader` Java process currently running on this machine (checked `ps aux` — nothing matching). That would fully explain "ChinampaMonitor is not showing" anything current: whatever process reads Annabelle's serial output and writes these logs isn't running.
+
+Two things worth noting:
+1. I see you have an active SSH session open to `pi@ChinampaMonitor.local` right now (started 20:38) — is that where you're actively investigating this from, or is the log-writing process supposed to run on this machine instead, reading from `/dev/ttyUSB0` (which is present and looks like it's Annabelle plugged in via USB)?
+2. In the last entries before it went stale, `ANA.txt`/`DSD.txt` show **deserialization errors** — e.g. `DigitalStablesDataDeserializer#<garbled-byte>daffodilT#FISHTANK#...` where a field got corrupted with a stray binary byte, causing `Error deserializing` and `unparseable seconds time token: '0'` messages. That's a serial-corruption pattern (a bit error landing in the data stream), separate from why the logs stopped entirely.
+
+Do you want me to check the `ChinampaMonitor`/`AnnabelleReader` Java source (in `/home/ari/Data/Teleonome/ChinampaMonitor` or wherever the source lives) to find where it logs from and why it might have stopped, or is the priority the Pi you're SSH'd into right now?
+
+--- USER ---
+no you need to ssh into ChinampaMonitor.local then go to Teleonome/logs thats isd where dsd is, actually i just looked over the logs and it seems that its been processed,  but something is happening that is not making it to the teleonome, i think the dsd is ok iana.tx might have a clue
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- USER ---
+i found it in Anabellereader line 203 is checkling for a device with a know serial number, the issue is that this is a new device with a new serial number it will never be accepted, we need to retihionk this part
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Found it, and confirmed exactly what you diagnosed. `DenomeManager.isKnownTelepathonDevice()` (`DenomeManager.java:9058`) only returns `true` if a `DeneChain` with the **exact same name AND serial number already exists** in the telepathons nucleus. But a device only gets added to that nucleus *after* its record is accepted (`AnnabelleReader.java:213-214`, inside the `if (accept)` block). So for a brand-new device, there's a chicken-and-egg deadlock: it can never become "known" because it's never accepted, and it's never accepted because it's not yet "known" — permanent rejection, exactly as you found.
+
+Two more things worth knowing:
+- **This guard is already commented out in the source on this machine** (`AnnabelleReader.java:202-211`, `accept = true;` unconditional) — someone already flagged it as a problem. But the log message you found (`"Telepathon record rejected..."`) is worded exactly like the commented-out code, which means **the Pi is still running an older build where this check is active** — the fix was written locally but never redeployed.
+- The original intent (per the comment above it) was to catch a real problem: serial-line corruption occasionally garbles the *device name* while the *serial number* survives intact (e.g. "TopTank" → "TOPT"), which could create a phantom duplicate device under the garbled name. The current check conflates "this is corrupted" with "this is new" — both get rejected identically.
+
+Proposed fix: instead of requiring an *exact* name+serial pair to already exist, check by serial number alone:
+- If this serial number has never been seen before → accept (legitimately new device, bootstraps its own `DeneChain`).
+- If this serial number is already associated with a *different* name → reject (that's the actual corruption case the comment describes).
+- If this serial matches its already-known name → accept as before.
+
+That fixes the new-device deadlock while still catching the specific corruption pattern this was built for. Want me to implement that in `DenomeManager`/`AnnabelleReader`, and separately get this rebuilt and redeployed to `ChinampaMonitor.local` so the fix actually takes effect there?
+
+--- USER ---
+yes
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Good, no new imports needed. Adding the helper method next to `isKnownTelepathonDevice`:
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Now update `AnnabelleReader.java` to use it:
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Found it — but deploying this needs your sign-off before I go further, since the mechanism is more involved than a simple file copy.
+
+`UpdateOrgans.sh` (the update script meant to run **on the Pi**) rebuilds `framework` and several other "organs" by doing a fresh `git clone` from GitHub — it does **not** pull from your local edited files here. So these two changes need to be committed and pushed to the `framework` GitHub repo before the Pi can pick them up. That script also does `killall java` (stopping every Teleonome process on that Pi, not just Annabelle) and rebuilds multiple repos (`framework`, `medula`, `heart`, `teleonomewebapp`, `hippocrates`, etc.) via `organbuilder` — a much bigger, disruptive action than just this one fix.
+
+--- CLAUDE ---
+
+
+--- USER ---
+let me do it
+
+--- CLAUDE ---
+Sounds good — I'll stand by. The two fixes are in place locally in `framework` (`DenomeManager.java` and `AnnabelleReader.java`, not yet committed/pushed). Let me know if you want me to do anything else once you've pushed and rebuilt on the Pi, or if you hit anything unexpected.

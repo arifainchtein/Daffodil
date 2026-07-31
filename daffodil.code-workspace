@@ -1,0 +1,10 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../../ProjectsSupport/Esp32ArduinoLib/libraries/DigitalStablesEsp32Lib"
+		}
+	]
+}

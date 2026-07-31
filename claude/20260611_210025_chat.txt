@@ -1,0 +1,250 @@
+
+--- USER ---
+i need you to look at the ~/Data/Teleonome/cerebellum, there are tasks that generate the GraveyardShift and SolarAnalysis, the AnabelleMicrocontroller will then pass the info so that the esp32 can send it to the daffodil, i need to modify the daffodil so that it can receive the info via lora
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Let me explore the Teleonome cerebellum project and the current Daffodil LoRa receive code in parallel.
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Now let me look at the cerebellum source files and Daffodil's full LoRa receive section.
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Now let me find the AnabelleMicrocontroller and TeleonomeConstants to understand the LoRa command format.
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Let me look at the Annabelle ESP32 firmware itself.
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Let me look at the existing LoRa packet structs and the full processLora function in Daffodil.
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Now let me look at the existing packet structs and the DigitalStablesData header.
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Let me check the PowerManager library and look at how Annabelle microcontroller sends LoRa, plus check for any SolarAnalysis command constant.
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Let me check the RTC variables section and includes in Daffodil.ino.
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Now I have everything I need. Here's my understanding and plan:
+
+**GraveyardShift** produces an Annabelle command string (already in `buildAnnabelleCommand`):
+`SendGraveyardShift#device#voltAtSunset_mV#socAtSunset#coulombSoc#coulombMah#dischargeRate_mV_hr#nightHours_x6#txCycles#voltAtSunrise_mV#socAtSunrise#anchorReliable`
+
+Annabelle will encode that into a binary LoRa struct and send it to Daffodil. Daffodil dispatches on `packetSize`, so it needs a new fixed-size struct.
+
+**SolarAnalysis** doesn't have `buildAnnabelleCommand()` yet, so I'll cover GraveyardShift now and leave a placeholder note.
+
+Changes needed:
+1. `SolarPowerData.h` — add `GraveyardShiftUpdate` struct (19 bytes, unique size)
+2. `Daffodil.ino` — add RTC storage variables + `processLora()` branch
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Now add the RTC storage variables and processLora branch in `Daffodil.ino`:
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Now add the `GraveyardShiftUpdate` branch to `processLora()`. I'll insert it just before the `else` fallback:
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Also update the debug line that logs the known packet sizes, so it includes the new one:
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Let me verify the changes look correct:
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Good. Let me also quickly verify the struct size won't collide with `RequestCommand` (37 bytes) by double-checking the math:
+
+--- CLAUDE ---
+
+
+--- USER ---
+<system-reminder>
+The user named this session "daffodil". This may indicate the session's focus or intent.
+</system-reminder>
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+The `long` on 64-bit Linux is 8 bytes vs 4 bytes on ESP32, so the actual size on the target is **19 bytes** — unique, no collision with `RequestCommand` (37) or `WeatherForecastUpdate` (164).
+
+Let me save project context about this new feature:
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Here's what was done:
+
+**`SolarPowerData.h`** — added `GraveyardShiftUpdate` struct (19 bytes on ESP32, `#pragma pack(push,1)` for safe binary transfer). Fields map directly to `GraveyardShift.buildAnnabelleCommand()`: sunset/sunrise voltage & SOC, coulomb SOC/mAh, discharge rate, night duration, TX cycles, anchor reliability flag, and TOTP checksum.
+
+**`Daffodil.ino`** — two additions:
+1. Eleven `RTC_DATA_ATTR` variables (`rtc_graveyard_*`) that survive deep sleep, so the forecast stays available across all overnight wake cycles.
+2. New `} else if (packetSize == sizeof(GraveyardShiftUpdate)) {` branch in `processLora()` that validates the TOTP code, stores all fields into the RTC variables, and prints a debug summary.
+
+**What still needs to happen on the other side:**
+- Annabelle firmware needs to parse the `SendGraveyardShift#...` command string from Cerebellum and encode a `GraveyardShiftUpdate` binary struct to send via LoRa.
+- `SolarAnalysis` doesn't have `buildAnnabelleCommand()` yet — that task and a matching `SolarAnalysisUpdate` struct would come later.
