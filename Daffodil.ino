@@ -3567,7 +3567,11 @@ void loop() {
       String pdName, pdPowerSource, pdBattery, pdPcbs, pdFirmware;
       secretManager.getProductDefinition(pdName, pdPowerSource, pdBattery, pdPcbs, pdFirmware);
       unsigned long commissionDate = secretManager.getCommissionDate();
-      if (commissionDate == 0) {
+      // 1704067200 = 2024-01-01 - anything before that is the RTC's power-on/reset default
+      // (e.g. year 2000), not a real commission date. Treat it the same as never-set and
+      // recapture, instead of permanently keeping whatever garbage the RTC had the first
+      // time this was called (e.g. before SetTime had ever actually run correctly).
+      if (commissionDate < 1704067200UL) {
         commissionDate = timeManager.getCurrentTimeInSeconds(timeManager.now());
         secretManager.setCommissionDate(commissionDate);
       }
@@ -3580,7 +3584,9 @@ void loop() {
       String pdHostName = secretManager.getHostName();
       String pdStationMode = secretManager.getStationMode() ? "Station" : "AccessPoint";
       unsigned long pdCurrentTime = timeManager.getCurrentTimeInSeconds(timeManager.now());
-      Serial.println("Ok-GetProductDefinition#" + pdName + "#" + pdPowerSource + "#" + pdBattery + "#" + pdPcbs + "#" + pdFirmware + "#" + String(commissionDate) + "#" + pdSSID + "#" + pdWifiPassword + "#" + pdSoftAPSSID + "#" + pdSoftAPPassword + "#" + pdHostName + "#" + pdStationMode + "#" + String(pdCurrentTime));
+      String pdDeviceName = String(digitalStablesData.devicename);
+      String pdDeviceShortName = String(digitalStablesData.deviceshortname);
+      Serial.println("Ok-GetProductDefinition#" + pdName + "#" + pdPowerSource + "#" + pdBattery + "#" + pdPcbs + "#" + pdFirmware + "#" + String(commissionDate) + "#" + pdSSID + "#" + pdWifiPassword + "#" + pdSoftAPSSID + "#" + pdSoftAPPassword + "#" + pdHostName + "#" + pdStationMode + "#" + String(pdCurrentTime) + "#" + pdDeviceName + "#" + pdDeviceShortName);
       Serial.flush();
       delay(delayTime);
     } else if (command.startsWith("PulseStart")) {
