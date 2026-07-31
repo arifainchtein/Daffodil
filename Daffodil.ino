@@ -3579,7 +3579,8 @@ void loop() {
       String pdSoftAPPassword = secretManager.getSoftAPPASS();
       String pdHostName = secretManager.getHostName();
       String pdStationMode = secretManager.getStationMode() ? "Station" : "AccessPoint";
-      Serial.println("Ok-GetProductDefinition#" + pdName + "#" + pdPowerSource + "#" + pdBattery + "#" + pdPcbs + "#" + pdFirmware + "#" + String(commissionDate) + "#" + pdSSID + "#" + pdWifiPassword + "#" + pdSoftAPSSID + "#" + pdSoftAPPassword + "#" + pdHostName + "#" + pdStationMode);
+      unsigned long pdCurrentTime = timeManager.getCurrentTimeInSeconds(timeManager.now());
+      Serial.println("Ok-GetProductDefinition#" + pdName + "#" + pdPowerSource + "#" + pdBattery + "#" + pdPcbs + "#" + pdFirmware + "#" + String(commissionDate) + "#" + pdSSID + "#" + pdWifiPassword + "#" + pdSoftAPSSID + "#" + pdSoftAPPassword + "#" + pdHostName + "#" + pdStationMode + "#" + String(pdCurrentTime));
       Serial.flush();
       delay(delayTime);
     } else if (command.startsWith("PulseStart")) {
