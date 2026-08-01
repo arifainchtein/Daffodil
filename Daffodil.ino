@@ -1010,8 +1010,16 @@ void setup() {
   digitalStablesData.maximumScepticHeight = maximumScepticHeight;
   digitalStablesData.troughlevelminimumcm = troughlevelminimumcm;
   digitalStablesData.troughlevelmaximumcm = troughlevelmaximumcm;
-  // timezone = "AEST-10AEDT,M10.1.0,M4.1.0/3";
-  char timezoneinfo[] = "AEST-10AEDT,M10.1.0,M4.1.0/3";
+  // getDeviceSensorConfig() above leaves timezone as the Preferences default "NoData" unless
+  // it was ever explicitly set (SetDeviceSensorConfig, or now SetTimezone) - parseTimezone()
+  // then finds no +/- and silently leaves baseOffset at 0, so every epoch computed from the
+  // RTC (getCurrentTimeInSeconds(), and TOTP code generation) treated local wall-clock time
+  // as if it were UTC, landing exactly 10h/11h off. Fall back to a sane default (Melbourne)
+  // rather than leaving it broken - but only if nothing valid has actually been configured,
+  // so a real SetTimezone selection persists across reboots.
+  if(timezone=="" || timezone=="NoData"){
+    timezone = "AEST-10AEDT,M10.1.0,M4.1.0/3";
+  }
 
 
 
@@ -3442,6 +3450,12 @@ void loop() {
       Serial.print(F("digitalStablesData.deviceshortname="));
       Serial.println(digitalStablesData.deviceshortname);
       Serial.println(F("Ok-SetDeviceShortName"));
+    } else if (command.startsWith("SetTimezone")) {
+      // SetTimezone#AEST-10AEDT,M10.1.0,M4.1.0/3
+      String tz = generalFunctions.getValue(command, '#', 1);
+      secretManager.setTimeZone(tz);
+      TimeUtils::parseTimezone(tz);
+      Serial.println(F("Ok-SetTimezone"));
     } else if (command.startsWith("SetGroupId")) {
       String grpId = generalFunctions.getValue(command, '#', 1);
       secretManager.setGroupIdentifier(grpId);
@@ -3586,7 +3600,10 @@ void loop() {
       unsigned long pdCurrentTime = timeManager.getCurrentTimeInSeconds(timeManager.now());
       String pdDeviceName = String(digitalStablesData.devicename);
       String pdDeviceShortName = String(digitalStablesData.deviceshortname);
-      Serial.println("Ok-GetProductDefinition#" + pdName + "#" + pdPowerSource + "#" + pdBattery + "#" + pdPcbs + "#" + pdFirmware + "#" + String(commissionDate) + "#" + pdSSID + "#" + pdWifiPassword + "#" + pdSoftAPSSID + "#" + pdSoftAPPassword + "#" + pdHostName + "#" + pdStationMode + "#" + String(pdCurrentTime) + "#" + pdDeviceName + "#" + pdDeviceShortName);
+      char pdSerialNumberBuf[13];
+      snprintf(pdSerialNumberBuf, sizeof(pdSerialNumberBuf), "%012llx", ESP.getEfuseMac());
+      String pdSerialNumber = String(pdSerialNumberBuf);
+      Serial.println("Ok-GetProductDefinition#" + pdName + "#" + pdPowerSource + "#" + pdBattery + "#" + pdPcbs + "#" + pdFirmware + "#" + String(commissionDate) + "#" + pdSSID + "#" + pdWifiPassword + "#" + pdSoftAPSSID + "#" + pdSoftAPPassword + "#" + pdHostName + "#" + pdStationMode + "#" + String(pdCurrentTime) + "#" + pdDeviceName + "#" + pdDeviceShortName + "#" + pdSerialNumber);
       Serial.flush();
       delay(delayTime);
     } else if (command.startsWith("PulseStart")) {
