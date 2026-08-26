@@ -162,6 +162,8 @@ bool wifiActiveSwitch;
 Timer dsUploadTimer(60);
 static volatile int flowMeterPulseCount;
 static volatile int flowMeterPulseCount2;
+static unsigned long flowMeterPreviousMillis = 0;
+static unsigned long flowMeterPreviousMillis2 = 0;
 
 volatile bool loraReceived = false;
 volatile int loraPacketSize = 0;
@@ -289,6 +291,10 @@ const float Vref = 3.3;      // Reference voltage of the ESP32
 int view_milliseconds = 5000;
 long lastswitchmillis = 0;
 boolean showTemperature = false;
+// Alternates the sensor-value LED display between slot 1 (pin 18) and slot 2 (pin 33) on
+// two-slot modes (FUN_2_FLOW, FUN_2_TANK, FUN_1_FLOW_1_TANK, DAFFODIL_WATER_TROUGH_TANK1) —
+// same toggle-per-cycle pattern as showTemperature.
+boolean showSensorSlot2 = false;
 uint8_t color = 0;
 String timezone;
 
@@ -822,16 +828,27 @@ void appendCommaRecord(float voltage, uint32_t nowSec) {
   if (rlog) rlog.close();
 
   if (existing >= COMMA_LOG_MAX_RECORDS) {
-    // Log full — drop oldest, write back remaining + new
-    CommaRecord buf[COMMA_LOG_MAX_RECORDS];
+    // Log full — drop the oldest record. Previously read the WHOLE log into a
+    // CommaRecord[COMMA_LOG_MAX_RECORDS] stack array (650 * 31 bytes ≈ 20KB) — that overflowed
+    // the ~8KB default loop-task stack the instant the log actually filled up, hard-resetting
+    // the device, which then hit the exact same overflow again on every subsequent boot (the
+    // oversized log file survives a reset). Stream the trim in small fixed-size chunks instead,
+    // so memory use stays constant regardless of COMMA_LOG_MAX_RECORDS.
     File rd = LittleFS.open(COMMA_LOG_FILE, "r");
-    if (rd) { rd.readBytes((char*)buf, existing * sizeof(CommaRecord)); rd.close(); }
-    File wr = LittleFS.open(COMMA_LOG_FILE, "w");
-    if (wr) {
-      wr.write((uint8_t*)(buf + 1), (existing - 1) * sizeof(CommaRecord));
+    File wr = LittleFS.open("/comma_log.tmp", "w");
+    if (rd && wr) {
+      rd.seek(sizeof(CommaRecord));  // skip the oldest record
+      uint8_t chunk[sizeof(CommaRecord) * 8];
+      int n;
+      while ((n = rd.read(chunk, sizeof(chunk))) > 0) {
+        wr.write(chunk, n);
+      }
       wr.write((uint8_t*)&rec, sizeof(rec));
-      wr.close();
     }
+    if (rd) rd.close();
+    if (wr) wr.close();
+    LittleFS.remove(COMMA_LOG_FILE);
+    LittleFS.rename("/comma_log.tmp", COMMA_LOG_FILE);
   } else {
     File log = LittleFS.open(COMMA_LOG_FILE, "a");
     if (log) { log.write((uint8_t*)&rec, sizeof(rec)); log.close(); }
@@ -846,6 +863,18 @@ void clearAllCommaRecords() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
+
+// Averages several single-shot ADS1115 reads of one channel. Each call to ADS.readADC() blocks
+// for a fresh conversion (confirmed: this library's single-shot mode always requests a new
+// conversion and waits for it — no stale-mux-read risk), so this just reduces sensitivity to
+// any one noisy sample (e.g. charge-circuit switching transients) by averaging several.
+int16_t readADCAveraged(uint8_t channel, uint8_t samples) {
+  long total = 0;
+  for (uint8_t i = 0; i < samples; i++) {
+    total += ADS.readADC(channel);
+  }
+  return (int16_t)(total / samples);
+}
 
 // Matches the Adafruit INA219 getBusVoltage_V() calculation exactly:
 //   register 0x02, uint16_t, bits 15:3, 4 mV per LSB → divide by 1000 for volts.
@@ -1287,7 +1316,12 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
   // On boards where R1 feeds this channel from V50_I instead of the regulated V50 rail, it
   // tracks actual panel output: ~0V at night, sags with cloud cover, ~5V+ in full sun. Used
   // as a real power-harvest signal for cloudy detection (see v50iCloudyThreshold below).
-  int16_t val_3 = ADS.readADC(3);
+  // Averaged over 8 samples — a single-shot read here was landing switch positions in the wrong
+  // threshold band under real battery-attached load (charge-circuit switching transients riding
+  // on this same rail), even though the switch/resistor network itself checked out correct on
+  // a multimeter. See 2026-08-25 hardware debugging: 00001 (solar bit only) intermittently read
+  // as if the solar resistor wasn't bypassed even with confirmed continuity to GND.
+  int16_t val_3 = readADCAveraged(3, 8);
   float f = ADS.toVoltage(1);  //  voltage factor
   digitalStablesData.v50Voltage = ADS.toVoltage(val_3);
 
@@ -1297,179 +1331,202 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
   // Config Switch
   // if(debug)Serial.print("voltage factor=");
   // if(debug)Serial.println(f);
-  rawCSWValue = ADS.readADC(2);
+  rawCSWValue = readADCAveraged(2, 8);
   if (debug) Serial.print("rawCSWValue=");
   if (debug) Serial.println(rawCSWValue);
-  // V50 is always 5V in Build 7 (from solar through diode OR from battery+boost converter)
-  // Battery voltage must NOT be used here — it is a separate 3.2V rail
-  factor = 1.0;
-  cswOutput = rawCSWValue;
+  // V50/V50_I is NOT a stable 5V rail on this board: it tracks the solar/USB input and sags
+  // with cloud cover, battery charge/discharge current, etc. Normalizing cswOutput to "what it
+  // would read at 5.00V" cancels most of that drift so the thresholds below stay meaningful
+  // regardless of current sun/battery conditions.
+  //
+  // 2026-08-25/26: abandoned trying to derive the threshold table from the R2/R3/R4/R10/R11/R13
+  // resistor math — real hardware repeatedly disagreed with it in ways that didn't fit a single
+  // consistent model (see chat/git history for the full trail: a stack-overflow bug, a false
+  // "battery vs no-battery regime" theory, etc.). Replaced entirely with a full 32-position
+  // empirical sweep (battery attached, DaffodilCSWTest sketch, 8x-averaged reads), normalized
+  // here to K=5.00 and to a per-reading v50Voltage rather than one assumed constant — the whole
+  // dataset was taken at a stable ~4.33-4.38V, so K itself barely matters here; what matters is
+  // the *shape* of the 32 real readings, which is what the thresholds below now encode directly.
+  //
+  // Two real hardware quirks the data exposed (not measurement error — both reproduced across
+  // repeated tests, and the second was independently confirmed with an unpowered multimeter):
+  //  - Switch 1 or switch 2 alone (i.e. the *only* other switch besides solar) does something
+  //    other than simply bypassing its resistor: 10001 reads *higher* than 00001 (should be
+  //    lower), and 01001 reads almost identical to 00001 (should be clearly lower). Both switches
+  //    work correctly in every other combination tested (e.g. with switch 4 also on).
+  //  - This makes FUN_1_FLOW and FUN_1_FLOW_1_TANK, with solar on, land only ~120 raw counts
+  //    apart (00001 vs 01001) — the narrowest margin in the whole table by a wide margin, and
+  //    genuinely unreliable. If you rely on distinguishing these two specifically with solar
+  //    power active, treat that as a known weak spot, not a solved threshold-tuning problem.
+  factor = (digitalStablesData.v50Voltage > 0.5) ? (5.00 / digitalStablesData.v50Voltage) : 1.0;
+  cswOutput = rawCSWValue * factor;
 
 
-  if (debug) Serial.print("corrected cswOutput=");
-  if (debug) Serial.println(cswOutput);
+  //if (debug)
+   Serial.print("corrected cswOutput=");
+  //if (debug) 
+  Serial.println(cswOutput);
 
   //
-  // dip switch values
-  // 1234
-  // 0000 =  F
-  // 1000 =  FF
-  // 0100 =  FT
-  // 1100 =  T
-  // 0010 =  TT
-  // 1010 =  Daffodil Sceptic
-  // 0110 =  Daffodil Water Trough
-  // 1110 =  DAFFODILE_TEMP_SOILMOISTURE
-  // 0001 =
-  // 1001 =
-  // 1101 =
-  // 1111 = 0    // VOLTAGE_MONITOR
-
-  if (cswOutput >= 8300) {
-    // Position 0: 00000 (All OFF)
+  // DIP switch bit patterns — bits 1-4 = switches bypassing R3/R4/R10/R11, 5th = solar
+  // (bypasses R13). Function assignment is identical for both solar states of a given 4-bit
+  // pattern. Thresholds below come from a full 32-position empirical sweep (2026-08-27, fresh
+  // battery, DaffodilCSWTest sketch, 8x-averaged reads, normalized to K=5.00 via each reading's
+  // own v50Voltage).
+  //
+  // This REPLACES a 2026-08-26 sweep done with a different (since-discovered-dead) battery. That
+  // one showed real, reproducible quirks — switch 1 or 2 alone with solar reading backwards from
+  // the simple bypass model — that made FUN_1_FLOW and FUN_1_FLOW_1_TANK (solar on) only ~120
+  // raw counts apart. This fresh-battery sweep is completely clean and monotonic with NO such
+  // quirks — every position landed exactly where the simple bypass model predicts, in normal
+  // bit-pattern order. Conclusion: that quirk was an artifact of the old, failing battery's
+  // loading behavior, not a board defect. However: swapping battery units also shifted the
+  // *absolute* values substantially and non-uniformly (e.g. 00000 shifted +25%, 00001 shifted
+  // +50% between the two batteries) — current draw and static resistance were both ruled out as
+  // the cause, and it wasn't explained before moving on. If positions drift off-threshold again
+  // after a battery swap in the future, don't assume these numbers still hold — re-sweep with
+  // DaffodilCSWTest rather than trying to patch the existing thresholds.
+  //
+  // 1234 solar | raw@v50            | function
+  // 0000  0    | 8326 @ 4.390       | FUN_1_FLOW
+  // 1000  0    | 8140 @ 4.394       | FUN_2_FLOW
+  // 0100  0    | 7950 @ 4.393       | FUN_1_FLOW_1_TANK
+  // 1100  0    | 7758 @ 4.395       | FUN_1_TANK
+  // 0010  0    | 7581 @ 4.392       | FUN_2_TANK
+  // 1010  0    | 7379 @ 4.393       | DAFFODIL_SCEPTIC_TANK
+  // 0110  0    | 7174 @ 4.391       | DAFFODIL_WATER_TROUGH
+  // 1110  0    | 6965 @ 4.398       | DAFFODIL_WATER_TROUGH
+  // 0001,1001,0101,1101  0 (merged) | 6689-6012 @ ~4.39 | (unassigned)
+  // 0011  0    | 5800 @ 4.394       | DAFFODIL_WATER_TROUGH
+  // 1011,0111,1111  0 (merged)      | 5558-5060 @ ~4.39 | (unassigned)
+  // 0000  1    | 4806 @ 4.392       | FUN_1_FLOW
+  // 1000  1    | 4541 @ 4.390       | FUN_2_FLOW
+  // 0100  1    | 4271 @ 4.392       | FUN_1_FLOW_1_TANK
+  // 1100  1    | 3993 @ 4.403       | FUN_1_TANK
+  // 0010  1    | 3737 @ 4.399       | FUN_2_TANK
+  // 1010  1    | 3445 @ 4.400       | DAFFODIL_SCEPTIC_TANK
+  // 0110  1    | 3147 @ 4.400       | DAFFODIL_WATER_TROUGH
+  // 1110  1    | 2841 @ 4.400       | DAFFODIL_WATER_TROUGH
+  // 0001,1001,0101,1101  1 (merged) | 2437-1433 @ ~4.40 | (unassigned)
+  // 0011  1    | 1116 @ 4.403       | DAFFODIL_WATER_TROUGH
+  // 1011,0111,1111  1 (merged)      | 753,-3,-3 @ ~4.40 | (unassigned, saturates near 0)
+  if (cswOutput >= 9373) {
+    // 00000, solar off — FUN_1_FLOW
     digitalStablesData.currentFunctionValue = FUN_1_FLOW;
     attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
     secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
     usingSolarPower = false;
-  } else if (cswOutput >= 8000 && cswOutput <= 8200) {
-    // Position 1: 10000 (R3 ON)
+  } else if (cswOutput >= 9156 && cswOutput < 9373) {
+    // 10000, solar off — FUN_2_FLOW
     digitalStablesData.currentFunctionValue = FUN_2_FLOW;
     attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
     attachInterrupt(SENSOR_INPUT_2, pulseCounter2, FALLING);
     secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
     secretManager.readFlow2Name().toCharArray(digitalStablesData.sensor2name, sizeof(digitalStablesData.sensor2name));
     usingSolarPower = false;
-  } else if (cswOutput >= 7800 && cswOutput < 8000) {
-    // Position 2: 01000 (R4 ON)
+  } else if (cswOutput >= 8937 && cswOutput < 9156) {
+    // 01000, solar off — FUN_1_FLOW_1_TANK
     digitalStablesData.currentFunctionValue = FUN_1_FLOW_1_TANK;
     attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
     secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
     secretManager.readTank2Name().toCharArray(digitalStablesData.sensor2name, sizeof(digitalStablesData.sensor2name));
     usingSolarPower = false;
-  } else if (cswOutput >= 7690 && cswOutput < 7800) {
-    // Position 3: 11000 (R3+R4 ON)
+  } else if (cswOutput >= 8728 && cswOutput < 8937) {
+    // 11000, solar off — FUN_1_TANK
     digitalStablesData.currentFunctionValue = FUN_1_TANK;
     secretManager.readTank1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
     usingSolarPower = false;
-  } else if (cswOutput >= 7500 && cswOutput < 7690) {
-    // Position 4: 00100 (R10 ON)
+  } else if (cswOutput >= 8515 && cswOutput < 8728) {
+    // 00100, solar off — FUN_2_TANK
     digitalStablesData.currentFunctionValue = FUN_2_TANK;
     secretManager.readTank1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
     secretManager.readTank2Name().toCharArray(digitalStablesData.sensor2name, sizeof(digitalStablesData.sensor2name));
     usingSolarPower = false;
-  } else if (cswOutput >= 7300 && cswOutput < 7500) {
-    // Position 5: 10100 (R3+R10 ON)
-    digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;  //DAFFODIL_SCEPTIC_TANK;
-    usingSolarPower = false;
-  } else if (cswOutput >= 7100 && cswOutput < 7300) {
-    // Position 6: 01100 (R4+R10 ON)
-    digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
-    usingSolarPower = false;
-  } else if (cswOutput >= 6900 && cswOutput < 7100) {
-    // Position 7: 11100 (R3+R4+R10 ON)
-    digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
-    usingSolarPower = false;
-  } else if (cswOutput >= 6600 && cswOutput < 6900) {
-    // Position 8: 00010 (R11 ON)
-    usingSolarPower = false;
-  } else if (cswOutput >= 6300 && cswOutput < 6600) {
-    // Position 9: 10010 (R3+R11 ON)
-    usingSolarPower = false;
-  } else if (cswOutput >= 6100 && cswOutput < 6300) {
-    // Position 10: 01010 (R4+R11 ON)
-    usingSolarPower = false;
-  } else if (cswOutput >= 5900 && cswOutput < 6100) {
-    // Position 11: 11010 (R3+R4+R11 ON)
-    usingSolarPower = false;
-  } else if (cswOutput >= 5700 && cswOutput < 5900) {
-    // 00110
-    digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
-    usingSolarPower = false;
-  } else if (cswOutput >= 5450 && cswOutput < 5700) {
-    // Position 13: 10110 (R3+R10+R11 ON)
-    usingSolarPower = false;
-  } else if (cswOutput >= 5200 && cswOutput < 5450) {
-    // Position 14: 01110 (R4+R10+R11 ON)
-    usingSolarPower = false;
-  } else if (cswOutput >= 4900 && cswOutput < 5200) {
-    // Position 15: 11110 (R3+R4+R10+R11 ON)
-    usingSolarPower = false;
-  } else if (cswOutput >= 4800 && cswOutput < 4900) {
-    // Position 16: 00001 (R13 ON)
-    digitalStablesData.currentFunctionValue = FUN_1_FLOW;
-    attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
-    secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
-    usingSolarPower = true;
-  } else if (cswOutput >= 4500 && cswOutput < 4800) {
-    // Position 17: 10001 (R3+R13 ON)
-    digitalStablesData.currentFunctionValue = FUN_2_FLOW;
-    attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
-    attachInterrupt(SENSOR_INPUT_2, pulseCounter2, FALLING);
-    secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
-    secretManager.readFlow2Name().toCharArray(digitalStablesData.sensor2name, sizeof(digitalStablesData.sensor2name));
-    usingSolarPower = true;
-  } else if (cswOutput >= 4200 && cswOutput < 4500) {
-    // Position 18: 01001 (R4+R13 ON)
-    usingSolarPower = true;
-    digitalStablesData.currentFunctionValue = FUN_1_FLOW_1_TANK;
-    attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
-
-    secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
-    secretManager.readTank2Name().toCharArray(digitalStablesData.sensor2name, sizeof(digitalStablesData.sensor2name));
-  } else if (cswOutput >= 3900 && cswOutput < 4200) {
-    // Position 19: 11001 (R3+R4+R13 ON)
-    digitalStablesData.currentFunctionValue = FUN_1_TANK;
-    secretManager.readTank1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
-    usingSolarPower = true;
-  } else if (cswOutput >= 3700 && cswOutput < 3900) {
-    // Position 20: 00101 (R10+R13 ON)
-    digitalStablesData.currentFunctionValue = FUN_2_TANK;
-    secretManager.readTank1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
-    secretManager.readTank2Name().toCharArray(digitalStablesData.sensor2name, sizeof(digitalStablesData.sensor2name));
-    usingSolarPower = true;
-  } else if (cswOutput >= 3400 && cswOutput < 3700) {
-    // Position 21: 10101 (R3+R10+R13 ON)
+  } else if (cswOutput >= 8284 && cswOutput < 8515) {
+    // 10100, solar off — DAFFODIL_SCEPTIC_TANK
     digitalStablesData.currentFunctionValue = DAFFODIL_SCEPTIC_TANK;
-
-    usingSolarPower = true;
-  } else if (cswOutput >= 3100 && cswOutput < 3400) {
-    // Position 22: 01101 (R4+R10+R13 ON)
+    usingSolarPower = false;
+  } else if (cswOutput >= 8044 && cswOutput < 8284) {
+    // 01100, solar off — DAFFODIL_WATER_TROUGH
     digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
-
-    usingSolarPower = true;
-  } else if (cswOutput >= 2800 && cswOutput < 3100) {
-    // Position 23: 11101 (R3+R4+R10+R13 ON)
+    usingSolarPower = false;
+  } else if (cswOutput >= 7766 && cswOutput < 8044) {
+    // 11100, solar off — DAFFODIL_WATER_TROUGH
     digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
-
+    usingSolarPower = false;
+  } else if (cswOutput >= 6721 && cswOutput < 7766) {
+    // 0001/1001/0101/1101, solar off — unassigned (merged: none of these four carry a
+    // function, so one wide band is as safe as four narrow ones and far simpler)
+    usingSolarPower = false;
+  } else if (cswOutput >= 6464 && cswOutput < 6721) {
+    // 00110, solar off — DAFFODIL_WATER_TROUGH
+    digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
+    usingSolarPower = false;
+  } else if (cswOutput >= 5617 && cswOutput < 6464) {
+    // 1011/0111/1111, solar off — unassigned (merged, same reasoning as above)
+    usingSolarPower = false;
+  } else if (cswOutput >= 5322 && cswOutput < 5617) {
+    // 00001, solar on — FUN_1_FLOW
+    digitalStablesData.currentFunctionValue = FUN_1_FLOW;
+    attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
+    secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
     usingSolarPower = true;
-  } else if (cswOutput >= 2400 && cswOutput < 2800) {
-    // Position 24: 00011 (R11+R13 ON)
+  } else if (cswOutput >= 5017 && cswOutput < 5322) {
+    // 10001, solar on — FUN_2_FLOW
+    digitalStablesData.currentFunctionValue = FUN_2_FLOW;
+    attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
+    attachInterrupt(SENSOR_INPUT_2, pulseCounter2, FALLING);
+    secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
+    secretManager.readFlow2Name().toCharArray(digitalStablesData.sensor2name, sizeof(digitalStablesData.sensor2name));
     usingSolarPower = true;
-  } else if (cswOutput >= 2000 && cswOutput < 2400) {
-    // Position 25: 10011 (R3+R11+R13 ON)
+  } else if (cswOutput >= 4698 && cswOutput < 5017) {
+    // 01001, solar on — FUN_1_FLOW_1_TANK
+    digitalStablesData.currentFunctionValue = FUN_1_FLOW_1_TANK;
+    attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
+    secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
+    secretManager.readTank2Name().toCharArray(digitalStablesData.sensor2name, sizeof(digitalStablesData.sensor2name));
     usingSolarPower = true;
-  } else if (cswOutput >= 1700 && cswOutput < 2000) {
-    // Position 26: 01011 (R4+R11+R13 ON)
+  } else if (cswOutput >= 4391 && cswOutput < 4698) {
+    // 11001, solar on — FUN_1_TANK
+    digitalStablesData.currentFunctionValue = FUN_1_TANK;
+    secretManager.readTank1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
     usingSolarPower = true;
-  } else if (cswOutput >= 1380 && cswOutput < 1700) {
-    // Position 27: 11011 (R3+R4+R11+R13 ON)
+  } else if (cswOutput >= 4081 && cswOutput < 4391) {
+    // 00101, solar on — FUN_2_TANK
+    digitalStablesData.currentFunctionValue = FUN_2_TANK;
+    secretManager.readTank1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
+    secretManager.readTank2Name().toCharArray(digitalStablesData.sensor2name, sizeof(digitalStablesData.sensor2name));
     usingSolarPower = true;
-  } else if (cswOutput >= 1100 && cswOutput < 1380) {
-    // Position 6: 00111 (R4+R10 ON)
+  } else if (cswOutput >= 3745 && cswOutput < 4081) {
+    // 10101, solar on — DAFFODIL_SCEPTIC_TANK
+    digitalStablesData.currentFunctionValue = DAFFODIL_SCEPTIC_TANK;
+    usingSolarPower = true;
+  } else if (cswOutput >= 3402 && cswOutput < 3745) {
+    // 01101, solar on — DAFFODIL_WATER_TROUGH
     digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
     usingSolarPower = true;
-  } else if (cswOutput >= 700 && cswOutput < 1100) {
-
-  } else if (cswOutput >= 350 && cswOutput < 700) {
-    // Position 30:  01111 (R4+R10+R11+R13 ON)
+  } else if (cswOutput >= 2997 && cswOutput < 3402) {
+    // 11101, solar on — DAFFODIL_WATER_TROUGH
+    digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
     usingSolarPower = true;
-  } else if (cswOutput >= 0 && cswOutput < 350) {
-    // Position 31: 11111 (All ON) - assuming this is very low
+  } else if (cswOutput >= 1447 && cswOutput < 2997) {
+    // 0001/1001/0101/1101, solar on — unassigned (merged, same reasoning as the solar-off gaps)
+    usingSolarPower = true;
+  } else if (cswOutput >= 1061 && cswOutput < 1447) {
+    // 00111, solar on — DAFFODIL_WATER_TROUGH
+    digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
+    usingSolarPower = true;
+  } else if (cswOutput >= 0 && cswOutput < 1061) {
+    // 10111/01111/11111, solar on — unassigned, saturates near 0 raw
     usingSolarPower = true;
   } else if (cswOutput < 0) {
     digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
     usingSolarPower = true;
   }
+//  if (debug)
+  Serial.print("currentFunctionValue=");
+  // if (debug)
+   Serial.println(digitalStablesData.currentFunctionValue);
 
   // digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;//DAFFODIL_SCEPTIC_TANK;
   //     usingSolarPower=false;
@@ -1834,7 +1891,86 @@ void handleWakeInterrupt() {
   wakeSignalReceived = true;
 }
 
+//
+// Flow meter 1 — SENSOR_INPUT_1 (pin 18), pulses counted by pulseCounter().
+// Same convention as the sibling Rosie/Gloria/Pancho boards: pulses/sec scaled by qfactor1
+// gives L/min, then converted to mL and accumulated for this sampling interval.
+//
+void readFlowMeter1() {
+  noInterrupts();
+  int pulseCount = flowMeterPulseCount;
+  flowMeterPulseCount = 0;
+  interrupts();
 
+  unsigned long now = millis();
+  long elapsedMs = now - flowMeterPreviousMillis;
+  flowMeterPreviousMillis = now;
+  if (elapsedMs <= 0) elapsedMs = 1;
+
+  float flowRate = (1000.0 / elapsedMs) * pulseCount / digitalStablesData.qfactor1;
+  if (flowRate > 0) {
+    float flowMilliLitres = digitalStablesData.dataSamplingSec * (flowRate / 60) * 1000;
+    digitalStablesData.totalMilliLitres += flowMilliLitres;
+  }
+  digitalStablesData.flowRate = flowRate;
+  if (debug) Serial.print("flow1 pulses=");
+  if (debug) Serial.print(pulseCount);
+  if (debug) Serial.print(" flowRate=");
+  if (debug) Serial.println(digitalStablesData.flowRate);
+}
+
+// Flow meter 2 — SENSOR_INPUT_2 (pin 33), pulses counted by pulseCounter2(). Same math as
+// readFlowMeter1() against qfactor2/totalMilliLitres2.
+void readFlowMeter2() {
+  noInterrupts();
+  int pulseCount = flowMeterPulseCount2;
+  flowMeterPulseCount2 = 0;
+  interrupts();
+
+  unsigned long now = millis();
+  long elapsedMs = now - flowMeterPreviousMillis2;
+  flowMeterPreviousMillis2 = now;
+  if (elapsedMs <= 0) elapsedMs = 1;
+
+  float flowRate2 = (1000.0 / elapsedMs) * pulseCount / digitalStablesData.qfactor2;
+  if (flowRate2 > 0) {
+    float flowMilliLitres2 = digitalStablesData.dataSamplingSec * (flowRate2 / 60) * 1000;
+    digitalStablesData.totalMilliLitres2 += flowMilliLitres2;
+  }
+  digitalStablesData.flowRate2 = flowRate2;
+  if (debug) Serial.print("flow2 pulses=");
+  if (debug) Serial.print(pulseCount);
+  if (debug) Serial.print(" flowRate2=");
+  if (debug) Serial.println(digitalStablesData.flowRate2);
+}
+
+//
+// Tank pressure sensors — the screw terminals shared with SENSOR_INPUT_1/2 (pins 18/33) can be
+// jumpered to route to the ADS1115 instead of the GPIO, for a 0.5V-4.5V/0-5psi transducer.
+// ch1 = terminal shared with pin 18 (sensor 1 / tank1). ch0 = terminal shared with pin 33
+// (sensor 2 / tank2). 0.5V=0psi, 4.5V=5psi (live-zero transducer, so 0V reads as a fault).
+//
+void readTankPressure1() {
+  ADS.setGain(0);
+  int16_t raw = ADS.readADC(1);
+  float volts = raw * ADS.toVoltage(1);
+  digitalStablesData.tank1PressurePsi = (volts - 0.5) * 1.25;
+  if (debug) Serial.print("tank1 volts=");
+  if (debug) Serial.print(volts);
+  if (debug) Serial.print(" psi=");
+  if (debug) Serial.println(digitalStablesData.tank1PressurePsi);
+}
+
+void readTankPressure2() {
+  ADS.setGain(0);
+  int16_t raw = ADS.readADC(0);
+  float volts = raw * ADS.toVoltage(1);
+  digitalStablesData.tank2PressurePsi = (volts - 0.5) * 1.25;
+  if (debug) Serial.print("tank2 volts=");
+  if (debug) Serial.print(volts);
+  if (debug) Serial.print(" psi=");
+  if (debug) Serial.println(digitalStablesData.tank2PressurePsi);
+}
 
 void readSensorData() {
   //
@@ -1894,10 +2030,45 @@ void readSensorData() {
     }
     digitalStablesData.ledBrightness = br;
   }
-  float distance = sonar.ping_cm();
-  digitalStablesData.measuredHeight = distance;
+  // Ultrasonic shares TRIGGER/ECHO with pins 18/33 (SENSOR_INPUT_1/2), which double as the
+  // flow-meter interrupts and tank-pressure analog terminals in the other modes — only trigger
+  // it in the two modes where those pins are actually wired to the sonar (see Known Issues).
+  if (digitalStablesData.currentFunctionValue == DAFFODIL_WATER_TROUGH || digitalStablesData.currentFunctionValue == DAFFODIL_SCEPTIC_TANK) {
+    digitalStablesData.measuredHeight = sonar.ping_cm();
+  } else {
+    digitalStablesData.measuredHeight = -99;
+  }
   if (debug) Serial.print("line 1654 measuredHeight=");
   if (debug) Serial.println(digitalStablesData.measuredHeight);
+
+  switch (digitalStablesData.currentFunctionValue) {
+    case FUN_1_FLOW:
+      readFlowMeter1();
+      break;
+    case FUN_2_FLOW:
+      readFlowMeter1();
+      readFlowMeter2();
+      break;
+    case FUN_1_FLOW_1_TANK:
+      readFlowMeter1();
+      readTankPressure2();
+      break;
+    case FUN_1_TANK:
+      readTankPressure1();
+      break;
+    case FUN_2_TANK:
+      readTankPressure1();
+      readTankPressure2();
+      break;
+    case DAFFODIL_WATER_TROUGH_TANK1:
+      // tank1 (ch1/pin18) is safe to read here. The trough half is NOT wired up yet: `sonar`
+      // is still a 2-pin NewPing instance hardwired to TRIGGER_PIN(18)/ECHO_PIN(33), which
+      // would collide with tank1's pin18 pressure wiring in this mode. Needs a real single-wire
+      // ultrasonic driver (not NewPing) before measuredHeight is meaningful for this mode —
+      // until then it stays at the -99 sentinel set above.
+      readTankPressure1();
+      break;
+  }
 
   //
   // RTC_BATT_VOLT Voltage
@@ -2246,6 +2417,42 @@ void drawLora(int status) {
     // leds[13] = CRGB( 255,0, 0);
   }
   FastLED.show();
+}
+
+// Same red/yellow/green/blue fill-level bucketing already used for septic/voltage-monitor,
+// factored out so the tank/trough LED code below doesn't re-derive it per mode.
+CRGB percentBucketColor(float percent) {
+  if (percent <= 25) return CRGB(255, 0, 0);
+  if (percent <= 50) return CRGB(255, 255, 0);
+  if (percent <= 75) return CRGB(0, 255, 0);
+  return CRGB(0, 0, 255);
+}
+
+// Flow has no natural "fill level" — just whether it's currently moving.
+CRGB flowStatusColor(float flowRate) {
+  return flowRate > 0 ? CRGB(0, 0, 255) : CRGB(255, 0, 0);
+}
+
+// psi -> percent-full, using the same 1psi=0.7m head conversion as readTankPressure1/2().
+float tankPercentFull(float psi, float heightMeters) {
+  if (heightMeters <= 0) return 0;
+  return constrain((psi * 0.7f) / heightMeters * 100.0f, 0.0f, 100.0f);
+}
+
+// The "tank/level tower" — unshifted (cols 1-3) for the three original single-value modes
+// (septic, trough, voltage monitor), shifted (cols 0-2) for every mode that also lights an
+// led4/led9 sensor-slot marker, so the marker never overlaps the tower itself.
+void drawTower(CRGB c, bool shifted) {
+  static const uint8_t kUnshifted[9] = { 1, 2, 3, 6, 7, 8, 11, 12, 13 };
+  static const uint8_t kShifted[9] = { 0, 1, 2, 5, 6, 7, 10, 11, 12 };
+  const uint8_t *idx = shifted ? kShifted : kUnshifted;
+  for (uint8_t i = 0; i < 9; i++) leds[idx[i]] = c;
+}
+
+// "F" icon for flow-family modes.
+void drawFlowSymbol(CRGB c) {
+  static const uint8_t kIdx[6] = { 0, 1, 5, 6, 9, 10 };
+  for (uint8_t i = 0; i < 6; i++) leds[kIdx[i]] = c;
 }
 
 void drawTemperature(uint8_t red, uint8_t green, uint8_t blue) {
@@ -2826,86 +3033,117 @@ void loop() {
         drawTemperature(red, green, blue);
       }
     } else if (displayStatus == SHOW_SCEPTIC) {
-      // scepticAvailablePercentage was dropped from DigitalStablesData (it was purely derived,
-      // never needed on the wire) — recomputed locally here from measuredHeight, same formula.
-      float scepticAvailablePercentage = digitalStablesData.measuredHeight * 100 / MAX_DISTANCE;
-      if (debug) Serial.print("showing scepotic=");
-      if (debug) Serial.print(" percentage: ");
-      if (debug) Serial.println(scepticAvailablePercentage);
-      red = 255;
-      green = 0;
-      blue = 255;
-
       for (int i = 0; i < NUM_LEDS; i++) {
         leds[i] = CRGB(0, 0, 0);
       }
-      if (digitalStablesData.currentFunctionValue == DAFFODIL_SCEPTIC_TANK) {
-        if (scepticAvailablePercentage <= 25) {
-          red = 255;
-          green = 0;
-          blue = 0;
-        } else if (scepticAvailablePercentage > 25 && scepticAvailablePercentage <= 50) {
-          red = 255;
-          green = 255;
-          blue = 0;
-        } else if (scepticAvailablePercentage > 50 && scepticAvailablePercentage <= 75) {
-          red = 0;
-          green = 255;
-          blue = 0;
-        } else if (scepticAvailablePercentage > 75) {
-          red = 0;
-          green = 0;
-          blue = 255;
+
+      uint8_t fn = digitalStablesData.currentFunctionValue;
+
+      if (fn == DAFFODIL_SCEPTIC_TANK || fn == DAFFODIL_WATER_TROUGH || fn == VOLTAGE_MONITOR) {
+        // Original single-value display — untouched. scepticAvailablePercentage was dropped
+        // from DigitalStablesData (purely derived, never needed on the wire) — recomputed here.
+        float scepticAvailablePercentage = digitalStablesData.measuredHeight * 100 / MAX_DISTANCE;
+        red = 255;
+        green = 0;
+        blue = 255;
+        if (fn == DAFFODIL_SCEPTIC_TANK) {
+          if (scepticAvailablePercentage <= 25) {
+            red = 255;
+            green = 0;
+            blue = 0;
+          } else if (scepticAvailablePercentage > 25 && scepticAvailablePercentage <= 50) {
+            red = 255;
+            green = 255;
+            blue = 0;
+          } else if (scepticAvailablePercentage > 50 && scepticAvailablePercentage <= 75) {
+            red = 0;
+            green = 255;
+            blue = 0;
+          } else if (scepticAvailablePercentage > 75) {
+            red = 0;
+            green = 0;
+            blue = 255;
+          }
+        } else if (fn == DAFFODIL_WATER_TROUGH) {
+          if (digitalStablesData.measuredHeight >= (digitalStablesData.maximumScepticHeight - digitalStablesData.troughlevelminimumcm)) {
+            red = 255;
+            green = 0;
+            blue = 0;
+          } else if (digitalStablesData.measuredHeight < (digitalStablesData.maximumScepticHeight - digitalStablesData.troughlevelminimumcm) && digitalStablesData.measuredHeight >= (digitalStablesData.maximumScepticHeight - digitalStablesData.troughlevelmaximumcm)) {
+            red = 0;
+            green = 255;
+            blue = 0;
+          } else if (digitalStablesData.measuredHeight < (digitalStablesData.maximumScepticHeight - digitalStablesData.troughlevelmaximumcm)) {
+            red = 0;
+            green = 0;
+            blue = 255;
+          }
+        } else if (fn == VOLTAGE_MONITOR) {
+          int dsdStoredCount = dataManager.getDSDStoredCount();
+          if ((dsdStoredCount * 100 / MAXIMUM_STORED_RECORDS) <= 25) {
+            red = 255;
+            green = 0;
+            blue = 0;
+          } else if ((dsdStoredCount * 100 / MAXIMUM_STORED_RECORDS) > 25 && (dsdStoredCount * 100 / MAXIMUM_STORED_RECORDS) <= 50) {
+            red = 255;
+            green = 255;
+            blue = 0;
+          } else if ((dsdStoredCount * 100 / MAXIMUM_STORED_RECORDS) > 50 && (dsdStoredCount * 100 / MAXIMUM_STORED_RECORDS) <= 75) {
+            red = 0;
+            green = 255;
+            blue = 0;
+          } else if ((dsdStoredCount * 100 / MAXIMUM_STORED_RECORDS) > 75) {
+            red = 0;
+            green = 0;
+            blue = 255;
+          }
         }
-      } else if (digitalStablesData.currentFunctionValue == DAFFODIL_WATER_TROUGH) {
-        if (digitalStablesData.measuredHeight >= (digitalStablesData.maximumScepticHeight - digitalStablesData.troughlevelminimumcm)) {
-          red = 255;
-          green = 0;
-          blue = 0;
-        } else if (digitalStablesData.measuredHeight < (digitalStablesData.maximumScepticHeight - digitalStablesData.troughlevelminimumcm) && digitalStablesData.measuredHeight >= (digitalStablesData.maximumScepticHeight - digitalStablesData.troughlevelmaximumcm)) {
-          red = 0;
-          green = 255;
-          blue = 0;
-        } else if (digitalStablesData.measuredHeight < (digitalStablesData.maximumScepticHeight - digitalStablesData.troughlevelmaximumcm)) {
-          red = 0;
-          green = 0;
-          blue = 255;
-        }
-      } else if (digitalStablesData.currentFunctionValue == VOLTAGE_MONITOR) {
-        int dsdStoredCount = dataManager.getDSDStoredCount();
-        if ((dsdStoredCount * 100 / MAXIMUM_STORED_RECORDS) <= 25) {
-          red = 255;
-          green = 0;
-          blue = 0;
-        } else if ((dsdStoredCount * 100 / MAXIMUM_STORED_RECORDS) > 25 && (dsdStoredCount * 100 / MAXIMUM_STORED_RECORDS) <= 50) {
-          red = 255;
-          green = 255;
-          blue = 0;
-        } else if ((dsdStoredCount * 100 / MAXIMUM_STORED_RECORDS) > 50 && (dsdStoredCount * 100 / MAXIMUM_STORED_RECORDS) <= 75) {
-          red = 0;
-          green = 255;
-          blue = 0;
-        } else if ((dsdStoredCount * 100 / MAXIMUM_STORED_RECORDS) > 75) {
-          red = 0;
-          green = 0;
-          blue = 255;
+        drawTower(CRGB(red, green, blue), false);
+
+      } else if (fn == FUN_1_FLOW || fn == FUN_2_FLOW || fn == FUN_1_FLOW_1_TANK || fn == FUN_1_TANK || fn == FUN_2_TANK || fn == DAFFODIL_WATER_TROUGH_TANK1) {
+        // Sensor-slot modes: slot1 = pin18/sensor1, slot2 = pin33/sensor2. A single-slot mode
+        // just shows slot1 with led4 lit. A two-slot mode alternates each display cycle between
+        // slot1 (led4) and slot2 (led9) — same toggle-per-cycle pattern as showTemperature.
+        // led4/led9 are always blue: they only mark which slot is currently on screen, the
+        // symbol's own color carries the actual status.
+        bool twoSlots = (fn == FUN_2_FLOW || fn == FUN_2_TANK || fn == FUN_1_FLOW_1_TANK || fn == DAFFODIL_WATER_TROUGH_TANK1);
+        bool slot2Now = twoSlots && showSensorSlot2;
+        if (twoSlots) showSensorSlot2 = !showSensorSlot2;
+
+        if (!slot2Now) {
+          // slot 1
+          if (fn == FUN_1_FLOW || fn == FUN_2_FLOW || fn == FUN_1_FLOW_1_TANK) {
+            drawFlowSymbol(flowStatusColor(digitalStablesData.flowRate));
+          } else {
+            // FUN_1_TANK, FUN_2_TANK, DAFFODIL_WATER_TROUGH_TANK1 — slot1 is always tank1
+            // (ch1/pin18); for the trough+tank1 mode that matches the mode's own name.
+            drawTower(percentBucketColor(tankPercentFull(digitalStablesData.tank1PressurePsi, digitalStablesData.tank1HeightMeters)), true);
+          }
+          leds[4] = CRGB(0, 0, 255);
+        } else {
+          // slot 2
+          if (fn == FUN_2_FLOW) {
+            drawFlowSymbol(flowStatusColor(digitalStablesData.flowRate2));
+          } else if (fn == FUN_1_FLOW_1_TANK) {
+            drawTower(percentBucketColor(tankPercentFull(digitalStablesData.tank2PressurePsi, digitalStablesData.tank2HeightMeters)), true);
+          } else if (fn == FUN_2_TANK) {
+            drawTower(percentBucketColor(tankPercentFull(digitalStablesData.tank2PressurePsi, digitalStablesData.tank2HeightMeters)), true);
+          } else if (fn == DAFFODIL_WATER_TROUGH_TANK1) {
+            // slot2 here is the trough (ultrasonic) — see readSensorData() for why
+            // measuredHeight is still -99 until the single-wire ultrasonic driver lands.
+            CRGB c;
+            if (digitalStablesData.measuredHeight >= (digitalStablesData.maximumScepticHeight - digitalStablesData.troughlevelminimumcm)) {
+              c = CRGB(255, 0, 0);
+            } else if (digitalStablesData.measuredHeight >= (digitalStablesData.maximumScepticHeight - digitalStablesData.troughlevelmaximumcm)) {
+              c = CRGB(0, 255, 0);
+            } else {
+              c = CRGB(0, 0, 255);
+            }
+            drawTower(c, true);
+          }
+          leds[9] = CRGB(0, 0, 255);
         }
       }
-      //            for (int i = 0; i < numLedsToLight; i++)
-      //            {
-      //              leds[i] = CRGB(red, green, blue);
-      //
-      //            }
-
-      leds[1] = CRGB(red, green, blue);
-      leds[2] = CRGB(red, green, blue);
-      leds[3] = CRGB(red, green, blue);
-      leds[6] = CRGB(red, green, blue);
-      leds[7] = CRGB(red, green, blue);
-      leds[8] = CRGB(red, green, blue);
-      leds[11] = CRGB(red, green, blue);
-      leds[12] = CRGB(red, green, blue);
-      leds[13] = CRGB(red, green, blue);
 
       FastLED.show();
     } else if (displayStatus == SHOW_INTERNET_STATUS) {
@@ -3272,7 +3510,7 @@ void loop() {
       Serial.flush();
     } else if (command.startsWith("printCSWData")) {
       Serial.println("rawCSWValue=" + String(rawCSWValue));
-      Serial.println("cswV50Voltage=5.0 (fixed, Build 7)");
+      Serial.println("cswV50Voltage=" + String(digitalStablesData.v50Voltage) + " (normalized to 5.445 via factor, not fixed)");
       Serial.println("factor=" + String(factor));
       Serial.println("cswOutput=" + String(cswOutput));
       String functionname = "";
@@ -3296,6 +3534,8 @@ void loop() {
         functionname = "DAFFODIL_LIGHT_DETECTOR";
       } else if (digitalStablesData.currentFunctionValue == VOLTAGE_MONITOR) {
         functionname = "VOLTAGE_MONITOR";
+      } else if (digitalStablesData.currentFunctionValue == DAFFODIL_WATER_TROUGH_TANK1) {
+        functionname = "DAFFODIL_WATER_TROUGH_TANK1";
       }
       Serial.println("Current Function Value: " + functionname);
       Serial.println("Ok-printCSWData");
@@ -3310,7 +3550,7 @@ void loop() {
       timeManager.printTimeToSerial(currentTimerRecord);
       Serial.println("");
       Serial.println("rawCSWValue=" + String(rawCSWValue));
-      Serial.println("cswV50Voltage=5.0 (fixed, Build 7)");
+      Serial.println("cswV50Voltage=" + String(digitalStablesData.v50Voltage) + " (normalized to 5.445 via factor, not fixed)");
       Serial.println("factor=" + String(factor));
       Serial.println("cswOutput=" + String(cswOutput));
       Serial.println("");
@@ -3338,6 +3578,8 @@ void loop() {
         functionname = "DAFFODIL_LIGHT_DETECTOR";
       } else if (digitalStablesData.currentFunctionValue == VOLTAGE_MONITOR) {
         functionname = "VOLTAGE_MONITOR";
+      } else if (digitalStablesData.currentFunctionValue == DAFFODIL_WATER_TROUGH_TANK1) {
+        functionname = "DAFFODIL_WATER_TROUGH_TANK1";
       }
       Serial.println("Current Function Value: " + functionname);
       Serial.println("");
