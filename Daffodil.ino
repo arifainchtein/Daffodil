@@ -196,7 +196,6 @@ float minimumLEDVoltage = 3.18;       // Turn off LEDs below this — warning be
 uint8_t dimLedBrightness = 20;        // Minimum brightness when LoRa TX budget is too low for full power
 uint8_t nightLedBrightness = 30;      // Minimum LED brightness (night / zero efficiency)
 float luxNightThreshold = 30.0;       // Lux below this is considered actual darkness → cap at nightLedBrightness
-float luxCloudyThreshold = 10000.0;  // Lux below this (but above night) means cloudy — used when weather data is stale
 float v50iCloudyThreshold = 3.5;     // V50_I below this during solar hours means the panel isn't harvesting enough — cloudy. Lowered 2026-07-24: field data (TopTank, clear midday sun, actively charging) showed V50_I sitting at 4.09-4.47V — the old 4.5V threshold was false-triggering CLOUDY on every wake. Still wants validation against real overcast-day readings.
 float panelCurrentCloudyThreshold_mA = 15.0;  // Wally 0x45 panelCurrent below this during solar hours means cloudy. Lowered 2026-07-24: field data (TopTank, clear midday sun) showed panelCurrent as low as 22-80mA during normal charging — the old 60mA threshold was false-triggering CLOUDY. Still wants validation against real overcast-day readings.
 float minimumWifiVoltage = 3.28;      // Turn off WiFi first to preserve power for LoRa
@@ -1790,15 +1789,14 @@ void goToSleep() {
 
   // 1. Calculate sleep timing.
   //    PowerManager returns 60 s whenever theoretical solar efficiency > 0.3 (sun is up).
-  //    On heavily overcast days this is wrong — actual lux can be 4000 while efficiency
-  //    reads 0.4 from the geometric model, and V50_I (real panel output) can be below
-  //    v50iCloudyThreshold too. When any of these say cloudy, apply the same night formula
-  //    so sleep time reflects how dark/underpowered it actually is.
+  //    On heavily overcast days this is wrong — V50_I (real panel output) or panelCurrent
+  //    can be below their cloudy thresholds despite the geometric efficiency model saying
+  //    sun is up. When either says cloudy, apply the same night formula so sleep time
+  //    reflects how dark/underpowered it actually is.
   long seconds_sleep = powerManager->calculateOptimalSleepTime(currentTimerRecord);
-  bool _lowLightForSleep = digitalStablesData.lux >= 0 && digitalStablesData.lux < luxCloudyThreshold;
   bool _lowV50IForSleep = foundADS && digitalStablesData.v50Voltage > 0 && digitalStablesData.v50Voltage < v50iCloudyThreshold;
   bool _lowPanelCurrentForSleep = foundINA219Solar && digitalStablesData.panelCurrent >= 0 && digitalStablesData.panelCurrent < panelCurrentCloudyThreshold_mA;
-  if (usingSolarPower && (_lowLightForSleep || _lowV50IForSleep || _lowPanelCurrentForSleep)) {
+  if (usingSolarPower && (_lowV50IForSleep || _lowPanelCurrentForSleep)) {
     DailySolarData _dsd = solarInfo->getDailySolarData(currentTimerRecord);
     int _currentMin  = currentTimerRecord.hour * 60 + currentTimerRecord.minute;
     int _toSunrise   = (int)_dsd.sunrise - _currentMin;
@@ -2774,9 +2772,6 @@ void loop() {
           FastLED.setBrightness(br);
         }
         {
-          bool luxSaysCloudy = foundBH1750
-                             && digitalStablesData.lux >= luxNightThreshold
-                             && digitalStablesData.lux < luxCloudyThreshold;
           // We're already inside the "solar should be up" branch (efficiency > minimumEfficiencyForLed),
           // so a depressed V50_I here means the panel isn't harvesting despite theoretical daylight —
           // a direct power-harvest reading, unlike lux which only measures ambient brightness.
@@ -2794,7 +2789,14 @@ void loop() {
             WeatherForecast* forecasts = weatherForecastManager->getForecasts();
             forecastSaysCloudy = (forecasts != nullptr) && (forecasts[0].cloudiness >= cloudyThreshold);
           }
-          digitalStablesData.operatingStatus = (luxSaysCloudy || v50iSaysCloudy || panelCurrentSaysCloudy || forecastSaysCloudy)
+          // Forecast is a prediction, not a measurement — it must never override direct
+          // evidence that the panel is actually harvesting right now. If either live sensor
+          // confirms real sun (current/voltage comfortably above their cloudy thresholds),
+          // ignore the forecast entirely.
+          bool panelCurrentConfirmsSun = foundINA219Solar && digitalStablesData.panelCurrent >= panelCurrentCloudyThreshold_mA;
+          bool v50iConfirmsSun = foundADS && digitalStablesData.v50Voltage >= v50iCloudyThreshold;
+          bool liveConfirmsSun = panelCurrentConfirmsSun || v50iConfirmsSun;
+          digitalStablesData.operatingStatus = (v50iSaysCloudy || panelCurrentSaysCloudy || (forecastSaysCloudy && !liveConfirmsSun))
                                                ? OPERATING_STATUS_CLOUDY : OPERATING_STATUS_FULL_MODE;
           // Update bit 1 (weather freshness) — all other bits set once in setup.
           if (secondsSinceLastWeatherData < 1860)
@@ -3487,8 +3489,7 @@ void loop() {
                      + "  minForLed=" + String(digitalStablesData.minimumEfficiencyForLed) + "%"
                      + "  minForWifi=" + String(digitalStablesData.minimumEfficiencyForWifi) + "%");
       Serial.println("lux=" + String(digitalStablesData.lux, 1)
-                     + "  luxNight<" + String(luxNightThreshold)
-                     + "  luxCloudy<" + String(luxCloudyThreshold));
+                     + "  luxNight<" + String(luxNightThreshold));
 
       // Battery thresholds
       Serial.println("sleepingVoltage=" + String(sleepingVoltage)
