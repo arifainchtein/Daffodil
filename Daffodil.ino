@@ -84,7 +84,7 @@ String ipAddress = "";
 boolean initiatedWifi = false;
 // #define address 0x40
 SHTSensor sht;
-bool debug = false;
+bool debug = true;
 DataManager dataManager(Serial, LittleFS);
 
 HourlySolarPowerData hourlySolarPowerData;
@@ -1792,11 +1792,14 @@ void goToSleep() {
   //    On heavily overcast days this is wrong — V50_I (real panel output) or panelCurrent
   //    can be below their cloudy thresholds despite the geometric efficiency model saying
   //    sun is up. When either says cloudy, apply the same night formula so sleep time
-  //    reflects how dark/underpowered it actually is.
+  //    reflects how dark/underpowered it actually is. But if the battery itself shows a net
+  //    charging current, that's ground truth that the panel IS delivering power — trust it
+  //    over panelCurrent/V50_I, which can misread on a bench rig with no real panel attached.
   long seconds_sleep = powerManager->calculateOptimalSleepTime(currentTimerRecord);
   bool _lowV50IForSleep = foundADS && digitalStablesData.v50Voltage > 0 && digitalStablesData.v50Voltage < v50iCloudyThreshold;
   bool _lowPanelCurrentForSleep = foundINA219Solar && digitalStablesData.panelCurrent >= 0 && digitalStablesData.panelCurrent < panelCurrentCloudyThreshold_mA;
-  if (usingSolarPower && (_lowV50IForSleep || _lowPanelCurrentForSleep)) {
+  bool _batteryChargingForSleep = foundINA219 && digitalStablesData.batteryCurrent < 0;
+  if (usingSolarPower && (_lowV50IForSleep || _lowPanelCurrentForSleep) && !_batteryChargingForSleep) {
     DailySolarData _dsd = solarInfo->getDailySolarData(currentTimerRecord);
     int _currentMin  = currentTimerRecord.hour * 60 + currentTimerRecord.minute;
     int _toSunrise   = (int)_dsd.sunrise - _currentMin;
@@ -2796,8 +2799,16 @@ void loop() {
           bool panelCurrentConfirmsSun = foundINA219Solar && digitalStablesData.panelCurrent >= panelCurrentCloudyThreshold_mA;
           bool v50iConfirmsSun = foundADS && digitalStablesData.v50Voltage >= v50iCloudyThreshold;
           bool liveConfirmsSun = panelCurrentConfirmsSun || v50iConfirmsSun;
-          digitalStablesData.operatingStatus = (v50iSaysCloudy || panelCurrentSaysCloudy || (forecastSaysCloudy && !liveConfirmsSun))
-                                               ? OPERATING_STATUS_CLOUDY : OPERATING_STATUS_FULL_MODE;
+          // Strongest signal of all: is the battery actually receiving net charge right now.
+          // panelCurrent/V50_I measure the panel side and can misread (no panel wired up on a
+          // bench rig, charger-side leakage, etc.); batteryCurrent < 0 (net current flowing
+          // into the battery, per its own sign convention — see the "positive = discharging"
+          // comment above) is ground truth that power IS reaching the battery, so it overrides
+          // v50i/panelCurrent/forecast entirely and forces FULL_MODE.
+          bool batteryChargingConfirmsSun = foundINA219 && digitalStablesData.batteryCurrent < 0;
+          bool cloudy = (v50iSaysCloudy || panelCurrentSaysCloudy || (forecastSaysCloudy && !liveConfirmsSun))
+                        && !batteryChargingConfirmsSun;
+          digitalStablesData.operatingStatus = cloudy ? OPERATING_STATUS_CLOUDY : OPERATING_STATUS_FULL_MODE;
           // Update bit 1 (weather freshness) — all other bits set once in setup.
           if (secondsSinceLastWeatherData < 1860)
             digitalStablesData.opMode |=  0x02;
