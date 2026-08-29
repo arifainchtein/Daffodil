@@ -1394,7 +1394,7 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
   // 0010  0    | 7581 @ 4.392       | FUN_2_TANK
   // 1010  0    | 7379 @ 4.393       | DAFFODIL_SCEPTIC_TANK
   // 0110  0    | 7174 @ 4.391       | DAFFODIL_WATER_TROUGH
-  // 1110  0    | 6965 @ 4.398       | DAFFODIL_WATER_TROUGH
+  // 1110  0    | 6965 @ 4.398       | DAFFODIL_WATER_TROUGH_TANK1
   // 0001,1001,0101,1101  0 (merged) | 6689-6012 @ ~4.39 | (unassigned)
   // 0011  0    | 5800 @ 4.394       | DAFFODIL_WATER_TROUGH
   // 1011,0111,1111  0 (merged)      | 5558-5060 @ ~4.39 | (unassigned)
@@ -1405,7 +1405,7 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
   // 0010  1    | 3737 @ 4.399       | FUN_2_TANK
   // 1010  1    | 3445 @ 4.400       | DAFFODIL_SCEPTIC_TANK
   // 0110  1    | 3147 @ 4.400       | DAFFODIL_WATER_TROUGH
-  // 1110  1    | 2841 @ 4.400       | DAFFODIL_WATER_TROUGH
+  // 1110  1    | 2841 @ 4.400       | DAFFODIL_WATER_TROUGH_TANK1
   // 0001,1001,0101,1101  1 (merged) | 2437-1433 @ ~4.40 | (unassigned)
   // 0011  1    | 1116 @ 4.403       | DAFFODIL_WATER_TROUGH
   // 1011,0111,1111  1 (merged)      | 753,-3,-3 @ ~4.40 | (unassigned, saturates near 0)
@@ -1450,8 +1450,9 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
     digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
     usingSolarPower = false;
   } else if (cswOutput >= 7766 && cswOutput < 8044) {
-    // 11100, solar off — DAFFODIL_WATER_TROUGH
-    digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
+    // 11100, solar off — DAFFODIL_WATER_TROUGH_TANK1 (matches Ari's original 1110 assignment;
+    // was a 3rd redundant DAFFODIL_WATER_TROUGH slot before this fix — see chat history)
+    digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH_TANK1;
     usingSolarPower = false;
   } else if (cswOutput >= 6721 && cswOutput < 7766) {
     // 0001/1001/0101/1101, solar off — unassigned (merged: none of these four carry a
@@ -1505,8 +1506,8 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
     digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
     usingSolarPower = true;
   } else if (cswOutput >= 2997 && cswOutput < 3402) {
-    // 11101, solar on — DAFFODIL_WATER_TROUGH
-    digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
+    // 11101, solar on — DAFFODIL_WATER_TROUGH_TANK1 (matches the 11100/solar-off mirror above)
+    digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH_TANK1;
     usingSolarPower = true;
   } else if (cswOutput >= 1447 && cswOutput < 2997) {
     // 0001/1001/0101/1101, solar on — unassigned (merged, same reasoning as the solar-off gaps)
@@ -1716,14 +1717,25 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
 
   boolean isSleepMode = false;
   if (usingSolarPower && hourlySolarPowerData.efficiency * 100 < digitalStablesData.minimumEfficiencyForLed) {
-    isSleepMode = true;
-    digitalStablesData.operatingStatus = OPERATING_STATUS_SLEEP;
-    if (debug) Serial.print("setting sleepmode in setup because of efficiency=");
-    if (debug) Serial.println(hourlySolarPowerData.efficiency);
+    // The geometric efficiency model is time-of-day only — it has no idea whether the panel
+    // is actually delivering power right now. readSensorData() hasn't run yet at this point
+    // in setup(), so digitalStablesData.panelCurrent/batteryCurrent aren't populated; read the
+    // sensor objects directly (they were begin()'d earlier in setup()) for the same live-signal
+    // veto the loop's CLOUDY logic uses, so a real panel/charging battery isn't overridden by
+    // a stale theoretical estimate.
+    bool _quickPanelConfirmsSun = foundINA219Solar && solarIna219.getCurrent_mA() >= panelCurrentCloudyThreshold_mA;
+    bool _quickV50iConfirmsSun = foundADS && digitalStablesData.v50Voltage >= v50iCloudyThreshold;
+    bool _quickBatteryConfirmsCharging = foundINA219 && ina219.getCurrent_mA() < 0;
+    if (!(_quickPanelConfirmsSun || _quickV50iConfirmsSun || _quickBatteryConfirmsCharging)) {
+      isSleepMode = true;
+      digitalStablesData.operatingStatus = OPERATING_STATUS_SLEEP;
+      if (debug) Serial.print("setting sleepmode in setup because of efficiency=");
+      if (debug) Serial.println(hourlySolarPowerData.efficiency);
 
-    digitalStablesData.asyncdata = 2;
-    if (dataManager.getDSDStoredCount() < MAXIMUM_STORED_RECORDS) {
-      dataManager.storeDSDData(digitalStablesData);
+      digitalStablesData.asyncdata = 2;
+      if (dataManager.getDSDStoredCount() < MAXIMUM_STORED_RECORDS) {
+        dataManager.storeDSDData(digitalStablesData);
+      }
     }
   }
   // Protect battery from over-discharge (only when on solar/battery, not wall power).
