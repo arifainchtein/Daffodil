@@ -218,6 +218,7 @@ DaffodilCommandData daffodilCommandData;
 float rawCSWValue;
 float factor = 1;
 int16_t cswOutput;
+bool noBatteryDetected = false;  // set once in setup(); which CSW threshold table got used
 
 PCF8563TimeManager timeManager(Serial);
 GeneralFunctions generalFunctions;
@@ -1369,159 +1370,318 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
   //
   // DIP switch bit patterns — bits 1-4 = switches bypassing R3/R4/R10/R11, 5th = solar
   // (bypasses R13). Function assignment is identical for both solar states of a given 4-bit
-  // pattern. Thresholds below come from a full 32-position empirical sweep (2026-08-27, fresh
-  // battery, DaffodilCSWTest sketch, 8x-averaged reads, normalized to K=5.00 via each reading's
-  // own v50Voltage).
+  // pattern, and identical whether a battery is present or not.
   //
-  // This REPLACES a 2026-08-26 sweep done with a different (since-discovered-dead) battery. That
-  // one showed real, reproducible quirks — switch 1 or 2 alone with solar reading backwards from
-  // the simple bypass model — that made FUN_1_FLOW and FUN_1_FLOW_1_TANK (solar on) only ~120
-  // raw counts apart. This fresh-battery sweep is completely clean and monotonic with NO such
-  // quirks — every position landed exactly where the simple bypass model predicts, in normal
-  // bit-pattern order. Conclusion: that quirk was an artifact of the old, failing battery's
-  // loading behavior, not a board defect. However: swapping battery units also shifted the
-  // *absolute* values substantially and non-uniformly (e.g. 00000 shifted +25%, 00001 shifted
-  // +50% between the two batteries) — current draw and static resistance were both ruled out as
-  // the cause, and it wasn't explained before moving on. If positions drift off-threshold again
-  // after a battery swap in the future, don't assume these numbers still hold — re-sweep with
-  // DaffodilCSWTest rather than trying to patch the existing thresholds.
-  //
-  // 1234 solar | raw@v50            | function
-  // 0000  0    | 8326 @ 4.390       | FUN_1_FLOW
-  // 1000  0    | 8140 @ 4.394       | FUN_2_FLOW
-  // 0100  0    | 7950 @ 4.393       | FUN_1_FLOW_1_TANK
-  // 1100  0    | 7758 @ 4.395       | FUN_1_TANK
-  // 0010  0    | 7581 @ 4.392       | FUN_2_TANK
-  // 1010  0    | 7379 @ 4.393       | DAFFODIL_SCEPTIC_TANK
-  // 0110  0    | 7174 @ 4.391       | DAFFODIL_WATER_TROUGH
-  // 1110  0    | 6965 @ 4.398       | DAFFODIL_WATER_TROUGH_TANK1
-  // 0001,1001,0101,1101  0 (merged) | 6689-6012 @ ~4.39 | (unassigned)
-  // 0011  0    | 5800 @ 4.394       | DAFFODIL_WATER_TROUGH
-  // 1011,0111,1111  0 (merged)      | 5558-5060 @ ~4.39 | (unassigned)
-  // 0000  1    | 4806 @ 4.392       | FUN_1_FLOW
-  // 1000  1    | 4541 @ 4.390       | FUN_2_FLOW
-  // 0100  1    | 4271 @ 4.392       | FUN_1_FLOW_1_TANK
-  // 1100  1    | 3993 @ 4.403       | FUN_1_TANK
-  // 0010  1    | 3737 @ 4.399       | FUN_2_TANK
-  // 1010  1    | 3445 @ 4.400       | DAFFODIL_SCEPTIC_TANK
-  // 0110  1    | 3147 @ 4.400       | DAFFODIL_WATER_TROUGH
-  // 1110  1    | 2841 @ 4.400       | DAFFODIL_WATER_TROUGH_TANK1
-  // 0001,1001,0101,1101  1 (merged) | 2437-1433 @ ~4.40 | (unassigned)
-  // 0011  1    | 1116 @ 4.403       | DAFFODIL_WATER_TROUGH
-  // 1011,0111,1111  1 (merged)      | 753,-3,-3 @ ~4.40 | (unassigned, saturates near 0)
-  if (cswOutput >= 9373) {
-    // 00000, solar off — FUN_1_FLOW
-    digitalStablesData.currentFunctionValue = FUN_1_FLOW;
-    attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
-    secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
-    usingSolarPower = false;
-  } else if (cswOutput >= 9156 && cswOutput < 9373) {
-    // 10000, solar off — FUN_2_FLOW
-    digitalStablesData.currentFunctionValue = FUN_2_FLOW;
-    attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
-    attachInterrupt(SENSOR_INPUT_2, pulseCounter2, FALLING);
-    secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
-    secretManager.readFlow2Name().toCharArray(digitalStablesData.sensor2name, sizeof(digitalStablesData.sensor2name));
-    usingSolarPower = false;
-  } else if (cswOutput >= 8937 && cswOutput < 9156) {
-    // 01000, solar off — FUN_1_FLOW_1_TANK
-    digitalStablesData.currentFunctionValue = FUN_1_FLOW_1_TANK;
-    attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
-    secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
-    secretManager.readTank2Name().toCharArray(digitalStablesData.sensor2name, sizeof(digitalStablesData.sensor2name));
-    usingSolarPower = false;
-  } else if (cswOutput >= 8728 && cswOutput < 8937) {
-    // 11000, solar off — FUN_1_TANK
-    digitalStablesData.currentFunctionValue = FUN_1_TANK;
-    secretManager.readTank1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
-    usingSolarPower = false;
-  } else if (cswOutput >= 8515 && cswOutput < 8728) {
-    // 00100, solar off — FUN_2_TANK
-    digitalStablesData.currentFunctionValue = FUN_2_TANK;
-    secretManager.readTank1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
-    secretManager.readTank2Name().toCharArray(digitalStablesData.sensor2name, sizeof(digitalStablesData.sensor2name));
-    usingSolarPower = false;
-  } else if (cswOutput >= 8284 && cswOutput < 8515) {
-    // 10100, solar off — DAFFODIL_SCEPTIC_TANK
-    digitalStablesData.currentFunctionValue = DAFFODIL_SCEPTIC_TANK;
-    usingSolarPower = false;
-  } else if (cswOutput >= 8044 && cswOutput < 8284) {
-    // 01100, solar off — DAFFODIL_WATER_TROUGH
-    digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
-    usingSolarPower = false;
-  } else if (cswOutput >= 7766 && cswOutput < 8044) {
-    // 11100, solar off — DAFFODIL_WATER_TROUGH_TANK1 (matches Ari's original 1110 assignment;
-    // was a 3rd redundant DAFFODIL_WATER_TROUGH slot before this fix — see chat history)
-    digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH_TANK1;
-    usingSolarPower = false;
-  } else if (cswOutput >= 6721 && cswOutput < 7766) {
-    // 0001/1001/0101/1101, solar off — unassigned (merged: none of these four carry a
-    // function, so one wide band is as safe as four narrow ones and far simpler)
-    usingSolarPower = false;
-  } else if (cswOutput >= 6464 && cswOutput < 6721) {
-    // 00110, solar off — DAFFODIL_WATER_TROUGH
-    digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
-    usingSolarPower = false;
-  } else if (cswOutput >= 5617 && cswOutput < 6464) {
-    // 1011/0111/1111, solar off — unassigned (merged, same reasoning as above)
-    usingSolarPower = false;
-  } else if (cswOutput >= 5322 && cswOutput < 5617) {
-    // 00001, solar on — FUN_1_FLOW
-    digitalStablesData.currentFunctionValue = FUN_1_FLOW;
-    attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
-    secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
-    usingSolarPower = true;
-  } else if (cswOutput >= 5017 && cswOutput < 5322) {
-    // 10001, solar on — FUN_2_FLOW
-    digitalStablesData.currentFunctionValue = FUN_2_FLOW;
-    attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
-    attachInterrupt(SENSOR_INPUT_2, pulseCounter2, FALLING);
-    secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
-    secretManager.readFlow2Name().toCharArray(digitalStablesData.sensor2name, sizeof(digitalStablesData.sensor2name));
-    usingSolarPower = true;
-  } else if (cswOutput >= 4698 && cswOutput < 5017) {
-    // 01001, solar on — FUN_1_FLOW_1_TANK
-    digitalStablesData.currentFunctionValue = FUN_1_FLOW_1_TANK;
-    attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
-    secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
-    secretManager.readTank2Name().toCharArray(digitalStablesData.sensor2name, sizeof(digitalStablesData.sensor2name));
-    usingSolarPower = true;
-  } else if (cswOutput >= 4391 && cswOutput < 4698) {
-    // 11001, solar on — FUN_1_TANK
-    digitalStablesData.currentFunctionValue = FUN_1_TANK;
-    secretManager.readTank1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
-    usingSolarPower = true;
-  } else if (cswOutput >= 4081 && cswOutput < 4391) {
-    // 00101, solar on — FUN_2_TANK
-    digitalStablesData.currentFunctionValue = FUN_2_TANK;
-    secretManager.readTank1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
-    secretManager.readTank2Name().toCharArray(digitalStablesData.sensor2name, sizeof(digitalStablesData.sensor2name));
-    usingSolarPower = true;
-  } else if (cswOutput >= 3745 && cswOutput < 4081) {
-    // 10101, solar on — DAFFODIL_SCEPTIC_TANK
-    digitalStablesData.currentFunctionValue = DAFFODIL_SCEPTIC_TANK;
-    usingSolarPower = true;
-  } else if (cswOutput >= 3402 && cswOutput < 3745) {
-    // 01101, solar on — DAFFODIL_WATER_TROUGH
-    digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
-    usingSolarPower = true;
-  } else if (cswOutput >= 2997 && cswOutput < 3402) {
-    // 11101, solar on — DAFFODIL_WATER_TROUGH_TANK1 (matches the 11100/solar-off mirror above)
-    digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH_TANK1;
-    usingSolarPower = true;
-  } else if (cswOutput >= 1447 && cswOutput < 2997) {
-    // 0001/1001/0101/1101, solar on — unassigned (merged, same reasoning as the solar-off gaps)
-    usingSolarPower = true;
-  } else if (cswOutput >= 1061 && cswOutput < 1447) {
-    // 00111, solar on — DAFFODIL_WATER_TROUGH
-    digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
-    usingSolarPower = true;
-  } else if (cswOutput >= 0 && cswOutput < 1061) {
-    // 10111/01111/11111, solar on — unassigned, saturates near 0 raw
-    usingSolarPower = true;
-  } else if (cswOutput < 0) {
-    digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
-    usingSolarPower = true;
+  // TWO separate threshold tables, chosen by battery presence at boot. Confirmed 2026-08-27:
+  // the same switch position reads a substantially different raw value depending on which
+  // battery unit (if any) is attached — not explained by current draw or resistor tolerance,
+  // just empirically real and reproducible per battery-presence state. One fixed table cannot
+  // cover both conditions; re-sweep with DaffodilCSWTest (battery in the state you actually
+  // care about) rather than patching these numbers if positions drift again in the future.
+  noBatteryDetected = (quickReadBusVoltage() < 1.0);
+  if (debug) Serial.print("noBatteryDetected=");
+  if (debug) Serial.println(noBatteryDetected);
+
+  if (!noBatteryDetected) {
+    // --- Battery-attached table: full 32-position sweep, 2026-08-27, fresh/healthy battery,
+    // DaffodilCSWTest sketch, 8x-averaged reads. Compares rawCSWValue DIRECTLY — NOT cswOutput
+    // (the v50Voltage-corrected value) — unlike the no-battery table below. Confirmed
+    // 2026-08-29 on the BenchTest rig: rawCSWValue matched this calibration's raw value for
+    // 10000 almost exactly (8137 vs 8140) even though v50Voltage at that boot was ~4.60V versus
+    // ~4.39V during calibration (a real ~5% difference, likely a different USB port/PC supplying
+    // V50) — proving v50Voltage does NOT reliably track whatever actually feeds the switch
+    // ladder once a battery is in the picture, and "correcting" by it does more harm than good
+    // here. The no-battery table below is the opposite case: v50-correction there has
+    // consistently matched real hardware, so it's kept for that path.
+    //
+    // 1234 solar | raw   | function
+    // 0000  0    | 8326  | FUN_1_FLOW
+    // 1000  0    | 8140  | FUN_2_FLOW
+    // 0100  0    | 7950  | FUN_1_FLOW_1_TANK
+    // 1100  0    | 7758  | FUN_1_TANK
+    // 0010  0    | 7581  | FUN_2_TANK
+    // 1010  0    | 7379  | DAFFODIL_SCEPTIC_TANK
+    // 0110  0    | 7174  | DAFFODIL_WATER_TROUGH
+    // 1110  0    | 6965  | DAFFODIL_WATER_TROUGH_TANK1
+    // 0001,1001,0101,1101  0 (merged) | 6689-6012 | (unassigned)
+    // 0011  0    | 5800  | DAFFODIL_WATER_TROUGH
+    // 1011,0111,1111  0 (merged)      | 5558-5060 | (unassigned)
+    // 0000  1    | 4806  | FUN_1_FLOW
+    // 1000  1    | 4541  | FUN_2_FLOW
+    // 0100  1    | 4271  | FUN_1_FLOW_1_TANK
+    // 1100  1    | 3993  | FUN_1_TANK
+    // 0010  1    | 3737  | FUN_2_TANK
+    // 1010  1    | 3445  | DAFFODIL_SCEPTIC_TANK
+    // 0110  1    | 3147  | DAFFODIL_WATER_TROUGH
+    // 1110  1    | 2841  | DAFFODIL_WATER_TROUGH_TANK1
+    // 0001,1001,0101,1101  1 (merged) | 2437-1433 | (unassigned)
+    // 0011  1    | 1116  | DAFFODIL_WATER_TROUGH
+    // 1011,0111,1111  1 (merged)      | 753,-3,-3 | (unassigned, saturates near 0)
+    if (rawCSWValue >= 8233) {
+      // 00000, solar off — FUN_1_FLOW
+      digitalStablesData.currentFunctionValue = FUN_1_FLOW;
+      attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
+      secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
+      usingSolarPower = false;
+    } else if (rawCSWValue >= 8045 && rawCSWValue < 8233) {
+      // 10000, solar off — FUN_2_FLOW
+      digitalStablesData.currentFunctionValue = FUN_2_FLOW;
+      attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
+      attachInterrupt(SENSOR_INPUT_2, pulseCounter2, FALLING);
+      secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
+      secretManager.readFlow2Name().toCharArray(digitalStablesData.sensor2name, sizeof(digitalStablesData.sensor2name));
+      usingSolarPower = false;
+    } else if (rawCSWValue >= 7854 && rawCSWValue < 8045) {
+      // 01000, solar off — FUN_1_FLOW_1_TANK
+      digitalStablesData.currentFunctionValue = FUN_1_FLOW_1_TANK;
+      attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
+      secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
+      secretManager.readTank2Name().toCharArray(digitalStablesData.sensor2name, sizeof(digitalStablesData.sensor2name));
+      usingSolarPower = false;
+    } else if (rawCSWValue >= 7670 && rawCSWValue < 7854) {
+      // 11000, solar off — FUN_1_TANK
+      digitalStablesData.currentFunctionValue = FUN_1_TANK;
+      secretManager.readTank1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
+      usingSolarPower = false;
+    } else if (rawCSWValue >= 7480 && rawCSWValue < 7670) {
+      // 00100, solar off — FUN_2_TANK
+      digitalStablesData.currentFunctionValue = FUN_2_TANK;
+      secretManager.readTank1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
+      secretManager.readTank2Name().toCharArray(digitalStablesData.sensor2name, sizeof(digitalStablesData.sensor2name));
+      usingSolarPower = false;
+    } else if (rawCSWValue >= 7276 && rawCSWValue < 7480) {
+      // 10100, solar off — DAFFODIL_SCEPTIC_TANK
+      digitalStablesData.currentFunctionValue = DAFFODIL_SCEPTIC_TANK;
+      usingSolarPower = false;
+    } else if (rawCSWValue >= 7070 && rawCSWValue < 7276) {
+      // 01100, solar off — DAFFODIL_WATER_TROUGH
+      digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
+      usingSolarPower = false;
+    } else if (rawCSWValue >= 6827 && rawCSWValue < 7070) {
+      // 11100, solar off — DAFFODIL_WATER_TROUGH_TANK1 (matches Ari's original 1110 assignment;
+      // was a 3rd redundant DAFFODIL_WATER_TROUGH slot before this fix — see chat history)
+      digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH_TANK1;
+      usingSolarPower = false;
+    } else if (rawCSWValue >= 5906 && rawCSWValue < 6827) {
+      // 0001/1001/0101/1101, solar off — unassigned (merged: none of these four carry a
+      // function, so one wide band is as safe as four narrow ones and far simpler)
+      usingSolarPower = false;
+    } else if (rawCSWValue >= 5679 && rawCSWValue < 5906) {
+      // 00110, solar off — DAFFODIL_WATER_TROUGH
+      digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
+      usingSolarPower = false;
+    } else if (rawCSWValue >= 4933 && rawCSWValue < 5679) {
+      // 1011/0111/1111, solar off — unassigned (merged, same reasoning as above)
+      usingSolarPower = false;
+    } else if (rawCSWValue >= 4674 && rawCSWValue < 4933) {
+      // 00001, solar on — FUN_1_FLOW
+      digitalStablesData.currentFunctionValue = FUN_1_FLOW;
+      attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
+      secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
+      usingSolarPower = true;
+    } else if (rawCSWValue >= 4406 && rawCSWValue < 4674) {
+      // 10001, solar on — FUN_2_FLOW
+      digitalStablesData.currentFunctionValue = FUN_2_FLOW;
+      attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
+      attachInterrupt(SENSOR_INPUT_2, pulseCounter2, FALLING);
+      secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
+      secretManager.readFlow2Name().toCharArray(digitalStablesData.sensor2name, sizeof(digitalStablesData.sensor2name));
+      usingSolarPower = true;
+    } else if (rawCSWValue >= 4132 && rawCSWValue < 4406) {
+      // 01001, solar on — FUN_1_FLOW_1_TANK
+      digitalStablesData.currentFunctionValue = FUN_1_FLOW_1_TANK;
+      attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
+      secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
+      secretManager.readTank2Name().toCharArray(digitalStablesData.sensor2name, sizeof(digitalStablesData.sensor2name));
+      usingSolarPower = true;
+    } else if (rawCSWValue >= 3865 && rawCSWValue < 4132) {
+      // 11001, solar on — FUN_1_TANK
+      digitalStablesData.currentFunctionValue = FUN_1_TANK;
+      secretManager.readTank1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
+      usingSolarPower = true;
+    } else if (rawCSWValue >= 3591 && rawCSWValue < 3865) {
+      // 00101, solar on — FUN_2_TANK
+      digitalStablesData.currentFunctionValue = FUN_2_TANK;
+      secretManager.readTank1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
+      secretManager.readTank2Name().toCharArray(digitalStablesData.sensor2name, sizeof(digitalStablesData.sensor2name));
+      usingSolarPower = true;
+    } else if (rawCSWValue >= 3296 && rawCSWValue < 3591) {
+      // 10101, solar on — DAFFODIL_SCEPTIC_TANK
+      digitalStablesData.currentFunctionValue = DAFFODIL_SCEPTIC_TANK;
+      usingSolarPower = true;
+    } else if (rawCSWValue >= 2994 && rawCSWValue < 3296) {
+      // 01101, solar on — DAFFODIL_WATER_TROUGH
+      digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
+      usingSolarPower = true;
+    } else if (rawCSWValue >= 2639 && rawCSWValue < 2994) {
+      // 11101, solar on — DAFFODIL_WATER_TROUGH_TANK1 (matches the 11100/solar-off mirror above)
+      digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH_TANK1;
+      usingSolarPower = true;
+    } else if (rawCSWValue >= 1274 && rawCSWValue < 2639) {
+      // 0001/1001/0101/1101, solar on — unassigned (merged, same reasoning as the solar-off gaps)
+      usingSolarPower = true;
+    } else if (rawCSWValue >= 934 && rawCSWValue < 1274) {
+      // 00111, solar on — DAFFODIL_WATER_TROUGH
+      digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
+      usingSolarPower = true;
+    } else if (rawCSWValue >= 0 && rawCSWValue < 934) {
+      // 10111/01111/11111, solar on — unassigned, saturates near 0 raw
+      usingSolarPower = true;
+    } else if (rawCSWValue < 0) {
+      digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
+      usingSolarPower = true;
+    }
+  } else {
+    // --- No-battery table: full 32-position sweep, 2026-08-25/26, no battery attached (the
+    // battery physically installed at the time later turned out to read 0.6V — electrically
+    // equivalent to no battery for this purpose). DaffodilCSWTest sketch, 8x-averaged reads,
+    // normalized to K=5.00 via each reading's own v50Voltage.
+    //
+    // Real, reproducible quirk in THIS table only: switch 1 or 2 alone with solar reads
+    // backwards from the simple bypass model (10001 reads *above* 00001; 01001 reads almost
+    // identical to 00001) — confirmed across repeated tests and independently with an unpowered
+    // multimeter. Net effect: FUN_1_FLOW and FUN_1_FLOW_1_TANK (solar on) land only ~120 raw
+    // counts apart here — a known weak spot specific to the no-battery condition, not something
+    // a threshold tweak can fix. This quirk did NOT reproduce in the battery-attached table
+    // above; likely an artifact of that specific (since-discovered-dead) battery's loading, not
+    // a board defect — but it's real and this table has to account for it regardless.
+    //
+    // 1234 solar | raw@v50            | function
+    // 0000  0    | 6667 @ 4.344       | FUN_1_FLOW
+    // 1000  0    | 6519 @ 4.346       | FUN_2_FLOW
+    // 0100  0    | 6365 @ 4.375       | FUN_1_FLOW_1_TANK
+    // 1100  0    | 6211 @ 4.381       | FUN_1_TANK
+    // 0010  0    | 6070 @ 4.347       | FUN_2_TANK
+    // 1010  0    | 5908 @ 4.365       | DAFFODIL_SCEPTIC_TANK
+    // 0110  0    | 5746 @ 4.348       | DAFFODIL_WATER_TROUGH
+    // 1110  0    | 5575 @ 4.348       | DAFFODIL_WATER_TROUGH_TANK1
+    // 0001,1001,0101,1101  0 (merged) | 5356-4814 @ ~4.36 | (unassigned)
+    // 0011  0    | 4645 @ 4.367       | DAFFODIL_WATER_TROUGH
+    // 1011,0111,1111  0 (merged)      | 4450-3850 @ ~4.35 | (unassigned)
+    // 1000  1    | 3621 @ 4.330       | FUN_2_FLOW  <- reads ABOVE 0000+solar, see quirk note
+    // 0000  1    | 3198 @ 4.349       | FUN_1_FLOW
+    // 0100  1    | 3197 @ 4.349       | FUN_1_FLOW_1_TANK  <- only ~1 count below 0000+solar
+    // 1100  1    | 2993 @ 4.349       | FUN_1_TANK
+    // 0010  1    | 2759 @ 4.350       | FUN_2_TANK
+    // 1010  1    | 2520 @ 4.350       | DAFFODIL_SCEPTIC_TANK
+    // 0110  1    | 2274 @ 4.349       | DAFFODIL_WATER_TROUGH
+    // 1110  1    | 1951 @ 4.350       | DAFFODIL_WATER_TROUGH_TANK1
+    // 0001,1001,0101,1101  1 (merged) | 1690-907 @ ~4.35  | (unassigned)
+    // 0011  1    | -2 @ 4.349         | DAFFODIL_WATER_TROUGH (bottom catch-all)
+    // 1011,0111,1111  1 (merged)      | -2 @ ~4.35 | (unassigned, saturates near 0)
+    if (cswOutput >= 7587) {
+      // 00000, solar off — FUN_1_FLOW
+      digitalStablesData.currentFunctionValue = FUN_1_FLOW;
+      attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
+      secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
+      usingSolarPower = false;
+    } else if (cswOutput >= 7387 && cswOutput < 7587) {
+      // 10000, solar off — FUN_2_FLOW
+      digitalStablesData.currentFunctionValue = FUN_2_FLOW;
+      attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
+      attachInterrupt(SENSOR_INPUT_2, pulseCounter2, FALLING);
+      secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
+      secretManager.readFlow2Name().toCharArray(digitalStablesData.sensor2name, sizeof(digitalStablesData.sensor2name));
+      usingSolarPower = false;
+    } else if (cswOutput >= 7181 && cswOutput < 7387) {
+      // 01000, solar off — FUN_1_FLOW_1_TANK
+      digitalStablesData.currentFunctionValue = FUN_1_FLOW_1_TANK;
+      attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
+      secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
+      secretManager.readTank2Name().toCharArray(digitalStablesData.sensor2name, sizeof(digitalStablesData.sensor2name));
+      usingSolarPower = false;
+    } else if (cswOutput >= 7035 && cswOutput < 7181) {
+      // 11000, solar off — FUN_1_TANK
+      digitalStablesData.currentFunctionValue = FUN_1_TANK;
+      secretManager.readTank1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
+      usingSolarPower = false;
+    } else if (cswOutput >= 6875 && cswOutput < 7035) {
+      // 00100, solar off — FUN_2_TANK
+      digitalStablesData.currentFunctionValue = FUN_2_TANK;
+      secretManager.readTank1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
+      secretManager.readTank2Name().toCharArray(digitalStablesData.sensor2name, sizeof(digitalStablesData.sensor2name));
+      usingSolarPower = false;
+    } else if (cswOutput >= 6688 && cswOutput < 6875) {
+      // 10100, solar off — DAFFODIL_SCEPTIC_TANK
+      digitalStablesData.currentFunctionValue = DAFFODIL_SCEPTIC_TANK;
+      usingSolarPower = false;
+    } else if (cswOutput >= 6509 && cswOutput < 6688) {
+      // 01100, solar off — DAFFODIL_WATER_TROUGH
+      digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
+      usingSolarPower = false;
+    } else if (cswOutput >= 6267 && cswOutput < 6509) {
+      // 11100, solar off — DAFFODIL_WATER_TROUGH_TANK1
+      digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH_TANK1;
+      usingSolarPower = false;
+    } else if (cswOutput >= 5427 && cswOutput < 6267) {
+      // 0001/1001/0101/1101, solar off — unassigned (merged)
+      usingSolarPower = false;
+    } else if (cswOutput >= 5206 && cswOutput < 5427) {
+      // 00110, solar off — DAFFODIL_WATER_TROUGH
+      digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
+      usingSolarPower = false;
+    } else if (cswOutput >= 4304 && cswOutput < 5206) {
+      // 1011/0111/1111, solar off — unassigned (merged)
+      usingSolarPower = false;
+    } else if (cswOutput >= 3929 && cswOutput < 4304) {
+      // 10001, solar on — FUN_2_FLOW. Reads ABOVE 00001 (next band down) — the switch-1+solar
+      // -alone quirk specific to this table, not a mistake.
+      digitalStablesData.currentFunctionValue = FUN_2_FLOW;
+      attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
+      attachInterrupt(SENSOR_INPUT_2, pulseCounter2, FALLING);
+      secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
+      secretManager.readFlow2Name().toCharArray(digitalStablesData.sensor2name, sizeof(digitalStablesData.sensor2name));
+      usingSolarPower = true;
+    } else if (cswOutput >= 3676 && cswOutput < 3929) {
+      // 00001, solar on — FUN_1_FLOW
+      digitalStablesData.currentFunctionValue = FUN_1_FLOW;
+      attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
+      secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
+      usingSolarPower = true;
+    } else if (cswOutput >= 3558 && cswOutput < 3676) {
+      // 01001, solar on — FUN_1_FLOW_1_TANK. Only ~120 counts wide — switch-2+solar-alone
+      // quirk specific to this table. Least reliable position here; a misread lands as
+      // FUN_1_FLOW instead.
+      digitalStablesData.currentFunctionValue = FUN_1_FLOW_1_TANK;
+      attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
+      secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
+      secretManager.readTank2Name().toCharArray(digitalStablesData.sensor2name, sizeof(digitalStablesData.sensor2name));
+      usingSolarPower = true;
+    } else if (cswOutput >= 3306 && cswOutput < 3558) {
+      // 11001, solar on — FUN_1_TANK
+      digitalStablesData.currentFunctionValue = FUN_1_TANK;
+      secretManager.readTank1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
+      usingSolarPower = true;
+    } else if (cswOutput >= 3034 && cswOutput < 3306) {
+      // 00101, solar on — FUN_2_TANK
+      digitalStablesData.currentFunctionValue = FUN_2_TANK;
+      secretManager.readTank1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
+      secretManager.readTank2Name().toCharArray(digitalStablesData.sensor2name, sizeof(digitalStablesData.sensor2name));
+      usingSolarPower = true;
+    } else if (cswOutput >= 2755 && cswOutput < 3034) {
+      // 10101, solar on — DAFFODIL_SCEPTIC_TANK
+      digitalStablesData.currentFunctionValue = DAFFODIL_SCEPTIC_TANK;
+      usingSolarPower = true;
+    } else if (cswOutput >= 2428 && cswOutput < 2755) {
+      // 01101, solar on — DAFFODIL_WATER_TROUGH
+      digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
+      usingSolarPower = true;
+    } else if (cswOutput >= 2093 && cswOutput < 2428) {
+      // 11101, solar on — DAFFODIL_WATER_TROUGH_TANK1
+      digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH_TANK1;
+      usingSolarPower = true;
+    } else if (cswOutput >= 519 && cswOutput < 2093) {
+      // 0001/1001/0101/1101, solar on — unassigned (merged)
+      usingSolarPower = true;
+    } else if (cswOutput >= 0 && cswOutput < 519) {
+      // 00111 + 1011/0111/1111, solar on — 00111 is DAFFODIL_WATER_TROUGH, but all four
+      // saturate to ~0 raw and are indistinguishable from each other here.
+      digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
+      usingSolarPower = true;
+    } else if (cswOutput < 0) {
+      digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
+      usingSolarPower = true;
+    }
   }
 //  if (debug)
   Serial.print("currentFunctionValue=");
@@ -2310,9 +2470,16 @@ void restartWifi() {
 
 void drawBatteryStatus(float voltage, float current) {
   // Battery voltage color (LiFePO4 123A zones):
-  //   >= 3.35V  green  — stable, WiFi possible
-  //   >= 3.25V  yellow — WiFi off, LoRa still running
-  //    < 3.25V  red    — approaching sleep cliff
+  //   >= 3.35V  blue   — stable, WiFi possible
+  //   >= 3.25V  green  — WiFi off, LoRa still running
+  //   >= 3.10V  yellow — approaching sleep cliff
+  //   >= 1.0V   red    — critically low, battery physically present
+  //    < 1.0V   orange — no battery detected (same <1.0V threshold as noBatteryDetected in
+  //             setup()): either there's no battery plugged in, or one that's plugged in reads
+  //             so low it's electrically indistinguishable from absent (both read this way in
+  //             practice — see the 2026-08-27 dead-battery investigation). Lets a bench tester
+  //             confirm at a glance whether "no battery" mode is actually being detected, and
+  //             flags a genuinely dead/disconnected battery in the field the same way.
   CRGB batColor;
   if (voltage >= minimumWifiVoltage) {
     batColor = CRGB(0, 0, 255);
@@ -2320,8 +2487,10 @@ void drawBatteryStatus(float voltage, float current) {
     batColor = CRGB(0, 255, 0);
   } else if (voltage >= 3.10 && voltage <= minimumLEDVoltage) {
     batColor = CRGB(255, 200, 0);
-  } else {
+  } else if (voltage >= 1.0) {
     batColor = CRGB(255, 0, 0);
+  } else {
+    batColor = CRGB(255, 80, 0);
   }
 
   // Power source indicator (INA219 current sign):
@@ -3534,7 +3703,8 @@ void loop() {
       Serial.flush();
     } else if (command.startsWith("printCSWData")) {
       Serial.println("rawCSWValue=" + String(rawCSWValue));
-      Serial.println("cswV50Voltage=" + String(digitalStablesData.v50Voltage) + " (normalized to 5.445 via factor, not fixed)");
+      Serial.println("cswV50Voltage=" + String(digitalStablesData.v50Voltage) + " (this is the CURRENT v50Voltage, continuously updated since boot by readSensorData() — NOT necessarily what was used to decode the switch at boot time; noBatteryDetected/factor/cswOutput below reflect the boot-time values actually used)");
+      Serial.println("noBatteryDetected=" + String(noBatteryDetected) + " (battery-attached path decodes on rawCSWValue directly, ignoring cswOutput/factor; no-battery path uses cswOutput/factor)");
       Serial.println("factor=" + String(factor));
       Serial.println("cswOutput=" + String(cswOutput));
       String functionname = "";
@@ -3574,7 +3744,8 @@ void loop() {
       timeManager.printTimeToSerial(currentTimerRecord);
       Serial.println("");
       Serial.println("rawCSWValue=" + String(rawCSWValue));
-      Serial.println("cswV50Voltage=" + String(digitalStablesData.v50Voltage) + " (normalized to 5.445 via factor, not fixed)");
+      Serial.println("cswV50Voltage=" + String(digitalStablesData.v50Voltage) + " (this is the CURRENT v50Voltage, continuously updated since boot by readSensorData() — NOT necessarily what was used to decode the switch at boot time; noBatteryDetected/factor/cswOutput below reflect the boot-time values actually used)");
+      Serial.println("noBatteryDetected=" + String(noBatteryDetected) + " (battery-attached path decodes on rawCSWValue directly, ignoring cswOutput/factor; no-battery path uses cswOutput/factor)");
       Serial.println("factor=" + String(factor));
       Serial.println("cswOutput=" + String(cswOutput));
       Serial.println("");
