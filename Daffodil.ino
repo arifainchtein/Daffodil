@@ -2525,7 +2525,7 @@ void drawBatteryStatus(float voltage, float current) {
   } else if (voltage >= 1.0) {
     batColor = CRGB(255, 0, 0);
   } else {
-    batColor = CRGB(255, 80, 0);
+    batColor = CRGB(255, 0, 255);
   }
 
   // Power source indicator (INA219 current sign):
