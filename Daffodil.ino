@@ -1392,10 +1392,28 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
   // just empirically real and reproducible per battery-presence state. One fixed table cannot
   // cover both conditions; re-sweep with DaffodilCSWTest (battery in the state you actually
   // care about) rather than patching these numbers if positions drift again in the future.
-  float _bootBusVoltage = quickReadBusVoltage();
-  noBatteryDetected = (_bootBusVoltage < 1.0);
-  if (debug) Serial.print("bootBusVoltage=");
-  if (debug) Serial.println(_bootBusVoltage);
+  // A single voltage snapshot here is unreliable: with no battery attached, the battery node
+  // gets capacitively backfed through a blocking diode from V50/panel and can read as high as
+  // ~3.6V right at power-up (confirmed 2026-08-31 on the BenchTest rig, bootBusVoltage=3.62V
+  // with V50_I=4.70V that same boot — matches V50_I minus a diode drop almost exactly), before
+  // bleeding down to the true no-battery floor (~0.57-0.58V) over roughly a second as other
+  // things load the rail. That phantom level overlaps real LiFePO4 battery voltage (~3.2-3.65V),
+  // so no fixed absolute threshold can tell them apart from one reading.
+  // Instead, take two readings ~100ms apart and look at the DROP: a real battery's low internal
+  // impedance won't sag noticeably that fast under light load, but the backfed capacitor (no
+  // real charge reservoir behind it) does. Either a low absolute reading OR a fast sag means
+  // no battery.
+  float _bootBusVoltage1 = quickReadBusVoltage();
+  delay(100);
+  float _bootBusVoltage2 = quickReadBusVoltage();
+  float _bootBusVoltageDrop = _bootBusVoltage1 - _bootBusVoltage2;
+  noBatteryDetected = (_bootBusVoltage2 < 1.0) || (_bootBusVoltageDrop > 0.3);
+  if (debug) Serial.print("bootBusVoltage1=");
+  if (debug) Serial.println(_bootBusVoltage1);
+  if (debug) Serial.print("bootBusVoltage2=");
+  if (debug) Serial.println(_bootBusVoltage2);
+  if (debug) Serial.print("bootBusVoltageDrop=");
+  if (debug) Serial.println(_bootBusVoltageDrop);
   if (debug) Serial.print("noBatteryDetected=");
   if (debug) Serial.println(noBatteryDetected);
 
