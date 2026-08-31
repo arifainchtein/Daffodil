@@ -1392,7 +1392,10 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
   // just empirically real and reproducible per battery-presence state. One fixed table cannot
   // cover both conditions; re-sweep with DaffodilCSWTest (battery in the state you actually
   // care about) rather than patching these numbers if positions drift again in the future.
-  noBatteryDetected = (quickReadBusVoltage() < 1.0);
+  float _bootBusVoltage = quickReadBusVoltage();
+  noBatteryDetected = (_bootBusVoltage < 1.0);
+  if (debug) Serial.print("bootBusVoltage=");
+  if (debug) Serial.println(_bootBusVoltage);
   if (debug) Serial.print("noBatteryDetected=");
   if (debug) Serial.println(noBatteryDetected);
 
