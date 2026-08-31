@@ -878,14 +878,28 @@ int16_t readADCAveraged(uint8_t channel, uint8_t samples) {
 
 // Matches the Adafruit INA219 getBusVoltage_V() calculation exactly:
 //   register 0x02, uint16_t, bits 15:3, 4 mV per LSB → divide by 1000 for volts.
+// Averaged over several reads (unlike a single-shot register read, every ADC channel elsewhere
+// in setup() is 8x-averaged for the same reason) — a single noisy/corrupted I2C read here was
+// enough to push noBatteryDetected the wrong way at boot: confirmed 2026-08-31 on the BenchTest
+// rig with debug#1, noBatteryDetected=0 printed at boot despite the battery steady at 0.58V on
+// every subsequent readSensorData() call, right after a burst of I2C traffic (127-address scan,
+// ADS.begin, ina219.begin+calibration reset) immediately before this call.
 float quickReadBusVoltage() {
-  Wire.beginTransmission(0x41);
-  Wire.write(0x02);  // INA219 bus voltage register
-  if (Wire.endTransmission() != 0) return -1;
-  Wire.requestFrom(0x41, 2);
-  if (Wire.available() < 2) return -1;
-  uint16_t raw = ((uint16_t)Wire.read() << 8) | (uint8_t)Wire.read();
-  return (int16_t)((raw >> 3) * 4) * 0.001f;  // identical to getBusVoltage_V()
+  const uint8_t samples = 5;
+  float total = 0;
+  uint8_t validCount = 0;
+  for (uint8_t i = 0; i < samples; i++) {
+    Wire.beginTransmission(0x41);
+    Wire.write(0x02);  // INA219 bus voltage register
+    if (Wire.endTransmission() != 0) continue;
+    Wire.requestFrom(0x41, 2);
+    if (Wire.available() < 2) continue;
+    uint16_t raw = ((uint16_t)Wire.read() << 8) | (uint8_t)Wire.read();
+    total += (int16_t)((raw >> 3) * 4) * 0.001f;  // identical to getBusVoltage_V()
+    validCount++;
+  }
+  if (validCount == 0) return -1;
+  return total / validCount;
 }
 
 // Resets an INA219 and writes the custom 50mΩ-shunt / 1A-range calibration used by both
