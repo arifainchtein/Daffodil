@@ -220,6 +220,28 @@ DaffodilCommandData daffodilCommandData;
 float rawCSWValue;
 float factor = 1;
 int16_t cswOutput;
+// Captured at the very top of setup(), before anything else runs, so a future NVS-content
+// mystery (device name/calibration blanked between boots) can be cross-checked against what
+// kind of reset actually preceded it - POWERON/EXT vs BROWNOUT vs a software/upload reset -
+// instead of relying on what the operator remembers doing. esp_reset_reason() is unrelated to
+// esp_sleep_get_wakeup_cause() (deep-sleep wake reason, printed separately by
+// print_wakeup_reason()) - this covers the boot itself, sleep or not.
+esp_reset_reason_t lastResetReason;
+const char* resetReasonToString(esp_reset_reason_t r) {
+  switch (r) {
+    case ESP_RST_POWERON:   return "POWERON (cold power-on)";
+    case ESP_RST_EXT:       return "EXT (external reset pin)";
+    case ESP_RST_SW:        return "SW (software reset, e.g. esptool/upload)";
+    case ESP_RST_PANIC:     return "PANIC (crash)";
+    case ESP_RST_INT_WDT:   return "INT_WDT (interrupt watchdog)";
+    case ESP_RST_TASK_WDT:  return "TASK_WDT (task watchdog)";
+    case ESP_RST_WDT:       return "WDT (other watchdog)";
+    case ESP_RST_DEEPSLEEP: return "DEEPSLEEP (woke from deep sleep)";
+    case ESP_RST_BROWNOUT:  return "BROWNOUT (voltage dropped too low)";
+    case ESP_RST_SDIO:      return "SDIO";
+    default:                return "UNKNOWN";
+  }
+}
 bool noBatteryDetected = false;  // set once in setup(); which CSW threshold table got used
 // Gates battery-over-discharge protection (COMMA mode, low-voltage sleep/LED/WiFi cutoffs) —
 // deliberately independent of usingSolarPower. usingSolarPower/bit5 controls the sensor-reading-
@@ -953,6 +975,8 @@ uint8_t buildI2CStatusMask() {
 }
 
 void setup() {
+  lastResetReason = esp_reset_reason();
+
   gpio_hold_dis((gpio_num_t)LED_CONTROL);
   gpio_hold_dis((gpio_num_t)SLEEP_SWITCH_26);  // must release or digitalWrite below has no effect
 
@@ -3782,6 +3806,7 @@ void loop() {
     } else if (command.startsWith("printCurrentDSDData")) {
       dataManager.printDigitalStablesData(digitalStablesData);
       Serial.println("--- Runtime ---");
+      Serial.println("lastResetReason=" + String(resetReasonToString(lastResetReason)));
       Serial.println("rawCSWValue=" + String(rawCSWValue));
       Serial.println("cswOutput=" + String(cswOutput));
       Serial.println("usingSolarPower=" + String(usingSolarPower));
@@ -3843,6 +3868,7 @@ void loop() {
       Serial.println("Ok-printCurrentDSDData");
       Serial.flush();
     } else if (command.startsWith("printCSWData")) {
+      Serial.println("lastResetReason=" + String(resetReasonToString(lastResetReason)));
       Serial.println("rawCSWValue=" + String(rawCSWValue));
       Serial.println("cswV50Voltage=" + String(digitalStablesData.v50Voltage) + " (this is the CURRENT v50Voltage, continuously updated since boot by readSensorData() — NOT necessarily what was used to decode the switch at boot time; noBatteryDetected/factor/cswOutput below reflect the boot-time values actually used)");
       Serial.println("noBatteryDetected=" + String(noBatteryDetected) + " (battery-attached path decodes on cswDecodeValue [rawCSWValue scaled by this device's CSW calibration], ignoring cswOutput/factor; no-battery path uses cswOutput/factor)");
