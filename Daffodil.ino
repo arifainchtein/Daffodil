@@ -84,7 +84,7 @@ String ipAddress = "";
 boolean initiatedWifi = false;
 // #define address 0x40
 SHTSensor sht;
-bool debug = true;
+bool debug = false;
 DataManager dataManager(Serial, LittleFS);
 
 HourlySolarPowerData hourlySolarPowerData;
@@ -196,6 +196,8 @@ float minimumLEDVoltage = 3.18;       // Turn off LEDs below this — warning be
 uint8_t dimLedBrightness = 20;        // Minimum brightness when LoRa TX budget is too low for full power
 uint8_t nightLedBrightness = 30;      // Minimum LED brightness (night / zero efficiency)
 float luxNightThreshold = 30.0;       // Lux below this is considered actual darkness → cap at nightLedBrightness
+float currentLux = -99;               // Local only, not transmitted — removed from DigitalStablesData 2026-09-01 to fund measuredHeight2/maximumScepticHeight2. Still read locally from BH1750 for LED darkness detection, same as always.
+float ledCurrentPerLedAmps = 0.020;   // Same per-LED current budget PowerManager uses (currentPerLed in setup()) — kept as its own constant here so calculatePowerAwareLedBrightness() doesn't need setup()'s local copy.
 float v50iCloudyThreshold = 3.5;     // V50_I below this during solar hours means the panel isn't harvesting enough — cloudy. Lowered 2026-07-24: field data (TopTank, clear midday sun, actively charging) showed V50_I sitting at 4.09-4.47V — the old 4.5V threshold was false-triggering CLOUDY on every wake. Still wants validation against real overcast-day readings.
 float panelCurrentCloudyThreshold_mA = 15.0;  // Wally 0x45 panelCurrent below this during solar hours means cloudy. Lowered 2026-07-24: field data (TopTank, clear midday sun) showed panelCurrent as low as 22-80mA during normal charging — the old 60mA threshold was false-triggering CLOUDY. Still wants validation against real overcast-day readings.
 float minimumWifiVoltage = 3.28;      // Turn off WiFi first to preserve power for LoRa
@@ -219,6 +221,12 @@ float rawCSWValue;
 float factor = 1;
 int16_t cswOutput;
 bool noBatteryDetected = false;  // set once in setup(); which CSW threshold table got used
+// Gates battery-over-discharge protection (COMMA mode, low-voltage sleep/LED/WiFi cutoffs) —
+// deliberately independent of usingSolarPower. usingSolarPower/bit5 controls the sensor-reading-
+// frequency-vs-battery-duration tradeoff (solar-efficiency-driven sleep scheduling); a unit set
+// to sample more frequently (bit5=0) still has a real battery to protect if one is attached, so
+// that protection must not depend on the solar bit. Set once in setup() from noBatteryDetected.
+bool hasBattery = true;
 
 PCF8563TimeManager timeManager(Serial);
 GeneralFunctions generalFunctions;
@@ -1348,6 +1356,16 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
   rawCSWValue = readADCAveraged(2, 8);
   if (debug) Serial.print("rawCSWValue=");
   if (debug) Serial.println(rawCSWValue);
+
+  // Capture a just-armed CSW calibration at this exact point — same electrical conditions
+  // (pre-WiFi/LoRa) as every real decode ever runs under. See CalibrateCSWReference's comment.
+  if (secretManager.isCSWCalibrationArmed()) {
+    secretManager.saveCSWReference((int32_t)rawCSWValue);
+    secretManager.clearCSWCalibrationArm();
+    Serial.print("CSW reference captured this boot: ");
+    Serial.println((int32_t)rawCSWValue);
+  }
+
   // V50/V50_I is NOT a stable 5V rail on this board: it tracks the solar/USB input and sags
   // with cloud cover, battery charge/discharge current, etc. Normalizing cswOutput to "what it
   // would read at 5.00V" cancels most of that drift so the thresholds below stay meaningful
@@ -1416,12 +1434,36 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
   if (debug) Serial.println(_bootBusVoltageDrop);
   if (debug) Serial.print("noBatteryDetected=");
   if (debug) Serial.println(noBatteryDetected);
+  hasBattery = !noBatteryDetected;
+
+  // Per-device CSW scale correction. R2 (the ladder's pullup) is fed by DEVICE_POWER=V50, which
+  // firmware has no direct way to measure — V50_I (read elsewhere) only tracks V50 when
+  // USB/panel dominates; on battery power V50 comes from the boost converter (U5) instead and
+  // scales with whatever that specific battery/unit actually produces. Confirmed 2026-08-31:
+  // two different battery units gave raw readings in an almost exactly consistent ~0.869 ratio
+  // to each other across different switch positions — a clean per-device scale factor, not
+  // per-position drift. Rather than resweep all 32 positions per battery (or add new sense
+  // hardware, which isn't an option on the existing PCBs), each device stores ONE reference raw
+  // reading — taken with the switches at 00000 (all off, no solar) via the CalibrateCSWReference
+  // serial command at install time — and every reading gets scaled back into the original
+  // 2026-08-27 calibration's frame of reference before hitting the thresholds below. Falls back
+  // to no scaling (factor 1.0) if a device hasn't been calibrated yet.
+  const int32_t CSW_ORIGINAL_REFERENCE_RAW = 8326;  // this table's own 00000 calibration point
+  int32_t cswReferenceRaw = secretManager.getCSWReference();
+  float cswScaleFactor = (cswReferenceRaw > 0) ? (CSW_ORIGINAL_REFERENCE_RAW / (float)cswReferenceRaw) : 1.0f;
+  float cswDecodeValue = rawCSWValue * cswScaleFactor;
+  if (debug) Serial.print("cswReferenceRaw=");
+  if (debug) Serial.println(cswReferenceRaw);
+  if (debug) Serial.print("cswScaleFactor=");
+  if (debug) Serial.println(cswScaleFactor, 4);
+  if (debug) Serial.print("cswDecodeValue=");
+  if (debug) Serial.println(cswDecodeValue);
 
   if (!noBatteryDetected) {
     // --- Battery-attached table: full 32-position sweep, 2026-08-27, fresh/healthy battery,
-    // DaffodilCSWTest sketch, 8x-averaged reads. Compares rawCSWValue DIRECTLY — NOT cswOutput
+    // DaffodilCSWTest sketch, 8x-averaged reads. Compares cswDecodeValue DIRECTLY — NOT cswOutput
     // (the v50Voltage-corrected value) — unlike the no-battery table below. Confirmed
-    // 2026-08-29 on the BenchTest rig: rawCSWValue matched this calibration's raw value for
+    // 2026-08-29 on the BenchTest rig: cswDecodeValue matched this calibration's raw value for
     // 10000 almost exactly (8137 vs 8140) even though v50Voltage at that boot was ~4.60V versus
     // ~4.39V during calibration (a real ~5% difference, likely a different USB port/PC supplying
     // V50) — proving v50Voltage does NOT reliably track whatever actually feeds the switch
@@ -1452,13 +1494,13 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
     // 0001,1001,0101,1101  1 (merged) | 2437-1433 | (unassigned)
     // 0011  1    | 1116  | DAFFODIL_WATER_TROUGH
     // 1011,0111,1111  1 (merged)      | 753,-3,-3 | (unassigned, saturates near 0)
-    if (rawCSWValue >= 8233) {
+    if (cswDecodeValue >= 8233) {
       // 00000, solar off — FUN_1_FLOW
       digitalStablesData.currentFunctionValue = FUN_1_FLOW;
       attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
       secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
       usingSolarPower = false;
-    } else if (rawCSWValue >= 8045 && rawCSWValue < 8233) {
+    } else if (cswDecodeValue >= 8045 && cswDecodeValue < 8233) {
       // 10000, solar off — FUN_2_FLOW
       digitalStablesData.currentFunctionValue = FUN_2_FLOW;
       attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
@@ -1466,55 +1508,56 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
       secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
       secretManager.readFlow2Name().toCharArray(digitalStablesData.sensor2name, sizeof(digitalStablesData.sensor2name));
       usingSolarPower = false;
-    } else if (rawCSWValue >= 7854 && rawCSWValue < 8045) {
+    } else if (cswDecodeValue >= 7854 && cswDecodeValue < 8045) {
       // 01000, solar off — FUN_1_FLOW_1_TANK
       digitalStablesData.currentFunctionValue = FUN_1_FLOW_1_TANK;
       attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
       secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
       secretManager.readTank2Name().toCharArray(digitalStablesData.sensor2name, sizeof(digitalStablesData.sensor2name));
       usingSolarPower = false;
-    } else if (rawCSWValue >= 7670 && rawCSWValue < 7854) {
+    } else if (cswDecodeValue >= 7670 && cswDecodeValue < 7854) {
       // 11000, solar off — FUN_1_TANK
       digitalStablesData.currentFunctionValue = FUN_1_TANK;
       secretManager.readTank1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
       usingSolarPower = false;
-    } else if (rawCSWValue >= 7480 && rawCSWValue < 7670) {
+    } else if (cswDecodeValue >= 7480 && cswDecodeValue < 7670) {
       // 00100, solar off — FUN_2_TANK
       digitalStablesData.currentFunctionValue = FUN_2_TANK;
       secretManager.readTank1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
       secretManager.readTank2Name().toCharArray(digitalStablesData.sensor2name, sizeof(digitalStablesData.sensor2name));
       usingSolarPower = false;
-    } else if (rawCSWValue >= 7276 && rawCSWValue < 7480) {
+    } else if (cswDecodeValue >= 7276 && cswDecodeValue < 7480) {
       // 10100, solar off — DAFFODIL_SCEPTIC_TANK
       digitalStablesData.currentFunctionValue = DAFFODIL_SCEPTIC_TANK;
       usingSolarPower = false;
-    } else if (rawCSWValue >= 7070 && rawCSWValue < 7276) {
+    } else if (cswDecodeValue >= 7070 && cswDecodeValue < 7276) {
       // 01100, solar off — DAFFODIL_WATER_TROUGH
       digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
       usingSolarPower = false;
-    } else if (rawCSWValue >= 6827 && rawCSWValue < 7070) {
+    } else if (cswDecodeValue >= 6827 && cswDecodeValue < 7070) {
       // 11100, solar off — DAFFODIL_WATER_TROUGH_TANK1 (matches Ari's original 1110 assignment;
       // was a 3rd redundant DAFFODIL_WATER_TROUGH slot before this fix — see chat history)
       digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH_TANK1;
       usingSolarPower = false;
-    } else if (rawCSWValue >= 5906 && rawCSWValue < 6827) {
+    } else if (cswDecodeValue >= 5906 && cswDecodeValue < 6827) {
       // 0001/1001/0101/1101, solar off — unassigned (merged: none of these four carry a
       // function, so one wide band is as safe as four narrow ones and far simpler)
       usingSolarPower = false;
-    } else if (rawCSWValue >= 5679 && rawCSWValue < 5906) {
-      // 00110, solar off — DAFFODIL_WATER_TROUGH
-      digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
+    } else if (cswDecodeValue >= 5679 && cswDecodeValue < 5906) {
+      // 00110, solar off — DAFFODIL_2_WATER_TROUGH (was a duplicate DAFFODIL_WATER_TROUGH slot,
+      // reclaimed 2026-09-01)
+      digitalStablesData.currentFunctionValue = DAFFODIL_2_WATER_TROUGH;
       usingSolarPower = false;
-    } else if (rawCSWValue >= 4933 && rawCSWValue < 5679) {
+    } else if (cswDecodeValue >= 4933 && cswDecodeValue < 5679) {
       // 1011/0111/1111, solar off — unassigned (merged, same reasoning as above)
       usingSolarPower = false;
-    } else if (rawCSWValue >= 4674 && rawCSWValue < 4933) {
+    } else if (cswDecodeValue >= 4674 && cswDecodeValue < 4933) {
       // 00001, solar on — FUN_1_FLOW
       digitalStablesData.currentFunctionValue = FUN_1_FLOW;
       attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
       secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
       usingSolarPower = true;
-    } else if (rawCSWValue >= 4406 && rawCSWValue < 4674) {
+    } else if (cswDecodeValue >= 4406 && cswDecodeValue < 4674) {
       // 10001, solar on — FUN_2_FLOW
       digitalStablesData.currentFunctionValue = FUN_2_FLOW;
       attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
@@ -1522,47 +1565,48 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
       secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
       secretManager.readFlow2Name().toCharArray(digitalStablesData.sensor2name, sizeof(digitalStablesData.sensor2name));
       usingSolarPower = true;
-    } else if (rawCSWValue >= 4132 && rawCSWValue < 4406) {
+    } else if (cswDecodeValue >= 4132 && cswDecodeValue < 4406) {
       // 01001, solar on — FUN_1_FLOW_1_TANK
       digitalStablesData.currentFunctionValue = FUN_1_FLOW_1_TANK;
       attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
       secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
       secretManager.readTank2Name().toCharArray(digitalStablesData.sensor2name, sizeof(digitalStablesData.sensor2name));
       usingSolarPower = true;
-    } else if (rawCSWValue >= 3865 && rawCSWValue < 4132) {
+    } else if (cswDecodeValue >= 3865 && cswDecodeValue < 4132) {
       // 11001, solar on — FUN_1_TANK
       digitalStablesData.currentFunctionValue = FUN_1_TANK;
       secretManager.readTank1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
       usingSolarPower = true;
-    } else if (rawCSWValue >= 3591 && rawCSWValue < 3865) {
+    } else if (cswDecodeValue >= 3591 && cswDecodeValue < 3865) {
       // 00101, solar on — FUN_2_TANK
       digitalStablesData.currentFunctionValue = FUN_2_TANK;
       secretManager.readTank1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
       secretManager.readTank2Name().toCharArray(digitalStablesData.sensor2name, sizeof(digitalStablesData.sensor2name));
       usingSolarPower = true;
-    } else if (rawCSWValue >= 3296 && rawCSWValue < 3591) {
+    } else if (cswDecodeValue >= 3296 && cswDecodeValue < 3591) {
       // 10101, solar on — DAFFODIL_SCEPTIC_TANK
       digitalStablesData.currentFunctionValue = DAFFODIL_SCEPTIC_TANK;
       usingSolarPower = true;
-    } else if (rawCSWValue >= 2994 && rawCSWValue < 3296) {
+    } else if (cswDecodeValue >= 2994 && cswDecodeValue < 3296) {
       // 01101, solar on — DAFFODIL_WATER_TROUGH
       digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
       usingSolarPower = true;
-    } else if (rawCSWValue >= 2639 && rawCSWValue < 2994) {
+    } else if (cswDecodeValue >= 2639 && cswDecodeValue < 2994) {
       // 11101, solar on — DAFFODIL_WATER_TROUGH_TANK1 (matches the 11100/solar-off mirror above)
       digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH_TANK1;
       usingSolarPower = true;
-    } else if (rawCSWValue >= 1274 && rawCSWValue < 2639) {
+    } else if (cswDecodeValue >= 1274 && cswDecodeValue < 2639) {
       // 0001/1001/0101/1101, solar on — unassigned (merged, same reasoning as the solar-off gaps)
       usingSolarPower = true;
-    } else if (rawCSWValue >= 934 && rawCSWValue < 1274) {
-      // 00111, solar on — DAFFODIL_WATER_TROUGH
-      digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
+    } else if (cswDecodeValue >= 934 && cswDecodeValue < 1274) {
+      // 00111, solar on — DAFFODIL_2_WATER_TROUGH (was a duplicate DAFFODIL_WATER_TROUGH slot,
+      // reclaimed 2026-09-01)
+      digitalStablesData.currentFunctionValue = DAFFODIL_2_WATER_TROUGH;
       usingSolarPower = true;
-    } else if (rawCSWValue >= 0 && rawCSWValue < 934) {
+    } else if (cswDecodeValue >= 0 && cswDecodeValue < 934) {
       // 10111/01111/11111, solar on — unassigned, saturates near 0 raw
       usingSolarPower = true;
-    } else if (rawCSWValue < 0) {
+    } else if (cswDecodeValue < 0) {
       digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
       usingSolarPower = true;
     }
@@ -1652,8 +1696,9 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
       // 0001/1001/0101/1101, solar off — unassigned (merged)
       usingSolarPower = false;
     } else if (cswOutput >= 5206 && cswOutput < 5427) {
-      // 00110, solar off — DAFFODIL_WATER_TROUGH
-      digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
+      // 00110, solar off — DAFFODIL_2_WATER_TROUGH (was a duplicate DAFFODIL_WATER_TROUGH slot,
+      // reclaimed 2026-09-01)
+      digitalStablesData.currentFunctionValue = DAFFODIL_2_WATER_TROUGH;
       usingSolarPower = false;
     } else if (cswOutput >= 4304 && cswOutput < 5206) {
       // 1011/0111/1111, solar off — unassigned (merged)
@@ -1709,12 +1754,13 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
       // 0001/1001/0101/1101, solar on — unassigned (merged)
       usingSolarPower = true;
     } else if (cswOutput >= 0 && cswOutput < 519) {
-      // 00111 + 1011/0111/1111, solar on — 00111 is DAFFODIL_WATER_TROUGH, but all four
-      // saturate to ~0 raw and are indistinguishable from each other here.
-      digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
+      // 00111 + 1011/0111/1111, solar on — 00111 is DAFFODIL_2_WATER_TROUGH (was
+      // DAFFODIL_WATER_TROUGH, reclaimed 2026-09-01), but all four saturate to ~0 raw and are
+      // indistinguishable from each other here.
+      digitalStablesData.currentFunctionValue = DAFFODIL_2_WATER_TROUGH;
       usingSolarPower = true;
     } else if (cswOutput < 0) {
-      digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
+      digitalStablesData.currentFunctionValue = DAFFODIL_2_WATER_TROUGH;
       usingSolarPower = true;
     }
   }
@@ -1897,8 +1943,10 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
 
   // First-time COMMA detection: LoRa is initialised here so the final message can be sent.
   // goToSleep() will transmit operating_status=COMMA and then the device stays in
-  // the permanent quick-check loop handled by the early-exit block above.
-  if (usingSolarPower && !rtc_comma_mode) {
+  // the permanent quick-check loop handled by the early-exit block above. Gated on hasBattery,
+  // not usingSolarPower — this protects any attached battery regardless of the sensor-reading-
+  // frequency-vs-solar-schedule bit.
+  if (hasBattery && !rtc_comma_mode) {
     float _qv = quickReadBusVoltage();
     if (_qv > 0 && _qv < commaVoltage) {
       if (debug) { Serial.printf("Entering COMMA mode at %.2fV\n", _qv); Serial.flush(); }
@@ -1933,9 +1981,10 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
       }
     }
   }
-  // Protect battery from over-discharge (only when on solar/battery, not wall power).
+  // Protect battery from over-discharge (only when a battery is actually attached, not wall
+  // power — independent of usingSolarPower, see hasBattery's declaration comment).
   // batteryVoltage is 0 here (readSensorData hasn't run yet) so read it directly.
-  if (!isSleepMode && usingSolarPower) {
+  if (!isSleepMode && hasBattery) {
     float _setupBatV = quickReadBusVoltage();
     if (_setupBatV > 0) digitalStablesData.batteryVoltage = _setupBatV;
     if (_setupBatV >= commaVoltage && _setupBatV < sleepingVoltage) {
@@ -2212,31 +2261,17 @@ void readSensorData() {
     // the value of correcting factor was obtained by comparing the output to the output of the Davies Vantage Pro 2 sensor
     // which it is assume that is correct.3.45
 
-    digitalStablesData.lux = lightMeter.readLightLevel() * lightMeterCorrectingFactor;
+    currentLux = lightMeter.readLightLevel() * lightMeterCorrectingFactor;
   } else {
-    digitalStablesData.lux = -99;
+    currentLux = -99;
   }
   //    if(debug)Serial.print("lux=");
   //    if(debug)Serial.println(digitalStablesData.lux);
 
   {
-    uint8_t br = 255;
-    // 1. Actual darkness: BH1750 measures genuine dark (night / deep shade)
-    if (foundBH1750 && digitalStablesData.lux >= 0 && digitalStablesData.lux < luxNightThreshold) {
-      br = nightLedBrightness;
-    }
-    // 2. Solar efficiency: scale within the usable [minimumEfficiencyForLed..100%] range
-    if (usingSolarPower) {
-      HourlySolarPowerData hspd = solarInfo->calculateActualPower(currentTimerRecord);
-      float minEff = digitalStablesData.minimumEfficiencyForLed / 100.0f;
-      float scaled = constrain((hspd.efficiency - minEff) / max(1.0f - minEff, 0.01f), 0.0f, 1.0f);
-      br = min(br, (uint8_t)(nightLedBrightness + scaled * (255 - nightLedBrightness)));
-    }
-    // 3. Low battery: cap to protect remaining charge
-    if (digitalStablesData.batteryVoltage < minimumWifiVoltage) {
-      br = min(br, dimLedBrightness);
-    }
-    digitalStablesData.ledBrightness = br;
+    // See calculatePowerAwareLedBrightness() — same available-power calculation used by the
+    // main tick's LED block, kept in one place instead of duplicating it here.
+    digitalStablesData.ledBrightness = calculatePowerAwareLedBrightness();
   }
   // Ultrasonic shares TRIGGER/ECHO with pins 18/33 (SENSOR_INPUT_1/2), which double as the
   // flow-meter interrupts and tank-pressure analog terminals in the other modes — only trigger
@@ -2275,6 +2310,12 @@ void readSensorData() {
       // ultrasonic driver (not NewPing) before measuredHeight is meaningful for this mode —
       // until then it stays at the -99 sentinel set above.
       readTankPressure1();
+      break;
+    case DAFFODIL_2_WATER_TROUGH:
+      // Not implemented yet — pending the UART ultrasonic sensors (Serial1 on pin18/Serial2 on
+      // pin33, 9600 baud, 0xFF header + 2 data bytes + checksum, see the AJ-SR04M-style protocol
+      // discussion 2026-09-01) and their arrival. measuredHeight2/maximumScepticHeight2 stay at
+      // their struct defaults (0.0) until this is wired up.
       break;
   }
 
@@ -2503,6 +2544,42 @@ void restartWifi() {
   // Serial.println("in ino Done starting wifi");
 }
 
+// LED brightness as a function of ACTUAL available power, not a theoretical solar-efficiency
+// estimate — used for every unit that has a battery, regardless of usingSolarPower (bit5), so a
+// "sample more often, sleep less" (bit5=0) unit doesn't just run the LEDs full-bright until the
+// battery dies. batteryCurrent follows the project's sign convention: positive = discharging,
+// negative = charging (see quickReadBatteryCurrent_mA / DaffodilCSWTest comment). The reading
+// reflects whatever LED load was already on last cycle, so this is a one-cycle-delayed feedback
+// loop, not instantaneous — deliberately not a hard on/off snap at 0mA (which would oscillate:
+// LEDs on -> current goes positive -> LEDs off -> current goes negative -> LEDs back on -> ...).
+// Instead it scales smoothly by how much headroom (or deficit) exists relative to a full LED
+// load, and a genuine deficit settles at dimLedBrightness (a floor, not zero) rather than
+// snapping straight to black, matching the existing low-battery-voltage cap's behavior below.
+uint8_t calculatePowerAwareLedBrightness() {
+  uint8_t br = 255;
+  // 1. Actual darkness: BH1750 measures genuine dark (night / deep shade)
+  if (foundBH1750 && currentLux >= 0 && currentLux < luxNightThreshold) {
+    br = nightLedBrightness;
+  }
+  // 2. Battery current headroom: scale within [dimLedBrightness..current br] by how much spare
+  //    capacity (or deficit) the last reading showed, relative to one full LED load.
+  if (hasBattery && foundINA219) {
+    float headroom_mA = -digitalStablesData.batteryCurrent;  // positive = spare capacity (net charging/idle)
+    if (headroom_mA <= 0) {
+      br = min(br, dimLedBrightness);
+    } else {
+      float fullLedLoad_mA = NUM_LEDS * ledCurrentPerLedAmps * 1000.0f;
+      float scaled = constrain(headroom_mA / max(fullLedLoad_mA, 1.0f), 0.0f, 1.0f);
+      br = min(br, (uint8_t)(dimLedBrightness + scaled * (255 - dimLedBrightness)));
+    }
+  }
+  // 3. Low battery voltage: hard floor to protect remaining charge, regardless of the above
+  if (digitalStablesData.batteryVoltage > 0 && digitalStablesData.batteryVoltage < minimumWifiVoltage) {
+    br = min(br, dimLedBrightness);
+  }
+  return br;
+}
+
 void drawBatteryStatus(float voltage, float current) {
   // Battery voltage color (LiFePO4 123A zones):
   //   >= 3.35V  blue   — stable, WiFi possible
@@ -2666,9 +2743,18 @@ void drawTower(CRGB c, bool shifted) {
   for (uint8_t i = 0; i < 9; i++) leds[idx[i]] = c;
 }
 
-// "F" icon for flow-family modes.
+// "F" icon for flow-family modes. Grid is 3 rows x 5 cols, plain row-major wiring (confirmed
+// 2026-09-01 on the bench unit - led5 sits directly below led0, led10 directly below led5, no
+// serpentine reversal):
+//   row1: 0  1  2  3  4
+//   row2: 5  6  7  8  9
+//   row3: 10 11 12 13 14
+// top bar (0,1,2) + middle bar (5,6, shorter than the top bar) + stem (0,5,10) - a proper
+// 3-stroke F. Previously {0,1,2,5,6,9,10} (put a disconnected stray pixel at 9, off to the
+// right of row2) and briefly {0,1,2,8,9,10} (based on a wrong serpentine-wiring guess) - both
+// read as broken/messy rather than a clean F.
 void drawFlowSymbol(CRGB c) {
-  static const uint8_t kIdx[6] = { 0, 1, 5, 6, 9, 10 };
+  static const uint8_t kIdx[6] = { 0, 1, 2, 5, 6, 10 };
   for (uint8_t i = 0; i < 6; i++) leds[kIdx[i]] = c;
 }
 
@@ -2972,21 +3058,11 @@ void loop() {
       if (hourlySolarPowerData.efficiency * 100 > digitalStablesData.minimumEfficiencyForLed) {
         digitalWrite(LED_CONTROL, HIGH);
         {
-          uint8_t br = 255;
-          // 1. Actual darkness: BH1750 measures genuine dark (night / deep shade)
-          if (foundBH1750 && digitalStablesData.lux >= 0 && digitalStablesData.lux < luxNightThreshold) {
-            br = nightLedBrightness;
-          }
-          // 2. Solar efficiency: scale within [minimumEfficiencyForLed..100%] range
-          {
-            float minEff = digitalStablesData.minimumEfficiencyForLed / 100.0f;
-            float scaled = constrain((hourlySolarPowerData.efficiency - minEff) / max(1.0f - minEff, 0.01f), 0.0f, 1.0f);
-            br = min(br, (uint8_t)(nightLedBrightness + scaled * (255 - nightLedBrightness)));
-          }
-          // 3. Low battery: cap to protect remaining charge
-          if (digitalStablesData.batteryVoltage < minimumWifiVoltage) {
-            br = min(br, dimLedBrightness);
-          }
+          // Brightness follows actual available power (darkness + battery current headroom +
+          // low-voltage floor) rather than the theoretical solar-efficiency estimate — see
+          // calculatePowerAwareLedBrightness(). efficiency here only gates whether the LEDs get
+          // any power at all (the solar-schedule decision bit5 controls), not how bright.
+          uint8_t br = calculatePowerAwareLedBrightness();
           digitalStablesData.ledBrightness = br;
           FastLED.setBrightness(br);
         }
@@ -3049,9 +3125,15 @@ void loop() {
         //        dataManager.storeDSDData(digitalStablesData);
       }
     } else {
+      // bit5=0: prioritizing sensor-reading frequency over the solar sleep schedule — doesn't
+      // mean unlimited power. If a battery is attached it still needs protecting, so brightness
+      // follows the same available-power calculation as the solar branch above instead of being
+      // forced to 255 regardless of battery state. (No battery at all — genuinely wall/USB
+      // powered — calculatePowerAwareLedBrightness() skips the battery-current term entirely.)
       digitalWrite(LED_CONTROL, HIGH);
-      digitalStablesData.ledBrightness = 255;
-      FastLED.setBrightness(255);
+      uint8_t br = calculatePowerAwareLedBrightness();
+      digitalStablesData.ledBrightness = br;
+      FastLED.setBrightness(br);
       digitalStablesData.operatingStatus = OPERATING_STATUS_FULL_MODE;
       turnOffWifi = false;
     }
@@ -3072,8 +3154,9 @@ void loop() {
 
 
 
-  // COMMA check in the main loop (battery may drop during active WiFi/LoRa operation).
-  if (usingSolarPower && !rtc_comma_mode &&
+  // COMMA check in the main loop (battery may drop during active WiFi/LoRa operation). Gated on
+  // hasBattery — see its declaration comment.
+  if (hasBattery && !rtc_comma_mode &&
       digitalStablesData.batteryVoltage > 0 && digitalStablesData.batteryVoltage < commaVoltage) {
     if (debug) { Serial.printf("COMMA from loop at %.2fV\n", digitalStablesData.batteryVoltage); }
     rtc_comma_mode = true;
@@ -3087,8 +3170,8 @@ void loop() {
     isSleepMode = true;
       if (debug) Serial.print("line 2601 isSleepMode=true because of effciency");
   } 
-  // Protect battery from over-discharge (only when on solar/battery, not wall power)
-  if (usingSolarPower && digitalStablesData.batteryVoltage >= commaVoltage && digitalStablesData.batteryVoltage < sleepingVoltage) {
+  // Protect battery from over-discharge (only when a battery is actually attached)
+  if (hasBattery && digitalStablesData.batteryVoltage >= commaVoltage && digitalStablesData.batteryVoltage < sleepingVoltage) {
     isSleepMode = true;
     if (debug) Serial.print("line 2604 isSleepMode=true because of low battery voltage");
   }
@@ -3118,7 +3201,7 @@ void loop() {
 
 
 
-  if (usingSolarPower && digitalStablesData.batteryVoltage > commaVoltage && digitalStablesData.batteryVoltage < minimumLEDVoltage && digitalRead(LED_CONTROL)) {
+  if (hasBattery && digitalStablesData.batteryVoltage > commaVoltage && digitalStablesData.batteryVoltage < minimumLEDVoltage && digitalRead(LED_CONTROL)) {
 
     if (debug) Serial.print("line 967 turning off leds, battery=");
     if (debug) Serial.println(digitalStablesData.batteryVoltage);
@@ -3136,7 +3219,7 @@ void loop() {
 
   // Unconditional voltage-based WiFi shutoff: if battery is below minimumWifiVoltage,
   // always call stop() — even if wifistatus is false (WiFi may be retrying and drawing current).
-  if (usingSolarPower && digitalStablesData.batteryVoltage > commaVoltage && digitalStablesData.batteryVoltage < minimumWifiVoltage) {
+  if (hasBattery && digitalStablesData.batteryVoltage > commaVoltage && digitalStablesData.batteryVoltage < minimumWifiVoltage) {
     turnOffWifi = true;
   }
   if (turnOffWifi) {
@@ -3212,6 +3295,12 @@ void loop() {
   }
   // if(debug)Serial.println("line 1139");
   boolean showError = false;
+  // Set inside SHOW_SCEPTIC when a two-slot mode just showed slot1 - keeps displayStatus on
+  // SHOW_SCEPTIC for one more tick so slot2 shows immediately after, instead of advancing to
+  // the other display states (temp/internet/lora/etc) and only coming back to slot2 a full
+  // cycle later. Confirmed 2026-09-01: Ari wants F/led4 then F/led14 back-to-back, not
+  // interspersed with the other states.
+  bool holdDisplayStatus = false;
   if (viewTimer.status()) {
     showTemperature = !showTemperature;
     bool cloudySkip = (digitalStablesData.operatingStatus == OPERATING_STATUS_CLOUDY && !cloudyLedCycleOn);
@@ -3332,12 +3421,19 @@ void loop() {
       } else if (fn == FUN_1_FLOW || fn == FUN_2_FLOW || fn == FUN_1_FLOW_1_TANK || fn == FUN_1_TANK || fn == FUN_2_TANK || fn == DAFFODIL_WATER_TROUGH_TANK1) {
         // Sensor-slot modes: slot1 = pin18/sensor1, slot2 = pin33/sensor2. A single-slot mode
         // just shows slot1 with led4 lit. A two-slot mode alternates each display cycle between
-        // slot1 (led4) and slot2 (led9) — same toggle-per-cycle pattern as showTemperature.
-        // led4/led9 are always blue: they only mark which slot is currently on screen, the
-        // symbol's own color carries the actual status.
+        // slot1 (led4, top-right corner) and slot2 (led14, bottom-right corner) — same
+        // toggle-per-cycle pattern as showTemperature. led4/led14 are always blue: they only
+        // mark which slot is currently on screen, the symbol's own color carries the actual
+        // status. Both sit outside drawFlowSymbol's/drawTower's own pixels by design (grid is
+        // 3 rows x 5 cols, plain row-major wiring — see drawFlowSymbol's comment) so the marker
+        // can never overwrite the symbol's own status color the way led9 briefly did (confirmed
+        // 2026-09-01).
         bool twoSlots = (fn == FUN_2_FLOW || fn == FUN_2_TANK || fn == FUN_1_FLOW_1_TANK || fn == DAFFODIL_WATER_TROUGH_TANK1);
         bool slot2Now = twoSlots && showSensorSlot2;
         if (twoSlots) showSensorSlot2 = !showSensorSlot2;
+        // Just showed slot1 of a two-slot mode - hold here so slot2 shows on the very next
+        // tick, back-to-back, instead of waiting a full outer display cycle for its turn.
+        holdDisplayStatus = twoSlots && !slot2Now;
 
         if (!slot2Now) {
           // slot 1
@@ -3370,7 +3466,7 @@ void loop() {
             }
             drawTower(c, true);
           }
-          leds[9] = CRGB(0, 0, 255);
+          leds[14] = CRGB(0, 0, 255);
         }
       }
 
@@ -3557,7 +3653,7 @@ void loop() {
       FastLED.clear(true);
       FastLED.show();
     }
-    displayStatus++;
+    if (!holdDisplayStatus) displayStatus++;
 
     if (displayStatus == SHOW_ERROR_STATUS && foundADS && !memoryFull) {
       displayStatus = 0;
@@ -3715,7 +3811,7 @@ void loop() {
       Serial.println("solarEfficiency=" + String(_hspd.efficiency * 100, 1) + "%"
                      + "  minForLed=" + String(digitalStablesData.minimumEfficiencyForLed) + "%"
                      + "  minForWifi=" + String(digitalStablesData.minimumEfficiencyForWifi) + "%");
-      Serial.println("lux=" + String(digitalStablesData.lux, 1)
+      Serial.println("lux=" + String(currentLux, 1)
                      + "  luxNight<" + String(luxNightThreshold));
 
       // Battery thresholds
@@ -3739,9 +3835,16 @@ void loop() {
     } else if (command.startsWith("printCSWData")) {
       Serial.println("rawCSWValue=" + String(rawCSWValue));
       Serial.println("cswV50Voltage=" + String(digitalStablesData.v50Voltage) + " (this is the CURRENT v50Voltage, continuously updated since boot by readSensorData() — NOT necessarily what was used to decode the switch at boot time; noBatteryDetected/factor/cswOutput below reflect the boot-time values actually used)");
-      Serial.println("noBatteryDetected=" + String(noBatteryDetected) + " (battery-attached path decodes on rawCSWValue directly, ignoring cswOutput/factor; no-battery path uses cswOutput/factor)");
+      Serial.println("noBatteryDetected=" + String(noBatteryDetected) + " (battery-attached path decodes on cswDecodeValue [rawCSWValue scaled by this device's CSW calibration], ignoring cswOutput/factor; no-battery path uses cswOutput/factor)");
       Serial.println("factor=" + String(factor));
       Serial.println("cswOutput=" + String(cswOutput));
+      {
+        int32_t _printCswReferenceRaw = secretManager.getCSWReference();
+        float _printCswScaleFactor = (_printCswReferenceRaw > 0) ? (8326.0f / (float)_printCswReferenceRaw) : 1.0f;
+        Serial.println("cswReferenceRaw=" + String(_printCswReferenceRaw) + " (0 = not yet calibrated for this device; with switches at 00000, run CalibrateCSWReference then RESET to capture it)");
+        Serial.println("cswScaleFactor=" + String(_printCswScaleFactor, 4));
+        Serial.println("cswDecodeValue at boot=" + String(rawCSWValue * _printCswScaleFactor) + " (this is what the battery-attached table actually compared against at boot time)");
+      }
       String functionname = "";
       if (digitalStablesData.currentFunctionValue == FUN_1_FLOW) {
         functionname = "FUN_1_FLOW";
@@ -3765,9 +3868,23 @@ void loop() {
         functionname = "VOLTAGE_MONITOR";
       } else if (digitalStablesData.currentFunctionValue == DAFFODIL_WATER_TROUGH_TANK1) {
         functionname = "DAFFODIL_WATER_TROUGH_TANK1";
+      } else if (digitalStablesData.currentFunctionValue == DAFFODIL_2_WATER_TROUGH) {
+        functionname = "DAFFODIL_2_WATER_TROUGH";
       }
       Serial.println("Current Function Value: " + functionname);
       Serial.println("Ok-printCSWData");
+      Serial.flush();
+    } else if (command.startsWith("CalibrateCSWReference")) {
+      // One-time per-device calibration step, run at install time with the switches set to
+      // 00000 (all off, no solar - the reference position, doesn't drive the LEDs so it's safe
+      // to leave on battery for the reset this needs). Does NOT read the ladder itself - this
+      // command runs mid-runtime (WiFi/LoRa already active), a different V50/DEVICE_POWER load
+      // than the real decode ever sees at early boot, which gave a wrong reference reading when
+      // tried directly (confirmed 2026-09-01). Instead it just arms a flag; setup() captures the
+      // actual reference on the NEXT boot, at the same point in boot as the real switch read.
+      secretManager.armCSWCalibration();
+      Serial.println("CSW calibration armed - RESET NOW (with switches still at 00000) to capture the reference. This command alone does not calibrate anything.");
+      Serial.println("Ok-CalibrateCSWReference");
       Serial.flush();
     } else if (command.startsWith("exportDSDCSV")) {
       dataManager.exportDSDCSV();
@@ -3810,6 +3927,8 @@ void loop() {
         functionname = "VOLTAGE_MONITOR";
       } else if (digitalStablesData.currentFunctionValue == DAFFODIL_WATER_TROUGH_TANK1) {
         functionname = "DAFFODIL_WATER_TROUGH_TANK1";
+      } else if (digitalStablesData.currentFunctionValue == DAFFODIL_2_WATER_TROUGH) {
+        functionname = "DAFFODIL_2_WATER_TROUGH";
       }
       Serial.println("Current Function Value: " + functionname);
       Serial.println("");
