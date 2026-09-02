@@ -961,6 +961,16 @@ void setup() {
 
   pinMode(SLEEP_SWITCH_26, OUTPUT);
   digitalWrite(SLEEP_SWITCH_26, HIGH);
+
+  // The global `sonar` NewPing instance below is constructed before setup() runs, and its
+  // constructor unconditionally sets TRIGGER_PIN (18, == SENSOR_INPUT_1) to OUTPUT and drives
+  // it low - it has no idea this device might be in a flow-meter function instead. Undo that
+  // here so attachInterrupt(SENSOR_INPUT_1, ...) below actually sees pulses instead of a pin
+  // the sonar driver is holding low. Safe for trough/septic modes too: NewPing::ping() re-claims
+  // the trigger pin as OUTPUT via direct register write on every call, so it self-heals there.
+  pinMode(SENSOR_INPUT_1, INPUT);
+  pinMode(SENSOR_INPUT_2, INPUT);
+
   delay(100);
   Serial.begin(115200);
   analogSetAttenuation(ADC_11db);  // set global default before any analogRead so channels initialize with 11dB (max ~3.9V) not the default 0dB (max 1.1V)
@@ -4033,11 +4043,13 @@ void loop() {
       String devicename = generalFunctions.getValue(command, '#', 1);
       uint8_t devicenamelength = devicename.length() + 1;
       devicename.toCharArray(digitalStablesData.devicename, devicenamelength);
+      secretManager.saveDeviceName(devicename);
       Serial.println(F("Ok-SetDeviceName"));
     } else if (command.startsWith("SetDeviceShortName")) {
       String deviceshortname = generalFunctions.getValue(command, '#', 1);
       uint8_t deviceshortnamelength = deviceshortname.length() + 1;
       deviceshortname.toCharArray(digitalStablesData.deviceshortname, deviceshortnamelength);
+      secretManager.saveDeviceShortName(deviceshortname);
       Serial.print(F("digitalStablesData.deviceshortname="));
       Serial.println(digitalStablesData.deviceshortname);
       Serial.println(F("Ok-SetDeviceShortName"));
