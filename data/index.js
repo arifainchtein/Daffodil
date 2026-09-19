@@ -68,7 +68,7 @@ function setStationMode1(){
     $.ajax({
         type: "GET",
         async:false,
-        url: "/RosieServlet",
+        url: "/DaffodilServlet",
         data:{formName:"GetAvailableSSIDS"},
         success: function (result) {
             var ssids = JSON.parse(result);
@@ -145,7 +145,7 @@ $(document).on('click','#wifi-configure-cancel', function (){
         
         $.ajax({
             type: "POST",
-            url: "/RosieServlet",
+            url: "/DaffodilServlet",
             data: {formName:'ConfigSTA',ssid:ssid,pass:pass,host:host},
             success: function (result) {
                 currentData = JSON.parse(result);
@@ -173,7 +173,7 @@ $(document).on('click','#wifi-configure-cancel', function (){
         
         $.ajax({
             type: "POST",
-            url: "/RosieServlet",
+            url: "/DaffodilServlet",
             data: {formName:'ConfigAP',apaddress:apaddress,pass:pass,host:host},
             success: function (result) {
                 currentData = JSON.parse(result);
@@ -221,8 +221,8 @@ $(document).on('click','#flow-sensor-1-configure-submit', function (){
    var flow1Name = $('#flow-sensor-1-input-name').val();
    var qfactor1 =  $('#flow-sensor-1-qfactor-input').val();
    $.ajax({
-        type: "GET",
-        url: "/RosieServlet",
+        type: "POST",
+        url: "/DaffodilServlet",
         data:{formName:"SetSensor1Param",flow1Name:flow1Name,qfactor1:qfactor1},
         success: function (result) {
             currentData = JSON.parse(result);
@@ -263,8 +263,8 @@ $(document).on('click','#flow-sensor-2-configure-submit', function (){
    var flow2Name = $('#flow-sensor-2-input-name').val();
    var qfactor2 =  $('#flow-sensor-2-qfactor-input').val();
    $.ajax({
-        type: "GET",
-        url: "/RosieServlet",
+        type: "POST",
+        url: "/DaffodilServlet",
         data:{formName:"SetFlowSensor2Param",flow2Name:flow2Name,qfactor2:qfactor2},
         success: function (result) {
             currentData = JSON.parse(result);
@@ -311,7 +311,7 @@ $(document).on('click','#tank-sensor-1-configure-submit', function (){
     alert('Please input tank name');
     return false;
    }
-   if(tankheightmeters==0){
+   if(tank1heightmeters==0){
     alert('Tank height has to be greater than zero');
     return false;
    }
@@ -320,8 +320,8 @@ $(document).on('click','#tank-sensor-1-configure-submit', function (){
     return false;
    }
    $.ajax({
-        type: "GET",
-        url: "/RosieServlet",
+        type: "POST",
+        url: "/DaffodilServlet",
         data:{formName:"SetTank1Param",tank1Name:tank1Name,tank1heightmeters:tank1heightmeters,tank1maxvollit:tank1maxvollit},
         success: function (result) {
             currentData = JSON.parse(result);
@@ -379,8 +379,8 @@ $(document).on('click','#tank-sensor-2-configure-submit', function (){
     return false;
    }
    $.ajax({
-        type: "GET",
-        url: "/RosieServlet",
+        type: "POST",
+        url: "/DaffodilServlet",
         data:{formName:"SetTank2Param",tank2name:tank2name,tank2heightmeters:tank2heightmeters,tank2maxvollit:tank2maxvollit},
         success: function (result) {
             currentData = JSON.parse(result);
@@ -403,14 +403,14 @@ $(document).on('click','#tank-sensor-2-configure-submit', function (){
 
  function showTank1(){
     $('#tank-sensor-1-name').html(currentData.tank1name);
-    $('#tank-sensor-1-value').html(currentData.tank1waterLevel);
+    $('#tank-sensor-1-value').html(currentData.tank1waterLevel || 0);
     $('#tank-sensor-1-units').html('liters');
     $('#tank-sensor-1').removeClass('d-none').addClass('d-block');
  }
 
 function showTank2(){
     $('#tank-sensor-2-name').html(currentData.tank2name);
-    $('#tank-sensor-2-value').html(currentData.tank2waterLevel);
+    $('#tank-sensor-2-value').html(currentData.tank2waterLevel || 0);
     $('#tank-sensor-2-units').html('liters');
     $('#tank-sensor-2').removeClass('d-none').addClass('d-block');
 }
@@ -533,7 +533,7 @@ $(document).on('click','#manual-time-submit', function (){
     var time = "SetTime#" + (day)+"#" +(month) +"#"+ year +"#"+(date.getDay()) + "#"+  date.getHours() + "#"+ date.getMinutes()+"#"+date.getSeconds();    
     $.ajax({
          type: "POST",
-         url: "/RosieServlet",
+         url: "/DaffodilServlet",
          data:{formName:"ManualSetTime",time:time},
          success: function (result) {
             $('#manual-time-modal').modal('hide');
@@ -551,7 +551,7 @@ $(document).on('click','#manual-time-submit', function (){
   $(document).on('click','#internet-time-configure-button', function (){
        $.ajax({
          type: "POST",
-         url: "/RosieServlet",
+         url: "/DaffodilServlet",
          data:{formName:"SetTimeViaInternet"},
          success: function (result) {
              currentData = JSON.parse(result);
@@ -579,7 +579,7 @@ $(document).on('click','#manual-time-submit', function (){
     }
     $.ajax({
       type: "POST",
-      url: "/RosieServlet",
+      url: "/DaffodilServlet",
       data:{formName:"SetGPS",lat:lat,long:long},
       success: function (result) {
           currentData = JSON.parse(result);
@@ -592,6 +592,32 @@ $(document).on('click','#manual-time-submit', function (){
       }
   });
 
+});
+
+//
+// CSW (config switch) calibration
+//
+// Per-device calibration of the config switch ladder's ADC reference reading - lost whenever
+// the battery is replaced, since the raw reading scales with whatever the newly attached
+// battery/boost-converter actually outputs (see cswReferenceRaw comment in
+// DaffodilWifiManager.cpp / the CalibrateCSWReference serial command in Daffodil.ino). Web
+// equivalent of running that serial command then resetting the device.
+$(document).on('click','#calibrate-csw-button', function (){
+    if(!confirm("Set ALL config switches to OFF (00000, no solar) first, then press OK.\n\nThe device will reboot immediately to capture the calibration reading.")){
+        return false;
+    }
+    $.ajax({
+        type: "POST",
+        url: "/DaffodilServlet",
+        data:{formName:"CalibrateCSW"},
+        success: function (result) {
+        },
+        error: function(data){
+            // Expected: the device reboots before it can send a response, so this always
+            // "fails" even on success - the reboot is the confirmation.
+        }
+    });
+    alert("Calibration armed - device is rebooting now. Please wait about 10 seconds, then set the switches back to your normal operating mode and refresh this page.");
 });
 
 //
@@ -762,9 +788,23 @@ function refreshScreen(){
         showTank1();
     }else if(currentData.currentFunctionValue==FUN_1_TANK){
         showTank1();
+    }else if(currentData.currentFunctionValue==FUN_2_TANK){
+        showTank1();
+        showTank2();
     }else if(currentData.currentFunctionValue==DAFFODIL_SCEPTIC_TANK){
         showDaffodil();
     }else if(currentData.currentFunctionValue==DAFFODIL_WATER_TROUGH){
+        showDaffodil();
+    }else if(currentData.currentFunctionValue==DAFFODIL_WATER_TROUGH_TANK1){
+        // Trough half of this mode isn't wired up in firmware yet (shared TRIGGER/ECHO pins
+        // collide with tank1's pressure wiring) - only tank1 is actually readable, see
+        // Daffodil.ino's Known Issues. Still show the trough config panel so height/min/max can
+        // be pre-set ahead of that wiring landing.
+        showDaffodil();
+        showTank1();
+    }else if(currentData.currentFunctionValue==DAFFODIL_2_WATER_TROUGH){
+        // 2nd trough sensor reading isn't implemented yet (pending hardware) - only trough 1's
+        // existing config/display applies for now.
         showDaffodil();
     }
 }

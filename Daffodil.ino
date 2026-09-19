@@ -257,7 +257,10 @@ SolarInfo *solarInfo;
 PowerManager *powerManager;
 WeatherForecastManager *weatherForecastManager;
 double lightMeterCorrectingFactor = 3.45;
-DaffodilWifiManager wifiManager(Serial, LittleFS, timeManager, secretManager, digitalStablesData, digitalStablesConfigData);
+// The web app (data/ folder) lives in its own read-only "www" partition, flashed with each firmware
+// release, so an update never touches LittleFS (sensor data) or NVS (Preferences). Mounted in setup().
+fs::LittleFSFS wwwFS;
+DaffodilWifiManager wifiManager(Serial, wwwFS, timeManager, secretManager, digitalStablesData, digitalStablesConfigData);
 
 //int badPacketCount = 0;
 byte msgCount = 0;         // count of outgoing messages
@@ -1034,6 +1037,12 @@ void setup() {
   }
 
 
+  if (!wwwFS.begin(false, "/www", 10, "www")) {
+    Serial.println("www partition mount FAILED - web app unavailable until the www image is flashed");
+  } else {
+    Serial.println("www partition mounted");
+  }
+
   listFiles("/");
   listFiles("/data/");  // If you have a data folder
 
@@ -1051,9 +1060,9 @@ void setup() {
   }
 
   // Check if index.html exists specifically
-  if (LittleFS.exists("/index.html")) {
+  if (wwwFS.exists("/index.html")) {
     Serial.println("/index.html exists!");
-    File f = LittleFS.open("/index.html", "r");
+    File f = wwwFS.open("/index.html", "r");
     Serial.print("File size: ");
     Serial.println(f.size());
     f.close();
@@ -1095,6 +1104,31 @@ void setup() {
   digitalStablesData.maximumScepticHeight = maximumScepticHeight;
   digitalStablesData.troughlevelminimumcm = troughlevelminimumcm;
   digitalStablesData.troughlevelmaximumcm = troughlevelmaximumcm;
+
+  // Flow sensor qfactor - struct defaults (0.35/0.82) are just a starting guess, not
+  // necessarily right for any given sensor/unit (confirmed wrong 2026-09-09 for a real YF-G1).
+  // 0 stored = never calibrated, keep the struct default in that case.
+  {
+    float storedQFactor1 = secretManager.getQFactor1();
+    if (storedQFactor1 > 0) digitalStablesData.qfactor1 = storedQFactor1;
+    float storedQFactor2 = secretManager.getQFactor2();
+    if (storedQFactor2 > 0) digitalStablesData.qfactor2 = storedQFactor2;
+  }
+
+  // Pressure-tank height/volume calibration - same "0 stored = never calibrated, keep struct
+  // default" convention as qfactor above. Lost on battery replacement for the same reason the
+  // CSW reference is (fresh NVS on a factory-reset unit, or if this was ever cleared) - re-run
+  // the web Tank 1/2 config forms (or SetTroughParameters/CalibrateCSW equivalents) after a swap.
+  {
+    float storedTank1Height = secretManager.getTank1Height();
+    if (storedTank1Height > 0) digitalStablesData.tank1HeightMeters = storedTank1Height;
+    float storedTank2Height = secretManager.getTank2Height();
+    if (storedTank2Height > 0) digitalStablesData.tank2HeightMeters = storedTank2Height;
+    float storedTank1MaxVol = secretManager.getTank1MaxVol();
+    if (storedTank1MaxVol > 0) digitalStablesData.tank1maxvollit = storedTank1MaxVol;
+    float storedTank2MaxVol = secretManager.getTank2MaxVol();
+    if (storedTank2MaxVol > 0) digitalStablesData.tank2maxvollit = storedTank2MaxVol;
+  }
   // getDeviceSensorConfig() above leaves timezone as the Preferences default "NoData" unless
   // it was ever explicitly set (SetDeviceSensorConfig, or now SetTimezone) - parseTimezone()
   // then finds no +/- and silently leaves baseOffset at 0, so every epoch computed from the
@@ -1572,6 +1606,7 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
       // 11100, solar off — DAFFODIL_WATER_TROUGH_TANK1 (matches Ari's original 1110 assignment;
       // was a 3rd redundant DAFFODIL_WATER_TROUGH slot before this fix — see chat history)
       digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH_TANK1;
+      secretManager.readTank1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
       usingSolarPower = false;
     } else if (cswDecodeValue >= 5906 && cswDecodeValue < 6827) {
       // 0001/1001/0101/1101, solar off — unassigned (merged: none of these four carry a
@@ -1628,6 +1663,7 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
     } else if (cswDecodeValue >= 2639 && cswDecodeValue < 2994) {
       // 11101, solar on — DAFFODIL_WATER_TROUGH_TANK1 (matches the 11100/solar-off mirror above)
       digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH_TANK1;
+      secretManager.readTank1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
       usingSolarPower = true;
     } else if (cswDecodeValue >= 1274 && cswDecodeValue < 2639) {
       // 0001/1001/0101/1101, solar on — unassigned (merged, same reasoning as the solar-off gaps)
@@ -1725,6 +1761,7 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
     } else if (cswOutput >= 6267 && cswOutput < 6509) {
       // 11100, solar off — DAFFODIL_WATER_TROUGH_TANK1
       digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH_TANK1;
+      secretManager.readTank1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
       usingSolarPower = false;
     } else if (cswOutput >= 5427 && cswOutput < 6267) {
       // 0001/1001/0101/1101, solar off — unassigned (merged)
@@ -1783,6 +1820,7 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
     } else if (cswOutput >= 2093 && cswOutput < 2428) {
       // 11101, solar on — DAFFODIL_WATER_TROUGH_TANK1
       digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH_TANK1;
+      secretManager.readTank1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
       usingSolarPower = true;
     } else if (cswOutput >= 519 && cswOutput < 2093) {
       // 0001/1001/0101/1101, solar on — unassigned (merged)

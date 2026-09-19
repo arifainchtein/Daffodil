@@ -12,11 +12,18 @@ Target board: **ESP32 FireBeetle32** (`esp32.esp32.firebeetle32`)
 
 There is no CLI build system — the firmware is compiled and uploaded via **Arduino IDE**.
 
-**Flash the LittleFS filesystem** (web app files) to the device:
+**Flash the web app** (`data/`) to the device's `www` partition (defined in `partitions.csv`, which the
+Arduino IDE picks up automatically from the sketch folder):
 ```bash
-./uploadData.sh
-# Uses esptool, port /dev/ttyUSB0, baud 921600, flash address 0x00290000
+./uploadData.sh [port]
+# Builds data/ into a LittleFS image and flashes only the www partition (offset/size read from the
+# current build's partition table). Never touches the app, NVS Preferences, or the LittleFS
+# sensor-data partition ("spiffs"), which the firmware mounts separately.
 ```
+Releases: ProjectWallLabel builds the same image (`Daffodil.www.bin`) and ships it with the firmware
+binaries, so Send Deploy Package / PaulaUploader / PaulaDeployer flash the website with the firmware.
+Do not use the Arduino IDE "ESP32 Sketch Data Upload" plugin - it picks a partition by subtype and
+there are two (`www`, `spiffs`).
 
 **Update web app files** in the `data/` directory from the companion web project:
 ```bash
