@@ -793,7 +793,7 @@ function refreshScreen(){
         showTank2();
     }else if(currentData.currentFunctionValue==DAFFODIL_SCEPTIC_TANK){
         showDaffodil();
-    }else if(currentData.currentFunctionValue==DAFFODIL_WATER_TROUGH){
+    }else if(currentData.currentFunctionValue==DAFFODIL_WATER_TROUGH || currentData.currentFunctionValue==DAFFODIL_WATER_TROUGH_WATER_TEMP){
         showDaffodil();
     }else if(currentData.currentFunctionValue==DAFFODIL_WATER_TROUGH_TANK1){
         // Trough half of this mode isn't wired up in firmware yet (shared TRIGGER/ECHO pins

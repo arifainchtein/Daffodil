@@ -1,0 +1,1040 @@
+
+--- USER ---
+i am currently using an ultrasonic range detector that uses echo an trigger, but the problem is that it keeps failing becuase it gets corroded.  i since just received a waterproof range sensor but it is of the kind that uses UART automatic.  we need to modify the Daffodil.ino so that it uses the uart automatic instead of the echo trigger.  remember we only havbe gpio 18 and 33.  we only nned the RX because the sensor sends uart automatic
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+I've found the sonar code. Next I'm replacing NewPing with a non-blocking UART reader on pin 33.
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Now the edits.
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Can't compile here (no arduino-cli), so I'll update the CLAUDE.md pin notes and stop there.
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+I've changed `Daffodil.ino` to read the new waterproof sensor over UART instead of using echo/trigger. **It hasn't been compiled**, because there's no `arduino-cli` on this machine, so please build it in the Arduino IDE.
+
+**Wiring**
+- Connect the sensor's **TX to GPIO 33**, the old ECHO wire.
+- **GPIO 18 is no longer used by the sensor.** It stays free for tank1 in the trough + tank1 mode.
+- Leave the sensor's RX pin unconnected. In UART auto mode it sends readings on its own.
+- **Check the signal voltage:** GPIO 33 is not 5V-tolerant. If you power the sensor from 5V, its TX line will also be 5V, so either run the sensor on 3.3V or put a divider on that line. The old HC-SR04 echo had the same problem, so your board may already handle it.
+
+**What changed in the code**
+- I removed `NewPing`, the `sonar` object, and the `TRIGGER_PIN`/`ECHO_PIN` defines.
+- New `beginUltrasonic()`: starts the ESP32's second hardware serial port (`Serial2`) at 9600 baud, receive-only, on pin 33. It uses a 1KB buffer so long WiFi uploads don't overflow it. It only starts in the modes that use the sensor: `DAFFODIL_WATER_TROUGH`, `DAFFODIL_SCEPTIC_TANK` and `DAFFODIL_WATER_TROUGH_TANK1`. In the flow and tank modes, pin 33 is left alone.
+- New `readUltrasonicCm()`: reads the standard frame these sensors send (`0xFF, high byte, low byte, checksum`) and checks the checksum. It returns the newest distance in cm, with 0.1cm resolution. It doesn't block, which matters because `readSensorData()` runs every second.
+- **"No reading" now shows as -99.** You get -99 if no valid frame has arrived for 5 seconds; NewPing used to return 0 instead.
+- **`DAFFODIL_WATER_TROUGH_TANK1` now gets real trough readings.** It used to stay at -99 because the old sensor needed pin 18, which tank1 uses.
+- I updated the pin table and known issues in `CLAUDE.md` to match.
+
+**Not done**
+- `DAFFODIL_2_WATER_TROUGH` (a second sensor on pin 18 filling `measuredHeight2`) is still a stub. It would reuse the same reading code on a second serial port, if you want it.
+- The trough thresholds and the 90cm `MAX_DISTANCE` are unchanged. If the new sensor is mounted at a different height, re-check them with `SetTroughParameters`.
+
+--- USER ---
+since we have a spare gpio now, lets use that for a waterproof db18 temp sensor for water sensor
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+No changes made yet. What would you like to clarify? Here's the background behind my question:
+
+- **Free pin:** GPIO 18 is free in the `DAFFODIL_WATER_TROUGH` and `DAFFODIL_SCEPTIC_TANK` modes. It is not free in `DAFFODIL_WATER_TROUGH_TANK1`, because tank1's pressure sensor uses that terminal.
+- **No room in the struct:** `DigitalStablesData` is at its 244-byte limit. Going over would clash with ChinampaData's 248-byte size, since the two packet types are told apart by size. That leaves three ways to send the water temperature:
+  1. Reuse `measuredHeight2`, which is unused in single-trough mode. No struct change, but whatever reads the data has to interpret the field by mode.
+  2. Add a new `waterTemperature` field and shrink something else to make room. This touches the shared library, AnnabelleDeserializer and the teleonome side.
+  3. Keep it on the device only, shown on the LEDs and over serial, and don't send it yet.
+- **Hardware:** a DS18B20 needs a 4.7k pull-up on its data line. I can't tell from the code whether the pin 18 terminal has one; flow-meter inputs often do. Please also confirm whether it should share the board's existing temperature-sensor connection on GPIO 27 or get its own wire on pin 18.
+
+--- USER ---
+this is a patch solution, i dont want to modify the  digitalstablesdata. however, we do need to account for the fact that we need the water termperature or another ultrasonic. so ini the case when we are using ultrasonic on 18 and water temperature in 33 then water temperature will be stored in tanklevel2
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Understood: no struct change. I'll store the water temperature in `measuredHeight2`, the second trough-level field, since the second sensor slot holds either a water temperature or a second ultrasonic. That means moving the main ultrasonic to pin 18. Let me rework it.
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+I've reworked `Daffodil.ino` so the main ultrasonic is on pin 18 and the second slot (pin 33) is either a waterproof DS18B20 or a second ultrasonic. `DigitalStablesData` is unchanged. **It still hasn't been compiled**, so please build it in the Arduino IDE.
+
+I read "tanklevel2" as `measuredHeight2`, the second trough's level field. Tell me if you meant `tank2PressurePsi` and I'll switch it.
+
+**Pins by mode**
+
+| Mode | Pin 18 | Pin 33 | `measuredHeight2` |
+|---|---|---|---|
+| `DAFFODIL_WATER_TROUGH` | ultrasonic → `measuredHeight` | DS18B20 water temp | **water temperature in °C** |
+| `DAFFODIL_2_WATER_TROUGH` | ultrasonic 1 → `measuredHeight` | ultrasonic 2 | trough 2 level in cm |
+| `DAFFODIL_SCEPTIC_TANK` | ultrasonic → `measuredHeight` | unused | — |
+| `DAFFODIL_WATER_TROUGH_TANK1` | tank1 pressure (unchanged) | ultrasonic → `measuredHeight` | — |
+
+In trough + tank1 mode the ultrasonic has to stay on pin 33, because tank1 already uses pin 18. This table is also in a comment at the top of the file.
+
+**What changed**
+- **Two ultrasonics:** the reading code now works for more than one sensor. Ultrasonic 1 uses the ESP32's second serial port (`Serial2`) and ultrasonic 2 uses the first (`Serial1`). This also finishes the `DAFFODIL_2_WATER_TROUGH` stub.
+- **Water temperature:** the DS18B20 on pin 33 gets its own bus, separate from the board's temperature sensor on pin 27. Its readings don't hold up the loop, and it's set to 0.25°C resolution. It does one conversion at boot, so the first reading isn't the sensor's 85°C power-up value. A missing or disconnected sensor reads -99.
+- With debug on, `measuredHeight2` is now printed alongside `measuredHeight`. I updated `CLAUDE.md` with the new pin uses and a note about the °C value in `measuredHeight2`.
+
+**Before you deploy**
+- **Wiring change:** the new ultrasonic's TX now goes to pin 18, not 33, in every mode except trough + tank1.
+- **Pull-up:** the DS18B20 needs a 4.7k pull-up from pin 33 to 3.3V. Fit one at the terminal if the board doesn't already have one.
+- **5V signals:** GPIO 18 and 33 are not 5V-tolerant, so run the ultrasonics on 3.3V or put a divider on their TX lines.
+- **Downstream:** in `DAFFODIL_WATER_TROUGH` mode, the Teleonome side, AnnabelleDeserializer and the web app will receive °C in `measuredHeight2`. Anything that displays it as a height needs to check the mode first. I haven't touched those projects.
+
+--- USER ---
+<task-notification>
+<task-id>bxzw9gytn</task-id>
+<tool-use-id>toolu_019aBCAYAqc25CZZ21vPpzCG</tool-use-id>
+<output-file>/tmp/claude-1000/-home-ari-Data-DigitalStables-Projects-Daffodil/71d7ea1d-82d4-4477-846d-e7a88d643e13/tasks/bxzw9gytn.output</output-file>
+<status>killed</status>
+<summary>Background command "Start FactoryChat daemon for this session" was stopped after reaching its background time limit</summary>
+<note>If the work in progress still needs it, start it again with `run_in_background` and a longer `timeout`. If it already had the longest `timeout` allowed, do not restart it. Either way, report that it was stopped.</note>
+</task-notification>
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+The FactoryChat background connection hit its 30-minute time limit and was stopped. I've restarted it with a 2-hour limit and turned the message watch back on; no chat messages came in while it was running. The Daffodil code changes are unaffected and still waiting for you to build.
+
+--- USER ---
+i was expecting a new type called DAFFODIL_WATER_TROUGH_WATER_TEMP that will use the uart and the 33 for the water temp
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+I'm picking a free config-switch position for the new mode, so I'm checking the old switch calibration data.
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Position `0001` is free and reads cleanly between `1110` and `1001` in all four calibration tables, so I'll use it for the new mode.
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+I've added `DAFFODIL_WATER_TROUGH_WATER_TEMP` as a separate mode, and `DAFFODIL_WATER_TROUGH` is back to just the ultrasonic. **Nothing has been compiled yet**, so please build it in the Arduino IDE.
+
+**Pins by mode**
+
+| Mode | Switch | Pin 18 | Pin 33 |
+|---|---|---|---|
+| `DAFFODIL_WATER_TROUGH` | `0110` | ultrasonic → `measuredHeight` | unused |
+| **`DAFFODIL_WATER_TROUGH_WATER_TEMP`** (new, value 13) | **`0001`** | ultrasonic → `measuredHeight` | DS18B20 → `measuredHeight2` in °C |
+| `DAFFODIL_2_WATER_TROUGH` | `0011` | ultrasonic 1 | ultrasonic 2 → `measuredHeight2` |
+| `DAFFODIL_SCEPTIC_TANK` | `1010` | ultrasonic | unused |
+| `DAFFODIL_WATER_TROUGH_TANK1` | `1110` | tank1 pressure | ultrasonic |
+
+**The switch position (please check this):**
+- `0001` was unassigned. It sits right after `1110` (trough + tank1) and reads clearly apart from its neighbours.
+- I took its band out of the "merged unassigned" range in all four decode tables (battery or no battery, solar on or off).
+- The thresholds are midpoints between neighbouring readings from your 2026-08-27 switch sweep (with battery) and the 2026-08-25/26 sweep (without). For example, with battery and solar off it decodes 6579–6827, around its reading of 6689.
+- The no-battery bands rest on readings I found in old chat logs rather than a fresh measurement. A quick bench check with the switches at `00010` and `00011`, using `printCSWData`, would confirm it decodes.
+
+**Other changes:**
+- **`DigitalStablesData.h`:** I added `#define DAFFODIL_WATER_TROUGH_WATER_TEMP 13` to the shared library. The struct itself is unchanged. Other projects that include this header aren't affected, but anything that decodes function values needs to learn about 13.
+- **On the device:** the new mode uses the normal trough LED display, and `printCSWData` prints its name.
+- **Web app:** I added the constant to `data/TankAndFlowConstants.js` and made `data/index.js` show the trough panel for the new mode. These are edits to the copies in `data/`, the same way `DAFFODIL_2_WATER_TROUGH` was added. The source in `DeviceWebsites/daffodilwebapp` doesn't have either mode, so running `./updateData.sh` would wipe both out.
+- **Docs:** `CONFIG_SWITCH_FUNCTIONS.md` and `CLAUDE.md` are updated.
+
+**Still to do:**
+- **Downstream:** the Teleonome side and AnnabelleDeserializer need to know that function 13 means `measuredHeight2` is a water temperature in °C. I haven't touched those projects.
+- **Wiring:**
+  - The DS18B20 needs a 4.7k pull-up from pin 33 to 3.3V.
+  - The ultrasonic's TX goes to pin 18.
+  - Pins 18 and 33 can't take 5V signals, so run the ultrasonic on 3.3V or put a divider on its TX line.
+
+--- USER ---
+mmm i just realised that the daffodil board does not have v3,3 avaialbel for me to connect a resistor, the only screw termina,l is v50
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+I'm checking the KiCad schematic to see what's already wired to the pin 33 terminal.
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+You don't need a 3.3V terminal or any extra resistor. I checked the KiCad netlist (`HardwareDesign/Daffodil/Daffodil.kicad_sch`), and the board already has what the probe needs on both sensor terminals:
+
+| ESP32 pin | Level shifter | GPIO side | Terminal side |
+|---|---|---|---|
+| 33 | Q1 (2N7002) | R5 4.7k to 3.3V | R7 10k to V50 |
+| 18 | Q2 (2N7002) | R6 4.7k to 3.3V | R8 10k to V50 |
+
+The JP1/JP2 jumpers choose whether each terminal goes to the GPIO or to the ADS1115. For these sensors, set them to the GPIO side.
+
+**What this means for wiring:**
+- **DS18B20 water probe:** connect red to V50, black to GND, and the data wire to the pin-33 terminal. The DS18B20 runs fine anywhere from 3.0V to 5.5V. The 10k to V50 on the board is the pull-up the probe needs. It's weaker than the usual 4.7k but fine for a normal 1–3m probe cable. If you ever run a long cable and get -99 readings, add a 4.7k between data and V50 at the terminal.
+- **Ultrasonic:** power it from V50 and connect its TX to the pin-18 terminal. My earlier warnings about 5V signals were wrong: the level shifters already make 5V safe on both pins.
+
+**Code:** nothing functional changes. I only rewrote the two wiring comments in `Daffodil.ino` that said to add a 4.7k to 3.3V. I also saved this pin-18/33 wiring to memory so I don't repeat the warning next time.
+
+--- USER ---
+so both 18 and 33 on the digital position for the headers.  we are going to need a manual for the daffodil, can you start workikng on one
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Now updating the manual for today's sensor changes.
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Yes: for Water Trough + Water Temperature, both jumpers go on digital. JP2 sends the Sensor 1 terminal to pin 18 (ultrasonic) and JP1 sends Sensor 2 to pin 33 (water temperature probe).
+
+There was already a manual, `Daffodil Manual.md`, with 8 sections. It's the full technical edition you decided to finish first, with a simpler user's edition to follow later. So I updated it for today's changes rather than starting a new one.
+
+**What changed in the manual:**
+- **Function table (§2.1):**
+  - Added Water Trough + Water Temperature (`0001`).
+  - Water Trough + Tank is now fully available.
+  - 2 Water Troughs now reports both readings, but has no LED display yet.
+  - Added a table of what each function puts on the two sensor terminals.
+  - Added a note that function 13 sends the water temperature in °C in `measuredHeight2`.
+- **New §2.3 Sensor wiring:**
+  - The only power terminal is V50, and what the JP1/JP2 digital vs analog positions do.
+  - The built-in level shifters, which is why no extra pull-up or divider is needed.
+  - Wiring tables for the UART ultrasonic and the DS18B20 probe.
+  - The ultrasonic frame format, the 5-second timeout, and the change from `0` to `-99` for "no reading".
+- **§3.5 Height calibration:** now covers all the ultrasonic modes, plus the new sensors' blind zone of about 3cm.
+- **§5.3 LEDs:** removed the "Water Trough + Tank always shows blue" caveat. Added that a trough display stuck on blue can mean a `-99` (no reading).
+- **§7 Troubleshooting:** new checklists for an ultrasonic reading `-99` and a water temperature reading `-99`.
+- **§8 Limitations:**
+  - Removed the old Water Trough + Tank limitation.
+  - 2 Water Troughs: no LED display yet, and no way to set the second trough's height.
+  - Water temperature: the Teleonome side and AnnabelleDeserializer haven't been updated for function 13.
+  - The `0001` switch position hasn't been confirmed on the bench yet.
+
+These sections in the manual are still marked TBA:
+- **Tank height and flow qfactor:** waiting on the device's web configurator work.
+- **Old PDF:** the orphaned `Daffodil Power Management and Configuration.pdf` is still there, as you decided.
+
+Which part should I work on next? The options I see are new wiring diagrams like the existing LED ones, a PDF build of the manual, or a sweep of the other sections for anything else that's out of date.
+
+--- USER ---
+actually it woould be great to have a table wit the different position and the sensors and the headers position, the md file is ok for you, i need a DaffopdilManual.pdf that is more for the user
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+I'm rendering the board silkscreen so the user PDF can show where the jumpers and terminals are.
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Fixing the jumper description in the technical manual first:
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- USER ---
+[Image: original 5748x702, displayed at 2000x244. Multiply coordinates by 2.87 to map to original image.]
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Writing the user-manual generator. It's a Python script that builds the HTML, including the switch and board diagrams, and then renders the PDF with weasyprint.
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Built. Checking the pages:
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- USER ---
+[Image: original 3030x2130, displayed at 2000x1406. Multiply coordinates by 1.51 to map to original image.]
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+A few layout fixes are needed. The setup table spills onto a second page, the LED images are badly sized, and a wiring table splits across pages.
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- USER ---
+[Image: original 3030x1420, displayed at 2000x937. Multiply coordinates by 1.51 to map to original image.]
+
+--- CLAUDE ---
+Better: the table fits on one page and the LED images are a sensible size. Zooming in on the key page to check the details:
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+The table page looks right. Updating the manual-scope memory so future sessions know about the user's edition:
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+`DaffodilManual.pdf` is built in the project folder. It's 12 pages written for the user, and the `.md` stays as the technical reference.
+
+The table you asked for is on page 3. Each row shows the switch picture for switches 1–4, the setting name, what goes on terminal 18 and terminal 33, and where the jumper cap goes on each. Switch 5 is drawn as "?" because it's the user's choice.
+
+**What's in it:**
+1. A picture of the board's bottom edge (terminals, jumpers and config switch) and what each part does.
+2. The quick setup table.
+3. Switch 5: Battery Saver vs Frequent Reports.
+4. Step-by-step setup, plus a short card for each setting.
+5. Wiring tables for the ultrasonic, water temperature probe, flow meter and tank pressure sensor.
+6. Entering the trough heights, using the gear icon on the web page's level card.
+7. Reading the lights, using the existing LED pictures.
+8. Looking after the unit, and a troubleshooting table.
+
+**I got the jumpers wrong earlier.** The board file shows each terminal has two separate 2-pin headers, labelled Digital and Analog on the silkscreen. You put a cap on one of them only:
+
+| Terminal | Digital header | Analog header |
+|---|---|---|
+| 18 | JP2 | JP4 |
+| 33 | JP1 | JP5 |
+
+I've corrected the technical `.md` to match, and the PDF uses this from the start.
+
+**Please check these:**
+- **Board picture:** it's a simplified drawing based on the board file, not a photo or to scale. Check it matches what you see on the board.
+- **Wire colours:** they're the usual defaults (red/black/yellow); your sensors may differ.
+- **Tank pressure sensors:** I wrote 0.5–4.5V / 0–5psi, taken from the firmware.
+- **2 Water Troughs:** the PDF says its lights don't show the levels yet, which is true of the current firmware.
+
+To rebuild the PDF after any change, run `python3 manual-user/build_user_manual.py`. The setup-table data lives in its `FUNCTIONS` list. The script also writes `manual-user/DaffodilManual.html` alongside it.
+
+--- USER ---
+upload the pdf to continuity
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+I've uploaded `DaffodilManual.pdf` to Continuity, and it's on the Documents page: http://factory2.local/continuity/documents.html
+
+--- USER ---
+for the pdf instead of the yellow ring at the top put  a header with the DigitalStables logo and then in the middle the Daffodil logo,
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+I'll use the round Digital Stables logo (the same one that's on the PCB) for the header, and `data/Daffodil.svg` in the middle of the cover.
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+The Digital Stables SVG uses fonts that aren't installed, so its lettering came out garbled. I'll rasterise it properly instead.
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+The high-resolution PNG (1042×839) renders cleanly, so I'm switching to that.
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Looks good. Re-uploading to Continuity so it has the new version:
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+I've replaced the yellow flower on the cover with a header and the Daffodil logo, rebuilt the PDF, and checked the new cover page:
+- **Header:** the round Digital Stables logo (Nu / Mu / Mn, the one on the PCBs) sits top left, above a green rule.
+- **Middle:** the Daffodil logo, taken from the device web app's `data/Daffodil.svg`. The subtitle, the short description and the date sit below it.
+
+I used the high-resolution PNG of the Digital Stables logo, because the SVG version needs fonts that aren't installed here and came out garbled. Both logos are copied into `manual-user/assets/`, so the build script doesn't depend on files elsewhere.
+
+The new version is uploaded to Continuity and replaced the old `DaffodilManual.pdf`: http://factory2.local/continuity/documents.html
+
+--- USER ---
+we need to update the teleonome and annabelle for the changes in daffodil
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+I'll find where Teleonome and Annabelle handle Daffodil data. Per your standing rule, I'll only edit Teleonome files, with no builds, commits or pushes.
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Found the Teleonome framework's Annabelle deserializers. Now reading how Daffodil data is parsed there and in Annabelle.ino.
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+The Teleonome web app (`RenderingEngine.js`, plus a copy in `zhinuwebapp`) also maps function numbers to labels. Checking those:
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Three Teleonome changes are needed: add the function constants, parse tokens 55/56 into named fields, and add the labels and fields to the two web apps. Making the edits now. I won't build anything.
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+The rule allows a standalone compile check outside the Maven build. I'll compile the two changed Java files against the existing classes into the scratchpad.
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Both Java files compile cleanly. The output went to the scratchpad, not the project. Checking the JavaScript syntax too:
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+Teleonome is updated for the new Daffodil functions, and Annabelle doesn't need any code change. Nothing is built, committed or pushed. The Java compiled cleanly in a standalone check outside the Maven build, and the two JavaScript files pass a syntax check. Everything is ready for you to build and deploy.
+
+**Annabelle:** it copies the Daffodil packet as-is, and the packet layout didn't change. The shared serializer has sent `measuredHeight2` and `maximumScepticHeight2` as fields 55/56 since 2026-09-01. An Annabelle flashed before then would need a reflash with the current library.
+
+**Teleonome `framework`:**
+- **`TeleonomeConstants.java`:** added the missing Daffodil functions:
+
+  | Constant | Value |
+  |---|---|
+  | `ANNABELL_DAFFODIL_WATER_TROUGH_TANK1` | 11 |
+  | `ANNABELL_DAFFODIL_2_WATER_TROUGH` | 12 |
+  | `ANNABELL_DAFFODIL_WATER_TROUGH_WATER_TEMP` | 13 |
+
+- **`DigitalStablesDataDeserializer.java`:**
+  - Now reads fields 55/56. Older firmware that doesn't send them gets defaults: -99 for field 55 and 0 for field 56.
+  - **Function 11 (Water Trough + Tank):** tank 1 name, height and volume, plus trough maximum height. It also reports `Tank 1 Pressure Psi` and `Tank 1 Water Level`, and remembers the water level history, like the other tank modes.
+  - **Function 12 (2 Water Troughs):** both troughs' names and maximum heights, plus a new `Measured Height 2` reading.
+  - **Function 13 (Water Trough + Water Temperature):** a new `Water Temperature` reading in °C, taken from `measuredHeight2`. Its history is remembered too, skipping -99 readings (probe missing).
+
+**Teleonome web apps (`teleonomewebapp` and `zhinuwebapp` `RenderingEngine.js`):**
+- Functions 10–13 now show names instead of "Function 13".
+- The Sensors card shows `Measured Height 2` and `Water Temperature` when they're present.
+
+**Problems I noticed in the existing deserializer but didn't change:**
+- **Wrong units:** `Measured Height` and `Maximum Height` are labelled "Meter", but Daffodil sends centimetres. I used "cm" for the new fields.
+- **Wrong source values:** `tank2WaterLevel` is calculated from `tank1PressurePsi`, and in mode 3 (1 Flow + 1 Tank), "Tank 1 Height" is filled from `qfactor1`.
+
+Should I fix those?
+
+--- USER ---
+<task-notification>
+<task-id>bsmjib4t2</task-id>
+<summary>Monitor event: "FactoryChat messages for daffodil-28"</summary>
+<event>[Monitor expired after 30m with no events delivered. Re-arm it if you still need the watch — and widen the filter if silence was unexpected.]</event>
+</task-notification>
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+I've turned the FactoryChat message watch back on; nothing came in during the last 30 minutes. The Teleonome changes are still ready for you to build. Do you want me to fix the unit labels and the two wrong source values in the deserializer?
+
+--- USER ---
+if you look at ~/Downloads/ultrasonic uart.png its a description of the uart ultra sonic, cn you make sure that the code is ok according to the description .  i am assuming that i will connect pin 4 of the sensor to pin 18 correct?
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+It's in `~/Pictures/Screenshots`, not Downloads:
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+The code already matches this datasheet, and yes, sensor pin 4 (TX) goes to terminal 18.
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+I checked `Daffodil.ino` against the datasheet section and it matches. Yes, sensor **pin 4 (TX) goes to terminal 18**. The only exception is the Water Trough + Tank setting, where it goes to terminal 33.
+
+| Datasheet | Code | |
+|---|---|---|
+| 9600 baud, 8 data bits, 1 stop bit, no parity | `begin(9600, SERIAL_8N1, rxPin, -1)` | ✓ |
+| Frame `0xFF`, Data_H, Data_L, SUM | waits for the `0xFF` header, then reads 3 more bytes | ✓ |
+| SUM = (0xFF + H + L) & 0xFF | `(frame[0] + frame[1] + frame[2]) & 0xFF` | ✓ |
+| Distance = H × 256 + L, in mm | `(H << 8) \| L`, divided by 10 to give cm | ✓ |
+| The sensor sends on its own; its RX pin only selects the output mode | only the ESP32's receive line is used, and the sensor's RX is left unconnected | ✓ |
+
+Checked against the datasheet's own example, `FF 07 A1 A7`: the checksum works out to `0xA7`, and the distance is 1953mm, so `measuredHeight` would be 195.3cm.
+
+**Wiring:**
+
+| Sensor pin | Connect to |
+|---|---|
+| 1 VCC | V50 |
+| 2 GND | GND |
+| 3 RX | Leave unconnected |
+| 4 TX | Terminal 18, with the cap on the 18 **Digital** header |
+
+Leaving pin 3 unconnected is the mode you want. Per the datasheet, a floating or high RX gives the "processed", more stable reading every 100–500ms, while tying it low gives the raw real-time value every ~100ms. The firmware only marks a reading as missing (-99) after 5 seconds without a valid frame, so either rate works.
+
+The one inaccuracy was that I'd described the update rate as "about every 100ms". I've corrected that comment in `Daffodil.ino` and the matching line in the technical manual. The user PDF never gave a rate, so it didn't need changing.
+
+--- USER ---
+<task-notification>
+<task-id>brvbhxag4</task-id>
+<tool-use-id>toolu_011xpe2UN8e6VB1CympebwUK</tool-use-id>
+<output-file>/tmp/claude-1000/-home-ari-Data-DigitalStables-Projects-Daffodil/71d7ea1d-82d4-4477-846d-e7a88d643e13/tasks/brvbhxag4.output</output-file>
+<status>killed</status>
+<summary>Background command "Locate Teleonome/Annabelle deserializer sources" was stopped after reaching its background time limit</summary>
+<note>If the work in progress still needs it, start it again with `run_in_background` and a longer `timeout`. If it already had the longest `timeout` allowed, do not restart it. Either way, report that it was stopped.</note>
+</task-notification>
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+The background search I started earlier for the Teleonome/Annabelle deserializer files hit its time limit and was stopped. I'm not restarting it, because a quicker search found the files and the Teleonome changes are already done.
+
+--- USER ---
+<task-notification>
+<task-id>bx2supp4y</task-id>
+<summary>Monitor event: "FactoryChat messages for daffodil-28"</summary>
+<event>[Monitor expired after 30m with no events delivered. Re-arm it if you still need the watch — and widen the filter if silence was unexpected.]</event>
+</task-notification>
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+I've turned the FactoryChat watch back on; no messages have come in. Your Daffodil firmware and Teleonome changes are waiting for you to build. I'm also still waiting to hear whether you want the unit labels and the two wrong source values in the deserializer fixed.
+
+--- USER ---
+<task-notification>
+<task-id>b7rnuww4g</task-id>
+<tool-use-id>toolu_01Dcx5U23yooQLq4sZs8gq8s</tool-use-id>
+<output-file>/tmp/claude-1000/-home-ari-Data-DigitalStables-Projects-Daffodil/71d7ea1d-82d4-4477-846d-e7a88d643e13/tasks/b7rnuww4g.output</output-file>
+<status>killed</status>
+<summary>Background command "Restart FactoryChat daemon with longer limit" was stopped after reaching its background time limit</summary>
+<note>If the work in progress still needs it, start it again with `run_in_background` and a longer `timeout`. If it already had the longest `timeout` allowed, do not restart it. Either way, report that it was stopped.</note>
+</task-notification>
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+The FactoryChat connection reached its 2-hour limit, which is the longest allowed, and was stopped. I haven't restarted it. I also turned off the message watch, since nothing is feeding it now. This session is no longer online in FactoryChat. If you want it back, ask me to "join the chat".
+
+None of the Daffodil work is affected. The firmware, both manuals and the Teleonome changes are all ready, and the Daffodil firmware and Teleonome changes still need you to build them.
+
+--- USER ---
+send a summary to continuity
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+
+
+--- CLAUDE ---
+I sent the summary to Continuity as inbox item #175. It has no web resume link because this session doesn't have one, but "Resume in terminal" will still work.
+
+**Done:**
+- **Ultrasonic:** `Daffodil.ino` now reads the waterproof UART sensor, checked against its datasheet. Sensor pin 4 (TX) goes to terminal 18, or terminal 33 in Water Trough + Tank.
+- **New mode 13:** Water Trough + Water Temperature on switch `0001`. The water temperature travels in `measuredHeight2`, and 2 Water Troughs now reads its second sensor.
+- **Board check:** terminals 18/33 have built-in level shifters and pull-ups, and each has separate Digital/Analog jumper headers.
+- **Manuals:** the technical manual is updated, and the new user `DaffodilManual.pdf` is on Documents.
+- **Teleonome:** edited only, not built. Annabelle needs no change.
+
+**Pending:**
+- **For you:** compile the Daffodil firmware in the Arduino IDE, and build and deploy the Teleonome framework and web apps.
+- **Bench check:** confirm switches `00010`/`00011` decode to function 13 with `printCSWData`.
+- **Decision:** whether to fix the deserializer's wrong unit labels and the two wrong source values.
+- **Known gaps:** 2 Water Troughs still has no LED display. Running `updateData.sh` would wipe the new modes from the device web app.
+
+**Linked file:** `DaffodilManual.pdf`, the copy already on Documents. Nothing new was uploaded.

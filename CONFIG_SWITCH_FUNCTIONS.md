@@ -17,7 +17,7 @@ The switch has 5 positions. The first 4 select the function; the 5th selects sol
 | `0110` | DAFFODIL_WATER_TROUGH |
 | `1110` | DAFFODIL_WATER_TROUGH_TANK1 |
 | `0011` | DAFFODIL_2_WATER_TROUGH |
-| `0001` | unassigned (reserved) |
+| `0001` | DAFFODIL_WATER_TROUGH_WATER_TEMP |
 | `1001` | unassigned (reserved) |
 | `0101` | unassigned (reserved) |
 | `1101` | unassigned (reserved) |
@@ -44,6 +44,8 @@ configured for frequent sampling had no battery protection at all — see the fi
   2026-09-01. `1110` used to be a third `DAFFODIL_WATER_TROUGH` slot but was fixed (2026-08-27) to
   `DAFFODIL_WATER_TROUGH_TANK1`, which had a function constant and full sensor/display support in
   firmware but was never actually wired to a switch position until then.
+- `DAFFODIL_WATER_TROUGH_WATER_TEMP` (`0001`, added 2026-10-02): trough UART ultrasonic on pin 18 plus
+  a waterproof DS18B20 on pin 33; the water temperature (°C) rides in `measuredHeight2`.
 - 6 of the 16 four-bit patterns are still unassigned/reserved — no function, device just sets
   `usingSolarPower` and otherwise does nothing for those.
 - `VOLTAGE_MONITOR`, `DAFFODIL_TEMP_SOILMOISTURE`, and `DAFFODIL_LIGHT_DETECTOR` exist as function

@@ -2,7 +2,7 @@
 
 *Complete reference: configuration switch, per-device calibration, power management, and LED
 status display. Supersedes "Daffodil Power Management and Configuration.md". Last updated
-2026-09-03.*
+2026-10-02.*
 
 ---
 
@@ -52,31 +52,40 @@ automatically — see §3.2).
 | `0010` | 2 Tanks | Available |
 | `1010` | Septic Tank | Available |
 | `0110` | Water Trough | Available |
-| `1110` | Water Trough + Tank | **Tank half only** — see note below and §8 |
-| `0011` | 2 Water Troughs | **Coming soon** — sensor hardware not yet shipped |
+| `1110` | Water Trough + Tank | Available |
+| `0011` | 2 Water Troughs | Readings reported; **no LED display yet** — see §8 |
+| `0001` | Water Trough + Water Temperature | Available |
 | all other combinations | — | Reserved / not yet in use |
 
 Firmware-internal names, for reference when reading debug output or this document's other
 sections: `FUN_1_FLOW`, `FUN_2_FLOW`, `FUN_1_FLOW_1_TANK`, `FUN_1_TANK`, `FUN_2_TANK`,
 `DAFFODIL_SCEPTIC_TANK`, `DAFFODIL_WATER_TROUGH`, `DAFFODIL_WATER_TROUGH_TANK1`,
-`DAFFODIL_2_WATER_TROUGH`.
+`DAFFODIL_2_WATER_TROUGH`, `DAFFODIL_WATER_TROUGH_WATER_TEMP` (function value 13).
 
-**Screw terminal wiring**, for the flow/tank sensor slots referenced throughout this manual:
+**What each function puts on the two sensor terminals** (full wiring details in §2.3):
 
-| Terminal | GPIO | Used for |
+| Function | Sensor 1 terminal (pin 18) | Sensor 2 terminal (pin 33) |
 |---|---|---|
-| Sensor 1 | pin 18 | Flow meter 1 (interrupt pulse count), or Tank 1 pressure (jumpered to ADS1115) |
-| Sensor 2 | pin 33 | Flow meter 2 (interrupt pulse count), or Tank 2 pressure (jumpered to ADS1115) |
+| 1 Flow Sensor | Flow meter 1 | — |
+| 2 Flow Sensors | Flow meter 1 | Flow meter 2 |
+| 1 Flow Sensor + 1 Tank | Flow meter 1 | Tank 2 pressure |
+| 1 Tank | Tank 1 pressure | — |
+| 2 Tanks | Tank 1 pressure | Tank 2 pressure |
+| Septic Tank | Ultrasonic | — |
+| Water Trough | Ultrasonic | — |
+| Water Trough + Tank | Tank 1 pressure | Ultrasonic (trough) |
+| 2 Water Troughs | Ultrasonic (trough 1) | Ultrasonic (trough 2) |
+| Water Trough + Water Temperature | Ultrasonic | Waterproof DS18B20 temperature probe |
 
-`2 Water Troughs` (`0011`) has its switch position and firmware constant assigned, but sensor-
-reading and LED-display code isn't implemented yet — pending the UART ultrasonic sensor
-hardware.
+Note the one exception: in `Water Trough + Tank` the ultrasonic moves to the **Sensor 2**
+terminal, because Sensor 1 is taken by the tank pressure sensor.
 
-`Water Trough + Tank` (`1110`) currently only reports the **tank** half. In this mode the sonar's
-trigger/echo wiring collides with Sensor 1 (pin 18), which this mode already uses for tank
-pressure — so the trough reading is pinned to a `-99` sentinel until a real single-wire ultrasonic
-driver replaces the current trigger/echo one for this mode specifically. See §5.3 and §8 for what
-this looks like on the LED display and the tracked fix.
+**Water Trough + Water Temperature reuses an existing data field.** To avoid changing the
+`DigitalStablesData` packet layout, the water temperature (°C) is sent in `measuredHeight2` —
+the field that carries the second trough's level in `2 Water Troughs` mode. Anything that reads
+this unit's data (cloud, Teleonome, Annabelle) must check the function value: in function 13,
+`measuredHeight2` is a temperature in °C, not a height in cm. A missing or disconnected probe
+reports `-99`.
 
 ### 2.2 Switch 5 — Reporting Mode
 
@@ -94,6 +103,72 @@ checks in** and **how long the battery lasts**:
 
 Either way, the unit still protects its battery from over-discharging (§4.3) — the difference
 is purely about reporting frequency, not battery safety.
+
+### 2.3 Sensor wiring
+
+The board has two sensor screw terminals (Sensor 1 and Sensor 2) and **one power screw terminal,
+`V50`** (the board's 5V rail). There is no 3.3V terminal — every external sensor is powered from
+`V50`.
+
+**Jumpers.** Next to the terminals are two silkscreened jumper groups, `18 Digital Analog` and
+`33 Digital Analog`. Each group is **two separate 2-pin headers**: a *Digital* one that connects
+the terminal to the ESP32 GPIO, and an *Analog* one that connects it to the ADS1115. Fit a jumper
+cap on **exactly one** header per terminal and leave the other one empty.
+
+| Terminal (`18 GPIO 33` block) | Digital header → | Analog header → |
+|---|---|---|
+| 18 (Sensor 1, J3 pin 1) | JP2 → GPIO 18 (via Q2) | JP4 → ADS1115 AIN1 (Tank 1 pressure) |
+| 33 (Sensor 2, J3 pin 2) | JP1 → GPIO 33 (via Q1) | JP5 → ADS1115 AIN0 (Tank 2 pressure) |
+
+Use the **digital** position for flow meters, ultrasonic sensors, and the DS18B20 temperature
+probe. Use the **analog** position only for 0.5–4.5V tank pressure transducers. For example,
+`Water Trough + Water Temperature` needs **both** jumpers on digital.
+
+**Level shifting is built in.** In the digital position, each terminal reaches its GPIO through a
+2N7002 MOSFET level shifter (Q2 for pin 18, Q1 for pin 33). It has a 4.7k pull-up to 3.3V on the
+ESP32 side (R6/R5) and a 10k pull-up to `V50` on the terminal side (R8/R7). This means:
+
+- 5V sensor outputs are safe on either terminal. No divider is needed.
+- Open-collector / open-drain sensors (most hall-effect flow meters, the DS18B20) need no external
+  pull-up resistor. The board's 10k to `V50` is the pull-up.
+
+**Ultrasonic level sensor (Septic Tank, Water Trough, Water Trough + Tank, 2 Water Troughs,
+Water Trough + Water Temperature).** The firmware expects a **waterproof ultrasonic sensor in
+"UART automatic" output mode** (A02YYUW, or JSN-SR04T / AJ-SR04M set to their automatic-UART
+mode). The old 4-wire trigger/echo sonar (HC-SR04 style) is **no longer supported** — it was
+retired because its exposed transducer kept corroding in the field.
+
+| Sensor wire | Connect to |
+|---|---|
+| VCC | `V50` |
+| GND | GND |
+| TX | The function's ultrasonic terminal (Sensor 1, or Sensor 2 for `Water Trough + Tank`) |
+| RX | Leave unconnected |
+
+The sensor sends its reading by itself at 9600 baud: every 100–500ms with its RX pin left
+unconnected (the "processed", more stable output), or every ~100ms if RX is tied to GND (raw
+real-time value). Each reading is a 4-byte
+frame: `0xFF`, distance high byte, distance low byte, checksum (the low 8 bits of the sum of the
+first three bytes). Distance is in millimetres. The firmware reads only the ESP32's receive line
+(trough 1 on `Serial2`, trough 2 on `Serial1`) and keeps the most recent frame whose checksum is
+correct. It converts that to centimetres with 0.1cm resolution and stores it in
+`measuredHeight` (and in `measuredHeight2` for trough 2). If no valid frame has arrived in the
+last **5 seconds** (sensor unplugged, wrong terminal, jumper on analog, wrong output mode), the
+reading becomes **`-99`**. Older firmware reported `0` for "no echo".
+
+**Waterproof DS18B20 water temperature probe (Water Trough + Water Temperature only).**
+
+| Probe wire (typical colors) | Connect to |
+|---|---|
+| Red (VDD) | `V50` |
+| Black (GND) | GND |
+| Yellow (data) | Terminal `33`, cap on the `33` **Digital** header (JP1) |
+
+No external 4.7k resistor is needed. The board's 10k to `V50` is enough pull-up for a normal
+1–3m probe cable. With a much longer cable, if readings drop out to `-99`, add a 4.7k between
+data and `V50` at the terminal. This probe has its own 1-Wire bus on pin 33. It is separate
+from the board's internal DS18B20 on pin 27, which supplies the board temperature and the serial
+number. The firmware reads it at 0.25°C resolution (10-bit) without pausing the main loop.
 
 ## 3. Per-Device Calibration
 
@@ -175,8 +250,11 @@ switches back at the real function resolved it immediately.
 ### 3.5 Trough / Septic Tank height calibration
 
 Separate from CSW calibration (§3.1–3.4). This calibrates the **ultrasonic level reading itself**
-for `Water Trough` and `Septic Tank` mode — set it any time the sonar is mounted at a new height
-or a tank/trough is physically changed.
+for the ultrasonic functions (`Water Trough`, `Septic Tank`, `Water Trough + Tank`,
+`Water Trough + Water Temperature`). Set it any time the ultrasonic sensor is mounted at a new
+height or a tank/trough is physically changed. Use the distance from the sensor's front face. The
+waterproof UART sensors have a blind zone of a few centimetres (about 3cm for the A02YYUW), so
+mount the sensor above the highest water level by at least that much.
 
 ```
 SetTroughParameters#<sensorHeightCm>#<levelMinCm>#<levelMaxCm>#
@@ -198,7 +276,8 @@ zone.
 the same three values, submitted as `SetScepticRange` to `/DaffodilServlet`, land in the exact
 same NVS fields. Either path works; use whichever is more convenient at install time.
 
-**This calibration only affects `Water Trough` mode's coloring.** `Septic Tank` mode's LED zones
+**This calibration only affects the Water Trough–family coloring** (`Water Trough`,
+`Water Trough + Water Temperature`, and the trough slot of `Water Trough + Tank`). `Septic Tank` mode's LED zones
 are computed from a fixed 90cm maximum sensor distance (`MAX_DISTANCE`) regardless of what's set
 here — see §5.3. Setting trough parameters on a Septic Tank–mode unit has no visible effect on its
 own display, though the values are still stored (and do apply if the same unit is later switched
@@ -313,7 +392,9 @@ Sensors`, `1 Flow Sensor + 1 Tank`) the display instead alternates each cycle be
 A 3×3 "tower" of LEDs, in one of two positions depending on function:
 
 - **Unshifted** — columns 1–3 (LEDs 1,2,3,6,7,8,11,12,13), no marker dot. Used only by
-  `Septic Tank` and `Water Trough` (and the unreachable `Voltage Monitor`, §8).
+  `Septic Tank`, `Water Trough`, and `Water Trough + Water Temperature` (and the unreachable
+  `Voltage Monitor`, §8). The water temperature itself is **not** shown on the LEDs. The
+  Temperature group (§5.1) still shows the outdoor (SHT) temperature.
 - **Shifted** — columns 0–2 (LEDs 0,1,2,5,6,7,10,11,12), always paired with the same blue slot
   marker described in §5.2: LED 4 while slot 1 is on screen, LED 14 while slot 2 is. Used by every
   function in the flow/tank "slot" family — `1 Tank`, `2 Tanks`, `1 Flow Sensor + 1 Tank`, and
@@ -326,7 +407,7 @@ A 3×3 "tower" of LEDs, in one of two positions depending on function:
 - **Septic Tank** — percent-of-max-distance, 4 zones: `measuredHeight × 100 / 90cm` (90cm is a
   fixed constant, `MAX_DISTANCE`, not the per-device §3.5 calibration). Red = critical (≤25%),
   yellow = warning (26–50%), green = good (51–75%), blue = full (>75%).
-- **Water Trough** — only **3** zones, no yellow warning tier, and the boundaries are the
+- **Water Trough** and **Water Trough + Water Temperature** — only **3** zones, no yellow warning tier, and the boundaries are the
   per-device §3.5 calibration values rather than fixed percentages: red if the sonar reading is
   at or beyond `sensorHeightCm − levelMinCm` (surface far from the sensor → low/critical), green
   between that and `sensorHeightCm − levelMaxCm`, blue below that (surface close to the sensor →
@@ -338,11 +419,11 @@ A 3×3 "tower" of LEDs, in one of two positions depending on function:
   25/50/75% breakpoints as Septic Tank above. This is unrelated to §3.5's `SetTroughParameters` —
   per-device tank height calibration is still TBA, see §8.
 - **The trough slot (slot 2) of `Water Trough + Tank`** — uses the *same* 3-zone, §3.5-calibrated
-  formula as standalone Water Trough above, but is not yet functional (§2.1, §8): with
-  `measuredHeight` pinned at the `-99` sentinel, the comparison always falls through to the last
-  zone, so **this slot always displays blue** — don't read that as an actual level. Once the
-  underlying sensor is wired up, this slot will start reflecting the same §3.5 calibration
-  already stored for the unit.
+  formula as standalone Water Trough above, reading the ultrasonic on the Sensor 2 terminal.
+- **Any Water Trough–family display stuck on blue** — a `-99` "no reading" value (§2.3) falls
+  through every comparison into the last zone. A trough that shows permanently full may simply
+  mean the ultrasonic isn't being heard. Check `printCurrentDSDData` for `measuredHeight=-99`
+  before trusting the display.
 
 ### 5.4 Internet Status
 
@@ -495,12 +576,34 @@ reads as "calibration is fine" when it's actually just not being shown.
 **A flow sensor on one screw terminal never registers pulses, but works fine on the other
 terminal (with the same physical sensor).**
 This points to that terminal's GPIO not being correctly configured as an input at boot,
-typically because it's shared with another peripheral (e.g. the ultrasonic trigger pin) that
-claims it as an output during initialization. If you have firmware source access, check that the
+typically because it's shared with another peripheral that claims it as an output during
+initialization (historically the old trigger/echo sonar library on pin 18, now removed). Also
+check that terminal's jumper is in the **digital** position (§2.3). If you have firmware source access, check that the
 sensor's GPIO is explicitly set to `INPUT` mode early in `setup()`, after any other library or
 global object that might also touch that same pin. This was diagnosed and fixed on `Daffodil.ino`
 for the Sensor 1 (pin 18) terminal on 2026-09-02 — devices built from a firmware version at or
 after that date should not see this issue.
+
+**Ultrasonic level always reads `-99`.**
+`-99` means no valid frame arrived in the last 5 seconds (§2.3). In order, check that:
+
+1. The sensor's **TX** wire is on the function's ultrasonic terminal: Sensor 1, except Sensor 2 for
+   `Water Trough + Tank`.
+2. That terminal's jumper cap is on its **Digital** header, and its Analog header is empty.
+3. The sensor is powered from `V50`.
+4. The sensor is a *UART automatic-output* model or is set to that mode. A trigger/echo-mode
+   sensor sends nothing unless triggered, and the firmware never triggers.
+5. The unit is actually in an ultrasonic function. Check `printCSWData`, because the UART is
+   only started for those functions at boot.
+
+A sensor in "UART controlled" mode (it waits for a command on its RX line) also reads `-99`.
+Re-jumper or re-solder it to automatic mode per its datasheet.
+
+**Water temperature (`measuredHeight2`) always reads `-99` in Water Trough + Water Temperature.**
+The probe wasn't found on its 1-Wire bus. Check the probe's data wire is on the Sensor 2 terminal
+with the cap on the `33` **Digital** header (JP1), and that red goes to `V50` and black to GND. A reading of exactly
+`85.0` right after boot would mean a DS18B20 power-on value slipped through; the firmware does one
+blocking conversion at boot to prevent this. If it shows up, report it as a bug.
 
 **Annabelle or a LoRa base station isn't receiving a Daffodil unit's transmissions.**
 Confirm the unit is actually transmitting (§5.5's LoRa Status LED should show TX OK). If it is,
@@ -512,12 +615,6 @@ for the packet, the packet arrived but failed validation — check that the devi
 
 ## 8. Known Limitations / Roadmap
 
-- `Water Trough + Tank` (`1110`) only reports its tank sensor. The sonar's trigger/echo lines are
-  hardwired to pins 18/33, which this mode already dedicates to tank1 pressure sensing — so the
-  trough half is stuck at the firmware's `-99` "not read" sentinel until a real single-wire
-  ultrasonic driver (distinct from the current two-pin sonar library) replaces it for this mode.
-  On the LED display (§5.3) this shows up as the trough slot always displaying blue, regardless of
-  actual level — don't mistake that for a working reading.
 - `Septic Tank` mode's LED fill percentage is computed against a fixed 90cm maximum sensor
   distance, not the §3.5 `SetTroughParameters` calibration — that calibration currently only
   changes `Water Trough` mode's coloring. Not a bug, but easy to assume otherwise if you've just
@@ -537,5 +634,13 @@ for the packet, the packet arrived but failed validation — check that the devi
 - The Voltage Monitor, Temperature+Soil Moisture, and Light Detector functions exist as firmware
   constants but aren't reachable via any current switch position — no wiring or assigned slot in
   the current scheme.
-- `2 Water Troughs` (`0011`) has its switch position and firmware constant assigned, but no
-  sensor-reading or LED-display code yet — pending the UART ultrasonic sensor hardware.
+- `2 Water Troughs` (`0011`) reads and reports both troughs (`measuredHeight` and
+  `measuredHeight2`), but has **no LED level display yet**, and the second trough's height
+  calibration (`maximumScepticHeight2`) has no serial command or web form to set it.
+- `Water Trough + Water Temperature` (`0001`) sends the water temperature in `measuredHeight2`
+  (§2.1). This is a stop-gap to avoid changing the `DigitalStablesData` packet. Downstream
+  consumers must decode that field by function value, and the cloud/Teleonome side hasn't been
+  updated for function 13 yet. The device's own web app recognises the function (it shows the
+  trough panel), but doesn't display the water temperature.
+- The `0001` switch-decode band was carved out using readings from the original 32-position
+  sweeps. It hasn't yet been bench-confirmed on hardware with `printCSWData` at `00010`/`00011`.

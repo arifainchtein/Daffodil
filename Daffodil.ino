@@ -2,7 +2,6 @@
 #include <PowerManager.h>
 #include <SolarInfo.h>
 //#include <TimeUtils.h>
-#include <NewPing.h>
 #include "Arduino.h"
 #include <Timer.h>
 #include <PCF8563TimeManager.h>
@@ -32,6 +31,7 @@
 //#include <driver/adc.h>
 #include <BH1750.h>
 #include <Adafruit_INA219.h>
+#include <VitalSignsTracker.h>
 #include <esp_sleep.h>
 //#include <driver/adc.h>
 
@@ -47,8 +47,6 @@
 #define TPL5010_DONE 25
 #define SLEEP_SWITCH_26 26
 #define TEMPERATURE 27
-#define TRIGGER_PIN 18
-#define ECHO_PIN 33
 #define OP_MODE 34
 #define SENSOR_INPUT_2 33
 #define SENSOR_INPUT_1 18
@@ -74,10 +72,15 @@ RTC_DATA_ATTR static uint32_t rtc_comma_first_time = 0;     // Unix-seconds when
 RTC_DATA_ATTR static float    rtc_comma_min_voltage = 99.0f;// lowest voltage seen in this COMMA session
 RTC_DATA_ATTR static uint32_t rtc_comma_cycle_count = 0;    // number of 10-min cycles in this session
 RTC_DATA_ATTR static char     rtc_device_shortname[8] = {0};// device short name, populated on full boot
-RTC_DATA_ATTR static bool     rtc_diagnosticsEnabled = false;      // set/cleared remotely via EnableDiagnostics/DisableDiagnostics
-RTC_DATA_ATTR static uint8_t  rtc_activeDiagnosticType = DIAGNOSTIC_TYPE_NONE;
 
-TxCurrentDiagnosticPayload pendingTxDiagnostic = {};  // filled during sendMessage(), consumed right after
+// Vital signs (reset / sleep / power / TX telemetry), sent after the data pulse - replaces the
+// on-demand DiagnosticRecord (EnableDiagnostics/DisableDiagnostics), retired 2026-10-05.
+// See VitalSignsTracker.h and Projects/Annabelle/VitalSigns_Design.pdf.
+VitalSignsTracker vitalSigns;
+const uint32_t FIRMWARE_BUILD = VitalSignsTracker::buildStamp(__DATE__, __TIME__);
+#define VITAL_SIGNS_GAP_MS 1000                         // after the data packet, so Annabelle has read it
+#define VITAL_SIGNS_AWAKE_INTERVAL_MS (10UL * 60UL * 1000UL)  // only for a unit that stays awake
+unsigned long lastVitalSignsMs = 0;
 
 String currentSSID;
 String ipAddress = "";
@@ -93,8 +96,52 @@ boolean usingSolarPower = true;
 #define NUM_LEDS 15
 CRGB leds[NUM_LEDS];
 
-// Arduino pin tied to echo pin on the ultrasonic sensor.
-#define MAX_DISTANCE 90  // Maximum distance we want to ping for (in centimeters). Maximum sensor distance is rated at 400-500cm.
+// Maximum trough/tank depth in cm — used to scale measuredHeight into a percentage for the LEDs.
+#define MAX_DISTANCE 90
+
+// Waterproof UART ultrasonic (A02YYUW / JSN-SR04T / AJ-SR04M "UART auto" mode). The sensor
+// streams a 4-byte frame on its own (every 100-500ms with its RX pin floating/high = processed
+// value, the mode we use; ~100ms real-time if RX is pulled low): 0xFF, distance_mm high, distance_mm low,
+// checksum = (0xFF + high + low) & 0xFF, at 9600 8N1. RX only — the sensor's own RX pin is left
+// unconnected (auto mode needs no trigger). Power it from V50 — the pin 18/33 terminals go
+// through the board's 2N7002 level shifters (Q2/Q1), so a 5V TX line is safe.
+//
+// Pin use per mode (no DigitalStablesData change — slot 2 reuses measuredHeight2):
+//   DAFFODIL_WATER_TROUGH        pin18 ultrasonic -> measuredHeight
+//   DAFFODIL_WATER_TROUGH_WATER_TEMP pin18 ultrasonic -> measuredHeight, pin33 DS18B20 water temp -> measuredHeight2 (°C)
+//   DAFFODIL_2_WATER_TROUGH      pin18 ultrasonic -> measuredHeight, pin33 ultrasonic         -> measuredHeight2 (cm)
+//   DAFFODIL_SCEPTIC_TANK        pin18 ultrasonic -> measuredHeight
+//   DAFFODIL_WATER_TROUGH_TANK1  pin18 is tank1 pressure, so pin33 ultrasonic -> measuredHeight
+#define ULTRASONIC_BAUD 9600
+#define ULTRASONIC_STALE_MS 5000  // no valid frame for this long -> -99
+struct UartUltrasonic {
+  HardwareSerial *serial;
+  bool started;
+  uint8_t frame[4];
+  uint8_t frameIndex;
+  float lastCm;
+  unsigned long lastMillis;
+};
+UartUltrasonic ultrasonic1 = { &Serial2, false, { 0 }, 0, -99, 0 };  // measuredHeight
+UartUltrasonic ultrasonic2 = { &Serial1, false, { 0 }, 0, -99, 0 };  // measuredHeight2 (DAFFODIL_2_WATER_TROUGH)
+
+// TX-summary sampler. Must stay below the struct definitions: the IDE inserts its auto-prototypes
+// just above the first function in the sketch, so defining one earlier hides UartUltrasonic from them.
+// Called on core 0 while sendMessage() blocks in LoRa.endPacket(false).
+// INA219 current is + while the battery discharges (batteryCurrent < 0 means charging).
+bool daffodilTxSample(int16_t &batteryDraw_mA, uint16_t &battery_mV) {
+  batteryDraw_mA = (int16_t)ina219.getCurrent_mA();
+  battery_mV = (uint16_t)(ina219.getBusVoltage_V() * 1000.0f);
+  return true;
+}
+
+// Waterproof DS18B20 water temperature on pin 33 (DAFFODIL_WATER_TROUGH_WATER_TEMP only), its own OneWire
+// bus separate from the board DS18B20 on pin 27. No external pull-up needed: the pin-33 terminal
+// already goes through the board's 2N7002 level shifter (Q1, R5 4.7k to V33 on the GPIO side,
+// R7 10k to V50 on the terminal side), so the probe runs off V50 and the 10k is the bus pull-up.
+OneWire waterOneWire(SENSOR_INPUT_2);
+DallasTemperature waterTempSensor(&waterOneWire);
+bool waterTempStarted = false;
 
 #define OPERATING_STATUS_SLEEP 1
 #define OPERATING_STATUS_NO_LED 2
@@ -104,7 +151,6 @@ CRGB leds[NUM_LEDS];
 
 
 ErrorManager errorManager;
-NewPing sonar(TRIGGER_PIN, ECHO_PIN, MAX_DISTANCE);  // NewPing setup of pins and maximum distance.
 
 
 
@@ -332,6 +378,68 @@ uint8_t color = 0;
 String timezone;
 
 const char *display1URL = "http://Ra.local/TeleonomeServlet?formName=GetDeneWordValueByIdentity&identity=Ra:Purpose:Sensor%20Data:Now:Battery%20Voltage";
+void beginUltrasonic(UartUltrasonic &u, int rxPin) {
+  if (u.started) return;
+  // Bigger RX buffer (~25s of frames) so a long blocking stretch (WiFi upload etc.) between
+  // readSensorData() calls doesn't overflow it. Must be set before begin().
+  u.serial->setRxBufferSize(1024);
+  u.serial->begin(ULTRASONIC_BAUD, SERIAL_8N1, rxPin, -1);
+  u.started = true;
+}
+
+// Non-blocking: parses whatever frames arrived since the last call and returns the newest valid
+// distance in cm, or -99 if the UART isn't running or no valid frame for ULTRASONIC_STALE_MS.
+float readUltrasonicCm(UartUltrasonic &u) {
+  if (!u.started) return -99;
+  while (u.serial->available()) {
+    uint8_t b = u.serial->read();
+    if (u.frameIndex == 0 && b != 0xFF) continue;  // hunt for the header
+    u.frame[u.frameIndex++] = b;
+    if (u.frameIndex < 4) continue;
+    uint8_t sum = (u.frame[0] + u.frame[1] + u.frame[2]) & 0xFF;
+    if (sum == u.frame[3]) {
+      uint16_t mm = ((uint16_t)u.frame[1] << 8) | u.frame[2];
+      u.lastCm = mm / 10.0;
+      u.lastMillis = millis();
+      u.frameIndex = 0;
+    } else {
+      // Bad checksum — probably synced on a data byte that happened to be 0xFF. Resync on the
+      // next 0xFF inside this frame, if any, instead of throwing all 4 bytes away.
+      uint8_t keep = 0;
+      for (uint8_t i = 1; i < 4; i++) {
+        if (u.frame[i] == 0xFF) {
+          keep = 4 - i;
+          memmove(u.frame, u.frame + i, keep);
+          break;
+        }
+      }
+      u.frameIndex = keep;
+    }
+  }
+  if (u.lastMillis == 0 || millis() - u.lastMillis > ULTRASONIC_STALE_MS) return -99;
+  return u.lastCm;
+}
+
+void beginWaterTemperature() {
+  waterTempSensor.begin();
+  waterTempSensor.setResolution(10);  // 0.25°C, ~190ms conversion
+  // One blocking conversion at boot so the first read isn't the DS18B20's 85°C power-on value.
+  waterTempSensor.setWaitForConversion(true);
+  waterTempSensor.requestTemperatures();
+  waterTempSensor.setWaitForConversion(false);
+  waterTempStarted = true;
+}
+
+// Non-blocking: returns the conversion started on the previous call, then starts the next one.
+// -99 if the sensor is missing/disconnected.
+float readWaterTemperature() {
+  if (!waterTempStarted) return -99;
+  float t = waterTempSensor.getTempCByIndex(0);
+  waterTempSensor.requestTemperatures();
+  if (t == DEVICE_DISCONNECTED) return -99;  // -127; the legacy Dallas lib in the sketchbook has no DEVICE_DISCONNECTED_C
+  return t;
+}
+
 void IRAM_ATTR pulseCounter() {
   flowMeterPulseCount++;
 }
@@ -361,8 +469,8 @@ uint8_t calculateChecksum(const T &data) {
     checksumOffset = offsetof(DigitalStablesData, checksum);
   } else if constexpr (std::is_same<T, RequestCommand>::value) {
     checksumOffset = offsetof(RequestCommand, checksum);
-  } else if constexpr (std::is_same<T, DiagnosticRecord>::value) {
-    checksumOffset = offsetof(DiagnosticRecord, checksum);
+  } else if constexpr (std::is_same<T, VitalSignsRecord>::value) {
+    checksumOffset = offsetof(VitalSignsRecord, checksum);
   }
 
   for (size_t i = 0; i < checksumOffset; i++) {
@@ -384,7 +492,7 @@ int sendMessage(const T &inputData, bool skipCAD = false) {
 
   long code = secretManager.generateCode();
 
-  if constexpr (std::is_same<T, DigitalStablesData>::value || std::is_same<T, RequestCommand>::value || std::is_same<T, DiagnosticRecord>::value) {
+  if constexpr (std::is_same<T, DigitalStablesData>::value || std::is_same<T, RequestCommand>::value || std::is_same<T, VitalSignsRecord>::value) {
     dataToSend.totpcode = code;
     dataToSend.checksum = 0;
     dataToSend.checksum = calculateChecksum(dataToSend);
@@ -425,73 +533,20 @@ int sendMessage(const T &inputData, bool skipCAD = false) {
       }
       LoRa.write((uint8_t *)&dataToSend, sizeof(T));
       long start = millis();
-      bool capturingTxDiagnostic = rtc_diagnosticsEnabled && rtc_activeDiagnosticType == DIAGNOSTIC_TYPE_TX_CURRENT && foundINA219;
-      // Only take the async+poll path during an actual TX-current diagnostic capture — it was
-      // previously also triggered by `debug` alone (i.e. every send all session), but the async
-      // LoRa.endPacket(true) + isTransmitting() polling never once observed the radio as busy on
-      // this hardware/library combo (confirmed via pollIterations==0, every test, 2026-07-24).
-      // LoRa.endPacket(false) (the else branch below) blocks on the real IRQ_TX_DONE_MASK flag,
-      // so it's the one that's actually been transmitting correctly.
-      if (capturingTxDiagnostic && foundINA219) {
-        if (capturingTxDiagnostic) {
-          pendingTxDiagnostic.sampleCount = 0;
-          pendingTxDiagnostic.v50i_mV = (uint16_t)(digitalStablesData.v50Voltage * 1000);
-          pendingTxDiagnostic.mAPre = (uint16_t)ina219.getCurrent_mA();
-        }
-        if (debug) {
-          Serial.print("TX-CURRENT pre v50i=");
-          Serial.print(digitalStablesData.v50Voltage);
-          Serial.print(" mA=");
-          Serial.println(ina219.getCurrent_mA());
-        }
-        LoRa.endPacket(true);
-        uint16_t pollIterations = 0;
-        while (LoRa.isTransmitting()) {
-          pollIterations++;
-          uint16_t sampleMa = (uint16_t)ina219.getCurrent_mA();
-          if (debug) {
-            Serial.print("TX-CURRENT t=");
-            Serial.print(millis() - start);
-            Serial.print("ms mA=");
-            Serial.println(sampleMa);
-          }
-          if (capturingTxDiagnostic && pendingTxDiagnostic.sampleCount < DIAGNOSTIC_TX_MAX_SAMPLES) {
-            uint8_t i = pendingTxDiagnostic.sampleCount;
-            pendingTxDiagnostic.samples[i].offsetMs = (uint16_t)(millis() - start);
-            pendingTxDiagnostic.samples[i].milliamps = sampleMa;
-            pendingTxDiagnostic.sampleCount++;
-          }
-        }
-        if (capturingTxDiagnostic) {
-          pendingTxDiagnostic.mAPost = (uint16_t)ina219.getCurrent_mA();
-        }
-        if (debug) {
-          Serial.print("TX-CURRENT post mA=");
-          Serial.print(ina219.getCurrent_mA());
-          Serial.print(" pollIterations=");
-          Serial.print(pollIterations);
-          Serial.print(" isTransmittingElapsedMs=");
-          Serial.println(millis() - start);
-          if (pollIterations == 0) {
-            // Never observed MODE_TX (0x03) in REG_OP_MODE (0x01) — dump every register so we
-            // can see what mode/IRQ state the chip actually reports right after the TX write,
-            // instead of just the boolean isTransmitting() check.
-            Serial.println("pollIterations==0 — dumping LoRa registers:");
-            LoRa.dumpRegisters(Serial);
-          }
-        }
-        // pollIterations==0 means isTransmitting() never once read the radio as busy —
-        // i.e. REG_OP_MODE never showed MODE_TX after we wrote it, meaning the chip likely
-        // never actually radiated this packet even though endPacket()/the code path here
-        // reports success unconditionally (its return value is never itself meaningful).
-        result = LORA_OK;
-      } else {
-        if (!LoRa.endPacket(false)) {
-          result = LORA_TX_FAILED;
-        } else {
-          result = LORA_OK;
-        }
+      // TX summary for the vital signs (battery draw before/peak/after, panel current, V50_I,
+      // sag, duration). Not for the VitalSigns packet itself, so each record reports the DATA
+      // packet's transmit. The old TX_CURRENT path polled LoRa.isTransmitting(), which never
+      // read busy on this hardware (pollIterations==0) - the tracker samples from a core-0 task
+      // while endPacket(false) blocks on the real TX-done flag instead.
+      constexpr bool trackTx = !std::is_same<T, VitalSignsRecord>::value;
+      if (trackTx) {
+        vitalSigns.beginTx(foundINA219 ? daffodilTxSample : nullptr,
+                           foundINA219Solar ? (int16_t)solarIna219.getCurrent_mA() : -1,
+                           foundADS && digitalStablesData.v50Voltage > 0 ? (uint16_t)(digitalStablesData.v50Voltage * 1000) : 0);
       }
+      bool txOk = LoRa.endPacket(false);
+      if (trackTx) vitalSigns.endTx(txOk);
+      result = txOk ? LORA_OK : LORA_TX_FAILED;
       if (ledsWereOn) digitalWrite(LED_CONTROL, HIGH);  // restore LEDs after TX
       delay(50);
       if (debug) {
@@ -627,16 +682,6 @@ void processLora(int packetSize) {
       } else if (commandcode == "SendCurrentData") {
         if (debug) Serial.println("received SendCurrentData, sending ..");
         sendMessage(digitalStablesData,false);
-      } else if (commandcode.startsWith("EnableDiagnostics")) {
-        int idx = commandcode.indexOf('#');
-        rtc_activeDiagnosticType = (idx >= 0) ? (uint8_t)commandcode.substring(idx + 1).toInt() : DIAGNOSTIC_TYPE_TX_CURRENT;
-        rtc_diagnosticsEnabled = true;
-        if (debug) Serial.print("Diagnostics enabled, type=");
-        if (debug) Serial.println(rtc_activeDiagnosticType);
-      } else if (commandcode == "DisableDiagnostics") {
-        rtc_diagnosticsEnabled = false;
-        rtc_activeDiagnosticType = DIAGNOSTIC_TYPE_NONE;
-        if (debug) Serial.println("Diagnostics disabled");
       }
     } else {
       if (debug) Serial.print(" Receive RequestCommand but invalid code: ");
@@ -963,8 +1008,10 @@ void configureINA219Calibration(uint8_t i2cAddr) {
   Wire.endTransmission();
 }
 
-// Packs the boot-time I2C found* flags for DIAGNOSTIC_TYPE_I2C_STATUS — see bit layout
-// comment on I2CStatusDiagnosticPayload in DigitalStablesData.h.
+// Packs the boot-time I2C found* flags - sent as VitalSignsRecord.i2cDeviceMask (was
+// DIAGNOSTIC_TYPE_I2C_STATUS). DS18B20 is OneWire, not I2C, and is deliberately excluded:
+//   bit0=lcd(0x03) bit1=temp(0x40) bit2=ADS1115(0x48) bit3=BH1750(0x23)
+//   bit4=INA219 battery(0x41) bit5=PCF8563T(0x51) bit6=INA219 solar(0x45) bit7=reserved
 uint8_t buildI2CStatusMask() {
   uint8_t mask = 0;  // bit7 reserved — DS18B20 is OneWire, not I2C, deliberately excluded here
   if (foundlcd)         mask |= 0x01;
@@ -979,6 +1026,7 @@ uint8_t buildI2CStatusMask() {
 
 void setup() {
   lastResetReason = esp_reset_reason();
+  vitalSigns.captureBoot();  // reset reason + wake cause only, no I/O
 
   gpio_hold_dis((gpio_num_t)LED_CONTROL);
   gpio_hold_dis((gpio_num_t)SLEEP_SWITCH_26);  // must release or digitalWrite below has no effect
@@ -989,12 +1037,8 @@ void setup() {
   pinMode(SLEEP_SWITCH_26, OUTPUT);
   digitalWrite(SLEEP_SWITCH_26, HIGH);
 
-  // The global `sonar` NewPing instance below is constructed before setup() runs, and its
-  // constructor unconditionally sets TRIGGER_PIN (18, == SENSOR_INPUT_1) to OUTPUT and drives
-  // it low - it has no idea this device might be in a flow-meter function instead. Undo that
-  // here so attachInterrupt(SENSOR_INPUT_1, ...) below actually sees pulses instead of a pin
-  // the sonar driver is holding low. Safe for trough/septic modes too: NewPing::ping() re-claims
-  // the trigger pin as OUTPUT via direct register write on every call, so it self-heals there.
+  // Both sensor terminals start as plain inputs; the operating mode below decides whether they
+  // become flow-meter interrupts, tank-pressure terminals, ultrasonic UART RX or water-temp OneWire.
   pinMode(SENSOR_INPUT_1, INPUT);
   pinMode(SENSOR_INPUT_2, INPUT);
 
@@ -1175,6 +1219,9 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
   // ── Early-exit checks (Wire + RTC are ready; nothing else initialised yet) ──────────────────
 
   uint32_t _nowSec = timeManager.getCurrentTimeInSeconds(currentTimerRecord);
+  // Before the early exits below, so wakes that go straight back to sleep are counted too, and a
+  // real reset is saved to NVS even if this boot never gets as far as a LoRa send.
+  vitalSigns.recordBoot(_nowSec);
 
   // 1. TPL5010 watchdog reset during deep sleep: return to sleep for the remaining intended time.
   //    Petting the watchdog here resets its 15-min window so it won't fire again mid-sleep.
@@ -1183,6 +1230,7 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
     uint32_t _remaining = rtc_intended_wakeup_time - _nowSec;
     if (_remaining > 0 && _remaining <= 7200) {
       if (debug) { Serial.printf("Early wakeup — %us remaining, returning to sleep.\n", _remaining); Serial.flush(); }
+      vitalSigns.recordEarlyWake();
       pinMode(TPL5010_DONE, OUTPUT);
       digitalWrite(TPL5010_DONE, HIGH);
       delayMicroseconds(100);
@@ -1208,6 +1256,7 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
       digitalWrite(TPL5010_DONE, LOW);
       // Append this cycle's reading to the COMMA log.
       appendCommaRecord(_qv, _nowSec);
+      vitalSigns.recordCommaWake(_qv, _nowSec, 600);
       gpio_hold_en((gpio_num_t)LED_CONTROL);
       gpio_hold_en((gpio_num_t)SLEEP_SWITCH_26);
       gpio_deep_sleep_hold_en();
@@ -1222,6 +1271,9 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
     rtc_intended_wakeup_time = 0;
     rtc_has_comma_data = true;  // trigger LoRa summary send after LoRa is initialised
   }
+
+  // Full boot from here on - battery voltage before WiFi/LoRa add any load.
+  vitalSigns.recordWakeVoltage(quickReadBusVoltage());
 
   // ────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -1548,7 +1600,8 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
     // 1010  0    | 7379  | DAFFODIL_SCEPTIC_TANK
     // 0110  0    | 7174  | DAFFODIL_WATER_TROUGH
     // 1110  0    | 6965  | DAFFODIL_WATER_TROUGH_TANK1
-    // 0001,1001,0101,1101  0 (merged) | 6689-6012 | (unassigned)
+    // 0001  0    | 6689  | DAFFODIL_WATER_TROUGH_WATER_TEMP
+    // 1001,0101,1101  0 (merged)      | 6469-6012 | (unassigned)
     // 0011  0    | 5800  | DAFFODIL_WATER_TROUGH
     // 1011,0111,1111  0 (merged)      | 5558-5060 | (unassigned)
     // 0000  1    | 4806  | FUN_1_FLOW
@@ -1559,7 +1612,8 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
     // 1010  1    | 3445  | DAFFODIL_SCEPTIC_TANK
     // 0110  1    | 3147  | DAFFODIL_WATER_TROUGH
     // 1110  1    | 2841  | DAFFODIL_WATER_TROUGH_TANK1
-    // 0001,1001,0101,1101  1 (merged) | 2437-1433 | (unassigned)
+    // 0001  1    | 2437  | DAFFODIL_WATER_TROUGH_WATER_TEMP
+    // 1001,0101,1101  1 (merged)      | 2111-1433 | (unassigned)
     // 0011  1    | 1116  | DAFFODIL_WATER_TROUGH
     // 1011,0111,1111  1 (merged)      | 753,-3,-3 | (unassigned, saturates near 0)
     if (cswDecodeValue >= 8233) {
@@ -1608,9 +1662,13 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
       digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH_TANK1;
       secretManager.readTank1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
       usingSolarPower = false;
-    } else if (cswDecodeValue >= 5906 && cswDecodeValue < 6827) {
-      // 0001/1001/0101/1101, solar off — unassigned (merged: none of these four carry a
-      // function, so one wide band is as safe as four narrow ones and far simpler)
+    } else if (cswDecodeValue >= 6579 && cswDecodeValue < 6827) {
+      // 00010, solar off — DAFFODIL_WATER_TROUGH_WATER_TEMP (raw 6689, midpoints to 1110=6965 / 1001=6469)
+      digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH_WATER_TEMP;
+      usingSolarPower = false;
+    } else if (cswDecodeValue >= 5906 && cswDecodeValue < 6579) {
+      // 1001/0101/1101, solar off — unassigned (merged: none of these three carry a
+      // function, so one wide band is as safe as three narrow ones and far simpler)
       usingSolarPower = false;
     } else if (cswDecodeValue >= 5679 && cswDecodeValue < 5906) {
       // 00110, solar off — DAFFODIL_2_WATER_TROUGH (was a duplicate DAFFODIL_WATER_TROUGH slot,
@@ -1665,8 +1723,12 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
       digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH_TANK1;
       secretManager.readTank1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
       usingSolarPower = true;
-    } else if (cswDecodeValue >= 1274 && cswDecodeValue < 2639) {
-      // 0001/1001/0101/1101, solar on — unassigned (merged, same reasoning as the solar-off gaps)
+    } else if (cswDecodeValue >= 2274 && cswDecodeValue < 2639) {
+      // 00011, solar on — DAFFODIL_WATER_TROUGH_WATER_TEMP (raw 2437, midpoints to 1110=2841 / 1001=2111)
+      digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH_WATER_TEMP;
+      usingSolarPower = true;
+    } else if (cswDecodeValue >= 1274 && cswDecodeValue < 2274) {
+      // 1001/0101/1101, solar on — unassigned (merged, same reasoning as the solar-off gaps)
       usingSolarPower = true;
     } else if (cswDecodeValue >= 934 && cswDecodeValue < 1274) {
       // 00111, solar on — DAFFODIL_2_WATER_TROUGH (was a duplicate DAFFODIL_WATER_TROUGH slot,
@@ -1704,7 +1766,8 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
     // 1010  0    | 5908 @ 4.365       | DAFFODIL_SCEPTIC_TANK
     // 0110  0    | 5746 @ 4.348       | DAFFODIL_WATER_TROUGH
     // 1110  0    | 5575 @ 4.348       | DAFFODIL_WATER_TROUGH_TANK1
-    // 0001,1001,0101,1101  0 (merged) | 5356-4814 @ ~4.36 | (unassigned)
+    // 0001  0    | 5356 @ 4.374       | DAFFODIL_WATER_TROUGH_WATER_TEMP (normalized ~6122)
+    // 1001,0101,1101  0 (merged)      | 5177-4814 @ ~4.36 | (unassigned)
     // 0011  0    | 4645 @ 4.367       | DAFFODIL_WATER_TROUGH
     // 1011,0111,1111  0 (merged)      | 4450-3850 @ ~4.35 | (unassigned)
     // 1000  1    | 3621 @ 4.330       | FUN_2_FLOW  <- reads ABOVE 0000+solar, see quirk note
@@ -1715,7 +1778,8 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
     // 1010  1    | 2520 @ 4.350       | DAFFODIL_SCEPTIC_TANK
     // 0110  1    | 2274 @ 4.349       | DAFFODIL_WATER_TROUGH
     // 1110  1    | 1951 @ 4.350       | DAFFODIL_WATER_TROUGH_TANK1
-    // 0001,1001,0101,1101  1 (merged) | 1690-907 @ ~4.35  | (unassigned)
+    // 0001  1    | 1690 @ 4.350       | DAFFODIL_WATER_TROUGH_WATER_TEMP (normalized ~1943)
+    // 1001,0101,1101  1 (merged)      | 1423-907 @ ~4.35  | (unassigned)
     // 0011  1    | -2 @ 4.349         | DAFFODIL_WATER_TROUGH (bottom catch-all)
     // 1011,0111,1111  1 (merged)      | -2 @ ~4.35 | (unassigned, saturates near 0)
     if (cswOutput >= 7587) {
@@ -1763,8 +1827,12 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
       digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH_TANK1;
       secretManager.readTank1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
       usingSolarPower = false;
-    } else if (cswOutput >= 5427 && cswOutput < 6267) {
-      // 0001/1001/0101/1101, solar off — unassigned (merged)
+    } else if (cswOutput >= 6017 && cswOutput < 6267) {
+      // 00010, solar off — DAFFODIL_WATER_TROUGH_WATER_TEMP (normalized ~6122, midpoints to 1110 / 1001)
+      digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH_WATER_TEMP;
+      usingSolarPower = false;
+    } else if (cswOutput >= 5427 && cswOutput < 6017) {
+      // 1001/0101/1101, solar off — unassigned (merged)
       usingSolarPower = false;
     } else if (cswOutput >= 5206 && cswOutput < 5427) {
       // 00110, solar off — DAFFODIL_2_WATER_TROUGH (was a duplicate DAFFODIL_WATER_TROUGH slot,
@@ -1822,8 +1890,12 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
       digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH_TANK1;
       secretManager.readTank1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
       usingSolarPower = true;
-    } else if (cswOutput >= 519 && cswOutput < 2093) {
-      // 0001/1001/0101/1101, solar on — unassigned (merged)
+    } else if (cswOutput >= 1789 && cswOutput < 2093) {
+      // 00011, solar on — DAFFODIL_WATER_TROUGH_WATER_TEMP (normalized ~1943, midpoints to 1110 / 1001)
+      digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH_WATER_TEMP;
+      usingSolarPower = true;
+    } else if (cswOutput >= 519 && cswOutput < 1789) {
+      // 1001/0101/1101, solar on — unassigned (merged)
       usingSolarPower = true;
     } else if (cswOutput >= 0 && cswOutput < 519) {
       // 00111 + 1011/0111/1111, solar on — 00111 is DAFFODIL_2_WATER_TROUGH (was
@@ -1843,6 +1915,26 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
 
   // digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;//DAFFODIL_SCEPTIC_TANK;
   //     usingSolarPower=false;
+
+  switch (digitalStablesData.currentFunctionValue) {
+    case DAFFODIL_WATER_TROUGH:
+      beginUltrasonic(ultrasonic1, SENSOR_INPUT_1);
+      break;
+    case DAFFODIL_WATER_TROUGH_WATER_TEMP:
+      beginUltrasonic(ultrasonic1, SENSOR_INPUT_1);
+      beginWaterTemperature();
+      break;
+    case DAFFODIL_2_WATER_TROUGH:
+      beginUltrasonic(ultrasonic1, SENSOR_INPUT_1);
+      beginUltrasonic(ultrasonic2, SENSOR_INPUT_2);
+      break;
+    case DAFFODIL_SCEPTIC_TANK:
+      beginUltrasonic(ultrasonic1, SENSOR_INPUT_1);
+      break;
+    case DAFFODIL_WATER_TROUGH_TANK1:
+      beginUltrasonic(ultrasonic1, SENSOR_INPUT_2);
+      break;
+  }
 
 
 
@@ -2102,6 +2194,16 @@ void sleepDS18B20() {  // Put OneWire bus in high impedance state pinMode(ONE_WI
 }
 
 
+// Builds and sends the VitalSignsRecord, VITAL_SIGNS_GAP_MS after the data packet so Annabelle
+// (one LoRa FIFO, sometimes busy with HTTP or the Pi) has read the first one.
+void sendVitalSigns() {
+  if (!loraActive) return;
+  VitalSignsRecord record = vitalSigns.buildRecord(digitalStablesData.serialnumberarray, FIRMWARE_BUILD, buildI2CStatusMask());
+  delay(VITAL_SIGNS_GAP_MS);
+  if (sendMessage(record, false) == LORA_OK) vitalSigns.markSent();
+  lastVitalSignsMs = millis();
+}
+
 void goToSleep() {
   // Heartbeat: show "B" battery status while LEDs are powered, then cut power.
   digitalWrite(LED_CONTROL, HIGH);
@@ -2152,6 +2254,7 @@ void goToSleep() {
     digitalStablesData.operatingStatus = OPERATING_STATUS_SLEEP;
   }
   digitalStablesData.sleepTime = seconds_sleep;
+  digitalStablesData.wakeTimeSec = (uint8_t)min(millis() / 1000UL, 255UL);  // this awake cycle, capped
   if (dataManager.getDSDStoredCount() < MAXIMUM_STORED_RECORDS) {
     dataManager.storeDSDData(digitalStablesData);
   }
@@ -2173,6 +2276,16 @@ void goToSleep() {
   // WiFi is fully off by this point (see step 3) so it can't contend for power during TX.
   if (loraActive) {
     sendMessage(digitalStablesData, true);
+  }
+  // 4b. Vital signs, closing this awake cycle first so the record includes it. Skipped in
+  // COMMA (battery critically low) - the running totals carry over to the first pulse after
+  // recovery - except right after a real reset, which is always reported.
+  {
+    RTCInfoRecord _vsNow = timeManager.now();
+    vitalSigns.recordSleep(timeManager.getCurrentTimeInSeconds(_vsNow), (uint32_t)seconds_sleep);
+  }
+  if (digitalStablesData.operatingStatus != OPERATING_STATUS_COMMA || vitalSigns.resetReportPending()) {
+    sendVitalSigns();
   }
   LoRa.sleep();
 
@@ -2345,16 +2458,17 @@ void readSensorData() {
     // main tick's LED block, kept in one place instead of duplicating it here.
     digitalStablesData.ledBrightness = calculatePowerAwareLedBrightness();
   }
-  // Ultrasonic shares TRIGGER/ECHO with pins 18/33 (SENSOR_INPUT_1/2), which double as the
-  // flow-meter interrupts and tank-pressure analog terminals in the other modes — only trigger
-  // it in the two modes where those pins are actually wired to the sonar (see Known Issues).
-  if (digitalStablesData.currentFunctionValue == DAFFODIL_WATER_TROUGH || digitalStablesData.currentFunctionValue == DAFFODIL_SCEPTIC_TANK) {
-    digitalStablesData.measuredHeight = sonar.ping_cm();
-  } else {
-    digitalStablesData.measuredHeight = -99;
+  // -99 in every mode where setup() didn't start ultrasonic1 (see the pin table at the top).
+  digitalStablesData.measuredHeight = readUltrasonicCm(ultrasonic1);
+  if (digitalStablesData.currentFunctionValue == DAFFODIL_WATER_TROUGH_WATER_TEMP) {
+    digitalStablesData.measuredHeight2 = readWaterTemperature();  // °C, not cm, in this mode
+  } else if (digitalStablesData.currentFunctionValue == DAFFODIL_2_WATER_TROUGH) {
+    digitalStablesData.measuredHeight2 = readUltrasonicCm(ultrasonic2);
   }
   if (debug) Serial.print("line 1654 measuredHeight=");
   if (debug) Serial.println(digitalStablesData.measuredHeight);
+  if (debug) Serial.print("measuredHeight2=");
+  if (debug) Serial.println(digitalStablesData.measuredHeight2);
 
   switch (digitalStablesData.currentFunctionValue) {
     case FUN_1_FLOW:
@@ -2376,18 +2490,11 @@ void readSensorData() {
       readTankPressure2();
       break;
     case DAFFODIL_WATER_TROUGH_TANK1:
-      // tank1 (ch1/pin18) is safe to read here. The trough half is NOT wired up yet: `sonar`
-      // is still a 2-pin NewPing instance hardwired to TRIGGER_PIN(18)/ECHO_PIN(33), which
-      // would collide with tank1's pin18 pressure wiring in this mode. Needs a real single-wire
-      // ultrasonic driver (not NewPing) before measuredHeight is meaningful for this mode —
-      // until then it stays at the -99 sentinel set above.
+      // tank1 on ch1/pin18; the trough half is the UART ultrasonic on pin 33, read above.
       readTankPressure1();
       break;
     case DAFFODIL_2_WATER_TROUGH:
-      // Not implemented yet — pending the UART ultrasonic sensors (Serial1 on pin18/Serial2 on
-      // pin33, 9600 baud, 0xFF header + 2 data bytes + checksum, see the AJ-SR04M-style protocol
-      // discussion 2026-09-01) and their arrival. measuredHeight2/maximumScepticHeight2 stay at
-      // their struct defaults (0.0) until this is wired up.
+      // both troughs read above (ultrasonic1 pin18, ultrasonic2 pin33).
       break;
   }
 
@@ -3429,7 +3536,7 @@ void loop() {
 
       uint8_t fn = digitalStablesData.currentFunctionValue;
 
-      if (fn == DAFFODIL_SCEPTIC_TANK || fn == DAFFODIL_WATER_TROUGH || fn == VOLTAGE_MONITOR) {
+      if (fn == DAFFODIL_SCEPTIC_TANK || fn == DAFFODIL_WATER_TROUGH || fn == DAFFODIL_WATER_TROUGH_WATER_TEMP || fn == VOLTAGE_MONITOR) {
         // Original single-value display — untouched. scepticAvailablePercentage was dropped
         // from DigitalStablesData (purely derived, never needed on the wire) — recomputed here.
         float scepticAvailablePercentage = digitalStablesData.measuredHeight * 100 / MAX_DISTANCE;
@@ -3454,7 +3561,7 @@ void loop() {
             green = 0;
             blue = 255;
           }
-        } else if (fn == DAFFODIL_WATER_TROUGH) {
+        } else if (fn == DAFFODIL_WATER_TROUGH || fn == DAFFODIL_WATER_TROUGH_WATER_TEMP) {
           if (digitalStablesData.measuredHeight >= (digitalStablesData.maximumScepticHeight - digitalStablesData.troughlevelminimumcm)) {
             red = 255;
             green = 0;
@@ -3526,8 +3633,7 @@ void loop() {
           } else if (fn == FUN_2_TANK) {
             drawTower(percentBucketColor(tankPercentFull(digitalStablesData.tank2PressurePsi, digitalStablesData.tank2HeightMeters)), true);
           } else if (fn == DAFFODIL_WATER_TROUGH_TANK1) {
-            // slot2 here is the trough (ultrasonic) — see readSensorData() for why
-            // measuredHeight is still -99 until the single-wire ultrasonic driver lands.
+            // slot2 here is the trough (UART ultrasonic on pin 33).
             CRGB c;
             if (digitalStablesData.measuredHeight >= (digitalStablesData.maximumScepticHeight - digitalStablesData.troughlevelminimumcm)) {
               c = CRGB(255, 0, 0);
@@ -3672,21 +3778,11 @@ void loop() {
           drawLora(1);
         }
 
-        if (rtc_diagnosticsEnabled && rtc_activeDiagnosticType == DIAGNOSTIC_TYPE_TX_CURRENT && pendingTxDiagnostic.sampleCount > 0) {
-          DiagnosticRecord diagRecord;
-          memcpy(diagRecord.serialnumberarray, digitalStablesData.serialnumberarray, 8);
-          diagRecord.diagnosticType = rtc_activeDiagnosticType;
-          diagRecord.payload.txCurrent = pendingTxDiagnostic;
-          sendMessage(diagRecord);
-          pendingTxDiagnostic.sampleCount = 0;  // consumed
-        } else if (rtc_diagnosticsEnabled && rtc_activeDiagnosticType == DIAGNOSTIC_TYPE_I2C_STATUS) {
-          // No sampling window needed — the found* flags are already known from the boot-time
-          // I2C scan, so this sends on the very next cycle after EnableDiagnostics#2.
-          DiagnosticRecord diagRecord;
-          memcpy(diagRecord.serialnumberarray, digitalStablesData.serialnumberarray, 8);
-          diagRecord.diagnosticType = rtc_activeDiagnosticType;
-          diagRecord.payload.i2cStatus.deviceFoundMask = buildI2CStatusMask();
-          sendMessage(diagRecord);
+        // A unit that stays awake never reaches goToSleep(), where vital signs are normally
+        // sent - send them from here instead, every VITAL_SIGNS_AWAKE_INTERVAL_MS. (millis()
+        // restarts on every wake, so a sleeping unit never gets this far.)
+        if (millis() > VITAL_SIGNS_AWAKE_INTERVAL_MS && millis() - lastVitalSignsMs > VITAL_SIGNS_AWAKE_INTERVAL_MS) {
+          sendVitalSigns();
         }
       } else {
         drawLora(0);
@@ -3944,6 +4040,8 @@ void loop() {
         functionname = "DAFFODIL_WATER_TROUGH_TANK1";
       } else if (digitalStablesData.currentFunctionValue == DAFFODIL_2_WATER_TROUGH) {
         functionname = "DAFFODIL_2_WATER_TROUGH";
+      } else if (digitalStablesData.currentFunctionValue == DAFFODIL_WATER_TROUGH_WATER_TEMP) {
+        functionname = "DAFFODIL_WATER_TROUGH_WATER_TEMP";
       }
       Serial.println("Current Function Value: " + functionname);
       Serial.println("Ok-printCSWData");
@@ -4003,6 +4101,8 @@ void loop() {
         functionname = "DAFFODIL_WATER_TROUGH_TANK1";
       } else if (digitalStablesData.currentFunctionValue == DAFFODIL_2_WATER_TROUGH) {
         functionname = "DAFFODIL_2_WATER_TROUGH";
+      } else if (digitalStablesData.currentFunctionValue == DAFFODIL_WATER_TROUGH_WATER_TEMP) {
+        functionname = "DAFFODIL_WATER_TROUGH_WATER_TEMP";
       }
       Serial.println("Current Function Value: " + functionname);
       Serial.println("");

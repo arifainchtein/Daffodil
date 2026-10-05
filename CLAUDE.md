@@ -40,13 +40,13 @@ The `data/` directory is the LittleFS filesystem image — it contains the HTML/
 | 4 | RTC 1Hz clock output (interrupt) |
 | 12/13/14 | SPI MISO/MOSI/SCK (LoRa) |
 | 15/16/17 | LoRa CS/RESET/DI0 |
-| 18 | Ultrasonic TRIGGER / Flow meter 1 interrupt — **shared pin** |
+| 18 | UART ultrasonic 1 RX (Serial2) / Flow meter 1 interrupt / tank1 terminal — **shared pin** |
 | 19 | WS2812 LED strip (15 LEDs) |
 | 23 | LED power control (MOSFET gate) |
 | 25/35 | TPL5010 watchdog DONE/WAKE |
 | 26 | External power switch (held LOW during deep sleep) |
 | 27 | DS18B20 temperature (OneWire) |
-| 33 | Ultrasonic ECHO / Flow meter 2 interrupt — **shared pin** |
+| 33 | Water-temp DS18B20 (`DAFFODIL_WATER_TROUGH_WATER_TEMP`) / UART ultrasonic 2 RX (Serial1; or ultrasonic 1 in trough+tank1 mode) / Flow meter 2 interrupt — **shared pin** |
 | 34 | Op mode switch (input only) |
 | 36 | RTC coin cell voltage (input only) |
 
@@ -102,6 +102,6 @@ The device accepts commands over Serial (115200 baud) for diagnostics:
 
 ## Known Issues
 
-- Pins 18 and 33 are shared between the ultrasonic sonar and flow meter interrupts. When `FUN_1_FLOW` or `FUN_2_FLOW` modes are active, sonar readings will falsely trigger the flow meter ISR.
+- Ultrasonics are waterproof UART-auto sensors (A02YYUW-style frame, 9600, RX only), started only in trough/septic modes. In `DAFFODIL_WATER_TROUGH_WATER_TEMP` (switch `0001`), `measuredHeight2` carries the pin-33 water temperature in °C (not a height) — a patch to avoid changing `DigitalStablesData`. Pin-per-mode table is at the top of `Daffodil.ino`.
 - `sendMessage1()`, `performCAD1()`, `performCADOld()`, `goToSleepold()`, and `readRTCBattery()` are dead code — superseded functions never called.
 - `debug` is a global `bool` (line 73). Setting it `false` via the serial `debug#0` command silences all diagnostic output.
