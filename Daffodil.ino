@@ -213,6 +213,7 @@ static unsigned long flowMeterPreviousMillis2 = 0;
 
 volatile bool loraReceived = false;
 volatile int loraPacketSize = 0;
+volatile bool loraDio0Fired = false;  // set by onLoraDio0(), handled at the top of loop()
 
 
 uint8_t displayStatus = 0;
@@ -576,11 +577,12 @@ int sendMessage(const T &inputData, bool skipCAD = false) {
   return result;
 }
 
-void onReceive(int packetSize) {
-  //  Serial.print(" Receive lora: ");
-  //     Serial.println(packetSize);
-  loraReceived = true;
-  loraPacketSize = packetSize;
+// DIO0 interrupt: only set a flag. arduino-LoRa's own LoRa.onReceive() handler reads the radio
+// over SPI inside the interrupt, and SPI on ESP32 core 3.x takes a mutex, which must never be
+// waited on in an ISR (Annabelle's xQueueSemaphoreTake assert PANIC, 2026-10-05). The packet is
+// read in loop() with LoRa.parsePacket().
+void IRAM_ATTR onLoraDio0() {
+  loraDio0Fired = true;
 }
 void processLora(int packetSize) {
   if (debug) Serial.print(" Receive lora: ");
@@ -2171,7 +2173,7 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
   // first. sendMessage() itself switches back to idle/TX mode via LoRa_txMode(), so this is
   // safe to do unconditionally before goToSleep()'s send too.
   if (loraActive) {
-    LoRa.onReceive(onReceive);
+    attachInterrupt(digitalPinToInterrupt(LORA_DI0), onLoraDio0, RISING);
     LoRa.receive();
   }
 
@@ -3136,6 +3138,16 @@ void loop() {
   uint16_t dscount;
   boolean turnOffWifi = false;
   bool wifistatus = wifiManager.getWifiStatus();
+  if (loraDio0Fired) {
+    loraDio0Fired = false;
+    int packetSize = LoRa.parsePacket();
+    if (packetSize > 0) {
+      loraPacketSize = packetSize;
+      loraReceived = true;
+    } else {
+      LoRa_rxMode();  // DIO0 without a good packet (CRC error, TxDone): back to continuous receive
+    }
+  }
   if (clockTicked) {
 
     portENTER_CRITICAL(&mux);
@@ -3188,6 +3200,7 @@ void loop() {
     if (loraReceived) {
       loraReceived = false;
       processLora(loraPacketSize);
+      LoRa_rxMode();  // parsePacket() leaves the radio idle after a packet
     }
     secondsSinceLastDataSampling++;
     if (secondsSinceLastWeatherData < 9999) secondsSinceLastWeatherData++;
