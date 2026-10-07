@@ -28,6 +28,7 @@
 #include <DataManager.h>
 #include "CommaRecord.h"
 #include <LittleFS.h>
+#include <Preferences.h>
 //#include <driver/adc.h>
 #include <BH1750.h>
 #include <Adafruit_INA219.h>
@@ -81,6 +82,13 @@ const uint32_t FIRMWARE_BUILD = VitalSignsTracker::buildStamp(__DATE__, __TIME__
 #define VITAL_SIGNS_GAP_MS 1000                         // after the data packet, so Annabelle has read it
 #define VITAL_SIGNS_AWAKE_INTERVAL_MS (10UL * 60UL * 1000UL)  // only for a unit that stays awake
 unsigned long lastVitalSignsMs = 0;
+// COMMA log relay (sendNextCommaRecord): position in the log, consecutive send failures, and a
+// stop flag after too many failures this wake. Not RTC - a new wake starts again from record 0.
+int commaSendIndex = 0;
+uint8_t commaSendFailures = 0;
+bool commaSendPaused = false;
+#define COMMA_SEND_MAX_FAILURES 5
+#define COMMA_SEND_INTERVAL_SEC 2   // seconds between CommaRecord packets, so Annabelle keeps up
 
 String currentSSID;
 String ipAddress = "";
@@ -240,6 +248,7 @@ uint8_t currentSecondsWithWifiVoltage = 0;
 float minimumInitWifiVoltage = 3.35;  // Battery must sustain this for 30 s before WiFi starts
 //uint8_t sleepingTime = 1;
 float minimumLEDVoltage = 3.18;       // Turn off LEDs below this — warning before sleep at 3.15V
+float minimumVoltageForSleepLedAlert = 3.10;  // goToSleep() only flashes the 1 s battery indicator at or above this. Below it the ~150 mA LED load browned the board out on a low cell (TopTank 2026-10-07: ~46 brownout resets from 2.80 V to 1.2 V) — the sleep LoRa message is still sent.
 uint8_t dimLedBrightness = 20;        // Minimum brightness when LoRa TX budget is too low for full power
 uint8_t nightLedBrightness = 30;      // Minimum LED brightness (night / zero efficiency)
 float luxNightThreshold = 30.0;       // Lux below this is considered actual darkness → cap at nightLedBrightness
@@ -472,6 +481,8 @@ uint8_t calculateChecksum(const T &data) {
     checksumOffset = offsetof(RequestCommand, checksum);
   } else if constexpr (std::is_same<T, VitalSignsRecord>::value) {
     checksumOffset = offsetof(VitalSignsRecord, checksum);
+  } else if constexpr (std::is_same<T, CommaRecord>::value) {
+    checksumOffset = offsetof(CommaRecord, checksum);
   }
 
   for (size_t i = 0; i < checksumOffset; i++) {
@@ -493,7 +504,7 @@ int sendMessage(const T &inputData, bool skipCAD = false) {
 
   long code = secretManager.generateCode();
 
-  if constexpr (std::is_same<T, DigitalStablesData>::value || std::is_same<T, RequestCommand>::value || std::is_same<T, VitalSignsRecord>::value) {
+  if constexpr (std::is_same<T, DigitalStablesData>::value || std::is_same<T, RequestCommand>::value || std::is_same<T, VitalSignsRecord>::value || std::is_same<T, CommaRecord>::value) {
     dataToSend.totpcode = code;
     dataToSend.checksum = 0;
     dataToSend.checksum = calculateChecksum(dataToSend);
@@ -539,7 +550,7 @@ int sendMessage(const T &inputData, bool skipCAD = false) {
       // packet's transmit. The old TX_CURRENT path polled LoRa.isTransmitting(), which never
       // read busy on this hardware (pollIterations==0) - the tracker samples from a core-0 task
       // while endPacket(false) blocks on the real TX-done flag instead.
-      constexpr bool trackTx = !std::is_same<T, VitalSignsRecord>::value;
+      constexpr bool trackTx = !std::is_same<T, VitalSignsRecord>::value && !std::is_same<T, CommaRecord>::value;
       if (trackTx) {
         vitalSigns.beginTx(foundINA219 ? daffodilTxSample : nullptr,
                            foundINA219Solar ? (int16_t)solarIna219.getCurrent_mA() : -1,
@@ -693,7 +704,7 @@ void processLora(int packetSize) {
     WeatherForecastUpdate weatherForecastUpdate;
     LoRa.readBytes((uint8_t *)&weatherForecastUpdate, sizeof(WeatherForecastUpdate));
     long commandcode = weatherForecastUpdate.totpcode;
-    bool validCode = secretManager.checkCode(commandcode);
+    bool validCode = acceptAnnabelleTime(weatherForecastUpdate);  // also sets the RTC from Annabelle's time
     if (validCode) {
       //WeatherForecast forecasts=weatherForecastUpdate.forecasts;
       weatherForecastManager->saveForecasts(weatherForecastUpdate.forecasts);
@@ -940,6 +951,123 @@ void clearAllCommaRecords() {
   rtc_comma_first_time  = 0;
   rtc_comma_min_voltage = 99.0f;
   rtc_comma_cycle_count = 0;
+}
+
+// Relays the COMMA log to Annabelle as CommaRecord packets, one per call, then deletes the log.
+// Called from loop() only (never setup/COMMA/goToSleep), and only while the battery is above
+// minimumLEDVoltage, so the night's readings go out once the device has real headroom again.
+// No ACK from Annabelle: a send that is cut short (sleep, reset) restarts from record 0 next
+// time - duplicates rather than losses. Returns false when there is nothing (left) to send.
+bool sendNextCommaRecord() {
+  File log = LittleFS.open(COMMA_LOG_FILE, "r");
+  int total = (log && log.size() >= sizeof(CommaRecord)) ? (int)(log.size() / sizeof(CommaRecord)) : 0;
+  if (total == 0) {
+    if (log) log.close();
+    commaSendIndex = 0;
+    return false;
+  }
+  if (commaSendIndex >= total) {
+    log.close();
+    LittleFS.remove(COMMA_LOG_FILE);
+    if (debug) Serial.printf("CommaRecords: all %d sent, log deleted\n", total);
+    commaSendIndex = 0;
+    return false;
+  }
+  CommaRecord rec;
+  log.seek(commaSendIndex * sizeof(CommaRecord));
+  size_t got = log.read((uint8_t*)&rec, sizeof(CommaRecord));
+  log.close();
+  if (got != sizeof(CommaRecord)) {
+    commaSendIndex = total;  // truncated tail - treat as done
+    return true;
+  }
+  memcpy(rec.serialnumber, digitalStablesData.serialnumberarray, sizeof(rec.serialnumber));
+  rec.index = (uint8_t)min(commaSendIndex, 255);
+  rec.total = (uint8_t)min(total, 255);
+  int result = sendMessage(rec, false);
+  if (debug) Serial.printf("CommaRecord %d/%d v=%.3f result=%d\n", commaSendIndex + 1, total, rec.voltage, result);
+  if (result == LORA_OK) {
+    commaSendIndex++;
+    commaSendFailures = 0;
+  } else if (++commaSendFailures >= COMMA_SEND_MAX_FAILURES) {
+    commaSendPaused = true;  // channel/radio trouble - try again on the next wake
+  }
+  return true;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// Field time sync (Field_Time_Sync_Proposal, 2026-10-07). Annabelle's WeatherForecastUpdate
+// carries its NTP-corrected time (annabelleTime, in the getTimeForCodeGeneration() convention)
+// and a TOTP calculated at that time, so the packet can be authenticated whatever this RTC says.
+#define TIME_SYNC_TOLERANCE_SEC 5      // correct the RTC when it is further off than this
+#define TIME_SYNC_MAX_JUMP_SEC  7200   // larger jumps only after the RTC lost power (replay guard)
+#define TIME_SYNC_PREFS         "timesync"
+#define TIME_SYNC_LAST_KEY      "lastAnnT"
+
+// The PCF8563 lost power since it was last set: VL bit in the seconds register, or a year that
+// can't be right.
+bool rtcLostPower() {
+  Wire.beginTransmission(0x51);
+  Wire.write(0x02);
+  if (Wire.endTransmission() != 0) return false;
+  Wire.requestFrom(0x51, 1);
+  if (!Wire.available()) return false;
+  bool vl = Wire.read() & 0x80;
+  return vl || timeManager.now().year < 2025;
+}
+
+// Writes a getTimeForCodeGeneration()-style time into the RTC. Writing the seconds register
+// also clears the VL bit.
+void writeRtcFromCodeTime(uint32_t codeTime) {
+  time_t fields = (time_t)codeTime + timeManager.timeZoneHours * 3600L;  // back to local wall-clock fields
+  struct tm t;
+  gmtime_r(&fields, &t);
+  auto bcd = [](int v) -> uint8_t { return (uint8_t)(((v / 10) << 4) | (v % 10)); };
+  Wire.beginTransmission(0x51);  // PCF8563
+  Wire.write(0x02);
+  Wire.write(bcd(t.tm_sec));
+  Wire.write(bcd(t.tm_min));
+  Wire.write(bcd(t.tm_hour));
+  Wire.write(bcd(t.tm_mday));
+  Wire.write(bcd(t.tm_wday));
+  Wire.write(bcd(t.tm_mon + 1));
+  Wire.write(bcd(t.tm_year - 100));
+  Wire.endTransmission();
+}
+
+// Checks a WeatherForecastUpdate and, if it is genuine, sets the RTC from it. Returns whether the
+// packet is accepted (forecast included):
+//  - the code must match annabelleTime (proves it knows the shared secret)
+//  - annabelleTime must be later than the last accepted one (kept in NVS) - no replays
+//  - and within TIME_SYNC_MAX_JUMP_SEC of this clock, unless the RTC lost power
+bool acceptAnnabelleTime(const WeatherForecastUpdate &u) {
+  if (u.annabelleTime == 0 || secretManager.generateCodeAt(u.annabelleTime) != u.totpcode) {
+    if (debug) Serial.println(" time sync: code does not match annabelleTime");
+    return false;
+  }
+  Preferences prefs;
+  prefs.begin(TIME_SYNC_PREFS, false);
+  uint32_t last = prefs.getUInt(TIME_SYNC_LAST_KEY, 0);
+  if (u.annabelleTime <= last) {
+    prefs.end();
+    if (debug) Serial.printf(" time sync: annabelleTime %u not after last accepted %u (replay?)\n", u.annabelleTime, last);
+    return false;
+  }
+  long deviceTime = timeManager.getTimeForCodeGeneration();
+  long diff = (long)u.annabelleTime - deviceTime;
+  if (labs(diff) > TIME_SYNC_MAX_JUMP_SEC && !rtcLostPower()) {
+    prefs.end();
+    if (debug) Serial.printf(" time sync: clock %ld s off, more than %d s - not corrected (set it by hand)\n", diff, TIME_SYNC_MAX_JUMP_SEC);
+    return false;
+  }
+  prefs.putUInt(TIME_SYNC_LAST_KEY, u.annabelleTime);
+  prefs.end();
+  if (labs(diff) > TIME_SYNC_TOLERANCE_SEC) {
+    writeRtcFromCodeTime(u.annabelleTime);
+    currentTimerRecord = timeManager.now();
+    if (debug) Serial.printf(" time sync: RTC corrected by %ld s (Annabelle %s)\n", diff, (u.flags & WEATHER_FLAG_DST) ? "DST" : "standard time");
+  }
+  return true;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -2090,7 +2218,10 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
 
 
   // COMMA recovery: send the session summary via LoRa using the RTC-preserved stats.
-  if (rtc_has_comma_data && loraActive) {
+  // Waits (rtc_has_comma_data stays set across wakes) until the battery is above
+  // minimumLEDVoltage, not just out of COMMA at 2.80 V - a TX on a barely-recovered cell can
+  // brown the board out. sleepTime is therefore "COMMA start until this send".
+  if (rtc_has_comma_data && loraActive && quickReadBusVoltage() > minimumLEDVoltage) {
     DigitalStablesData commaData = digitalStablesData;
     commaData.batteryVoltage  = rtc_comma_min_voltage;
     commaData.secondsTime     = rtc_comma_first_time;
@@ -2208,16 +2339,24 @@ void sendVitalSigns() {
 
 void goToSleep() {
   // Heartbeat: show "B" battery status while LEDs are powered, then cut power.
-  digitalWrite(LED_CONTROL, HIGH);
-  delay(20);  // let MOSFET turn on and WS2812 power supply stabilise
-  readSensorData();                     // get fresh voltage/current before display
-  digitalStablesData.ledBrightness = 125;  // fixed heartbeat brightness — loop()'s adaptive value never ran on this path
-  drawBatteryStatus(digitalStablesData.batteryVoltage, digitalStablesData.batteryCurrent);
-  delay(1000);                          // hold the display for 1 s so it is visible
-  FastLED.clear(true);
-  FastLED.show();
-  delay(10);
-  digitalWrite(LED_CONTROL, LOW);
+  // Skipped below minimumVoltageForSleepLedAlert (or if the battery can't be read) so the LED
+  // load can't brown out a low cell; sensors are still read for the final LoRa record.
+  float _sleepBatV = quickReadBusVoltage();
+  if (!hasBattery || _sleepBatV >= minimumVoltageForSleepLedAlert) {
+    digitalWrite(LED_CONTROL, HIGH);
+    delay(20);  // let MOSFET turn on and WS2812 power supply stabilise
+    readSensorData();                     // get fresh voltage/current before display
+    digitalStablesData.ledBrightness = 125;  // fixed heartbeat brightness — loop()'s adaptive value never ran on this path
+    drawBatteryStatus(digitalStablesData.batteryVoltage, digitalStablesData.batteryCurrent);
+    delay(1000);                          // hold the display for 1 s so it is visible
+    FastLED.clear(true);
+    FastLED.show();
+    delay(10);
+    digitalWrite(LED_CONTROL, LOW);
+  } else {
+    if (debug) Serial.printf("Skipping sleep battery indicator, battery %.2fV < %.2fV\n", _sleepBatV, minimumVoltageForSleepLedAlert);
+    readSensorData();
+  }
 
   // 1. Calculate sleep timing.
   //    PowerManager returns 60 s whenever theoretical solar efficiency > 0.3 (sun is up).
@@ -3341,6 +3480,13 @@ void loop() {
     if (debug) Serial.println(wifistatus);
     if (debug) Serial.print(" turnOffWifi=");
     if (debug) Serial.println(turnOffWifi);
+
+    // Relay last night's COMMA log to Annabelle once the battery has LED-level headroom.
+    if (loraActive && !commaSendPaused && hasBattery &&
+        digitalStablesData.batteryVoltage > minimumLEDVoltage &&
+        currentTimerRecord.second % COMMA_SEND_INTERVAL_SEC == 0) {
+      sendNextCommaRecord();
+    }
 
   }  // end of the tick block
 
