@@ -33,6 +33,7 @@
 #include <BH1750.h>
 #include <Adafruit_INA219.h>
 #include <VitalSignsTracker.h>
+#include <DeviceIdentityTracker.h>
 #include <esp_sleep.h>
 //#include <driver/adc.h>
 
@@ -80,6 +81,9 @@ RTC_DATA_ATTR static char     rtc_device_shortname[8] = {0};// device short name
 VitalSignsTracker vitalSigns;
 const uint32_t FIRMWARE_BUILD = VitalSignsTracker::buildStamp(__DATE__, __TIME__);
 #define VITAL_SIGNS_GAP_MS 1000                         // after the data packet, so Annabelle has read it
+// Device identity (product definition + running build), sent after VitalSigns when due - after a
+// real reset, after SetProductDefinition, and daily. See DeviceIdentityTracker.h.
+DeviceIdentityTracker deviceIdentity;
 #define VITAL_SIGNS_AWAKE_INTERVAL_MS (10UL * 60UL * 1000UL)  // only for a unit that stays awake
 unsigned long lastVitalSignsMs = 0;
 // COMMA log relay (sendNextCommaRecord): position in the log, consecutive send failures, and a
@@ -483,6 +487,8 @@ uint8_t calculateChecksum(const T &data) {
     checksumOffset = offsetof(VitalSignsRecord, checksum);
   } else if constexpr (std::is_same<T, CommaRecord>::value) {
     checksumOffset = offsetof(CommaRecord, checksum);
+  } else if constexpr (std::is_same<T, DeviceIdentityRecord>::value) {
+    checksumOffset = offsetof(DeviceIdentityRecord, checksum);
   }
 
   for (size_t i = 0; i < checksumOffset; i++) {
@@ -504,7 +510,7 @@ int sendMessage(const T &inputData, bool skipCAD = false) {
 
   long code = secretManager.generateCode();
 
-  if constexpr (std::is_same<T, DigitalStablesData>::value || std::is_same<T, RequestCommand>::value || std::is_same<T, VitalSignsRecord>::value || std::is_same<T, CommaRecord>::value) {
+  if constexpr (std::is_same<T, DigitalStablesData>::value || std::is_same<T, RequestCommand>::value || std::is_same<T, VitalSignsRecord>::value || std::is_same<T, CommaRecord>::value || std::is_same<T, DeviceIdentityRecord>::value) {
     dataToSend.totpcode = code;
     dataToSend.checksum = 0;
     dataToSend.checksum = calculateChecksum(dataToSend);
@@ -550,7 +556,7 @@ int sendMessage(const T &inputData, bool skipCAD = false) {
       // packet's transmit. The old TX_CURRENT path polled LoRa.isTransmitting(), which never
       // read busy on this hardware (pollIterations==0) - the tracker samples from a core-0 task
       // while endPacket(false) blocks on the real TX-done flag instead.
-      constexpr bool trackTx = !std::is_same<T, VitalSignsRecord>::value && !std::is_same<T, CommaRecord>::value;
+      constexpr bool trackTx = !std::is_same<T, VitalSignsRecord>::value && !std::is_same<T, CommaRecord>::value && !std::is_same<T, DeviceIdentityRecord>::value;
       if (trackTx) {
         vitalSigns.beginTx(foundINA219 ? daffodilTxSample : nullptr,
                            foundINA219Solar ? (int16_t)solarIna219.getCurrent_mA() : -1,
@@ -1352,6 +1358,7 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
   // Before the early exits below, so wakes that go straight back to sleep are counted too, and a
   // real reset is saved to NVS even if this boot never gets as far as a LoRa send.
   vitalSigns.recordBoot(_nowSec);
+  deviceIdentity.begin(vitalSigns.wasRealReset());
 
   // 1. TPL5010 watchdog reset during deep sleep: return to sleep for the remaining intended time.
   //    Petting the watchdog here resets its 15-min window so it won't fire again mid-sleep.
@@ -2335,6 +2342,18 @@ void sendVitalSigns() {
   delay(VITAL_SIGNS_GAP_MS);
   if (sendMessage(record, false) == LORA_OK) vitalSigns.markSent();
   lastVitalSignsMs = millis();
+  sendDeviceIdentityIfDue();
+}
+
+// DeviceIdentityRecord, same gap after VitalSigns. Rare (see DeviceIdentityTracker.h), so not
+// worth a separate voltage gate - it rides wherever VitalSigns is allowed to go.
+void sendDeviceIdentityIfDue() {
+  if (!loraActive) return;
+  uint32_t nowSec = timeManager.getCurrentTimeInSeconds(timeManager.now());
+  if (!deviceIdentity.isDue(nowSec)) return;
+  DeviceIdentityRecord record = deviceIdentity.buildRecord(secretManager, digitalStablesData.serialnumberarray, FIRMWARE_BUILD);
+  delay(VITAL_SIGNS_GAP_MS);
+  if (sendMessage(record, false) == LORA_OK) deviceIdentity.markSent(nowSec);
 }
 
 void goToSleep() {
@@ -4499,7 +4518,9 @@ void loop() {
       String pdBattery = generalFunctions.getValue(command, '#', 3);
       String pdPcbs = generalFunctions.getValue(command, '#', 4);
       String pdFirmware = generalFunctions.getValue(command, '#', 5);
-      secretManager.saveProductDefinition(pdName, pdPowerSource, pdBattery, pdPcbs, pdFirmware);
+      // FIRMWARE_BUILD: lets GetProductDefinition / DeviceIdentityRecord tell whether this label
+      // still describes the running code (a later flash that skips this command makes it stale).
+      secretManager.saveProductDefinition(pdName, pdPowerSource, pdBattery, pdPcbs, pdFirmware, FIRMWARE_BUILD);
       Serial.println("Ok-SetProductDefinition");
       Serial.flush();
       delay(delayTime);
@@ -4529,7 +4550,7 @@ void loop() {
       char pdSerialNumberBuf[13];
       snprintf(pdSerialNumberBuf, sizeof(pdSerialNumberBuf), "%012llx", ESP.getEfuseMac());
       String pdSerialNumber = String(pdSerialNumberBuf);
-      Serial.println("Ok-GetProductDefinition#" + pdName + "#" + pdPowerSource + "#" + pdBattery + "#" + pdPcbs + "#" + pdFirmware + "#" + String(commissionDate) + "#" + pdSSID + "#" + pdWifiPassword + "#" + pdSoftAPSSID + "#" + pdSoftAPPassword + "#" + pdHostName + "#" + pdStationMode + "#" + String(pdCurrentTime) + "#" + pdDeviceName + "#" + pdDeviceShortName + "#" + pdSerialNumber);
+      Serial.println("Ok-GetProductDefinition#" + pdName + "#" + pdPowerSource + "#" + pdBattery + "#" + pdPcbs + "#" + pdFirmware + "#" + String(commissionDate) + "#" + pdSSID + "#" + pdWifiPassword + "#" + pdSoftAPSSID + "#" + pdSoftAPPassword + "#" + pdHostName + "#" + pdStationMode + "#" + String(pdCurrentTime) + "#" + pdDeviceName + "#" + pdDeviceShortName + "#" + pdSerialNumber + "#" + String(secretManager.getProductDefinitionBuild()) + "#" + String(FIRMWARE_BUILD));
       Serial.flush();
       delay(delayTime);
     } else if (command.startsWith("PulseStart")) {
