@@ -4524,6 +4524,25 @@ void loop() {
       Serial.println("Ok-SetProductDefinition");
       Serial.flush();
       delay(delayTime);
+    } else if (command.startsWith("SendDeviceIdentity")) {
+      // Sends the DeviceIdentityRecord over LoRa right now (PaulaDeployer's "Send Identity
+      // Packet" button), instead of waiting for the next VitalSigns. Clears a pending send on
+      // success, like the scheduled path.
+      if (!loraActive) {
+        Serial.println("Failure-SendDeviceIdentity#LoRa not active");
+      } else {
+        uint32_t nowSec = timeManager.getCurrentTimeInSeconds(timeManager.now());
+        DeviceIdentityRecord record = deviceIdentity.buildRecord(secretManager, digitalStablesData.serialnumberarray, FIRMWARE_BUILD);
+        int result = sendMessage(record, true);
+        if (result == LORA_OK) {
+          deviceIdentity.markSent(nowSec);
+          Serial.println("Ok-SendDeviceIdentity#" + String(FIRMWARE_BUILD));
+        } else {
+          Serial.println("Failure-SendDeviceIdentity#LoRa result " + String(result));
+        }
+      }
+      Serial.flush();
+      delay(delayTime);
     } else if (command.startsWith("GetProductDefinition")) {
       String pdName, pdPowerSource, pdBattery, pdPcbs, pdFirmware;
       secretManager.getProductDefinition(pdName, pdPowerSource, pdBattery, pdPcbs, pdFirmware);
