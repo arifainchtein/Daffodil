@@ -66,7 +66,8 @@ float SHUNT_OHMS = 0.050;    // Shunt resistor value in Ohms — JLCPCB C2596036
 boolean memoryFull = false;
 static volatile bool runWatchdog = true;
 
-// All survive hardware resets (TPL5010 watchdog, brownout, etc.)
+// Survive deep sleep only. A TPL5010 reset (via EN) or brownout is a power-on reset and clears
+// them - which is why the TPL5010 WAKE pulse is a deep-sleep wake source (armDeepSleepWakeSources()).
 RTC_DATA_ATTR static uint32_t rtc_intended_wakeup_time = 0; // intended wakeup Unix-seconds
 RTC_DATA_ATTR static bool     rtc_comma_mode = false;       // battery critically low; skip full boot
 RTC_DATA_ATTR static bool     rtc_has_comma_data = false;   // COMMA session just ended, send recovery LoRa
@@ -142,7 +143,7 @@ UartUltrasonic ultrasonic2 = { &Serial1, false, { 0 }, 0, -99, 0 };  // measured
 // Called on core 0 while sendMessage() blocks in LoRa.endPacket(false).
 // INA219 current is + while the battery discharges (batteryCurrent < 0 means charging).
 bool daffodilTxSample(int16_t &batteryDraw_mA, uint16_t &battery_mV) {
-  batteryDraw_mA = (int16_t)ina219.getCurrent_mA();
+  batteryDraw_mA = (int16_t)(ina219.getShuntVoltage_mV() / SHUNT_OHMS);  // getCurrent_mA() reads half on 50 mOhm
   battery_mV = (uint16_t)(ina219.getBusVoltage_V() * 1000.0f);
   return true;
 }
@@ -244,6 +245,8 @@ float avgRssi = 0;
 //
 // LiFePO4 battery thresholds (Build 7: replaced supercapacitors with 3.2V LiFePO4 cell)
 #define BATTERY_CAPACITY_MAH 600.0   // usable capacity of LiFePO4 123A cell
+#define NIGHT_MAX_SLEEP_SEC 900      // longest sleep while the cell is healthy: a packet every 15 min all night
+#define NIGHT_CAP_MIN_VOLTAGE 3.15   // battery (under wake load) at or above this gets the 15 min cap
 float sleepingVoltage = 3.12;         // Force deep sleep — cliff edge for LiFePO4 123A
 float commaVoltage    = 2.80;         // COMMA threshold — below this, skip all work and wait for solar recovery
 
@@ -259,7 +262,7 @@ float luxNightThreshold = 30.0;       // Lux below this is considered actual dar
 float currentLux = -99;               // Local only, not transmitted — removed from DigitalStablesData 2026-09-01 to fund measuredHeight2/maximumScepticHeight2. Still read locally from BH1750 for LED darkness detection, same as always.
 float ledCurrentPerLedAmps = 0.020;   // Same per-LED current budget PowerManager uses (currentPerLed in setup()) — kept as its own constant here so calculatePowerAwareLedBrightness() doesn't need setup()'s local copy.
 float v50iCloudyThreshold = 3.5;     // V50_I below this during solar hours means the panel isn't harvesting enough — cloudy. Lowered 2026-07-24: field data (TopTank, clear midday sun, actively charging) showed V50_I sitting at 4.09-4.47V — the old 4.5V threshold was false-triggering CLOUDY on every wake. Still wants validation against real overcast-day readings.
-float panelCurrentCloudyThreshold_mA = 15.0;  // Wally 0x45 panelCurrent below this during solar hours means cloudy. Lowered 2026-07-24: field data (TopTank, clear midday sun) showed panelCurrent as low as 22-80mA during normal charging — the old 60mA threshold was false-triggering CLOUDY. Still wants validation against real overcast-day readings.
+float panelCurrentCloudyThreshold_mA = 30.0;  // Doubled 2026-10-10 when panelCurrent switched from getCurrent_mA() (half scale on the 50mOhm shunt) to shunt mV / SHUNT_OHMS - same real threshold as the old 15. Wally 0x45 panelCurrent below this during solar hours means cloudy. Lowered 2026-07-24: field data (TopTank, clear midday sun) showed panelCurrent as low as 22-80mA during normal charging — the old 60mA threshold was false-triggering CLOUDY. Still wants validation against real overcast-day readings.
 float minimumWifiVoltage = 3.28;      // Turn off WiFi first to preserve power for LoRa
 uint8_t secondsSinceLastDataSampling = 0;
 uint16_t secondsSinceLastWeatherData = 9999; // 9999 = never received
@@ -559,7 +562,7 @@ int sendMessage(const T &inputData, bool skipCAD = false) {
       constexpr bool trackTx = !std::is_same<T, VitalSignsRecord>::value && !std::is_same<T, CommaRecord>::value && !std::is_same<T, DeviceIdentityRecord>::value;
       if (trackTx) {
         vitalSigns.beginTx(foundINA219 ? daffodilTxSample : nullptr,
-                           foundINA219Solar ? (int16_t)solarIna219.getCurrent_mA() : -1,
+                           foundINA219Solar ? (int16_t)(solarIna219.getShuntVoltage_mV() / SHUNT_OHMS) : -1,
                            foundADS && digitalStablesData.v50Voltage > 0 ? (uint16_t)(digitalStablesData.v50Voltage * 1000) : 0);
       }
       bool txOk = LoRa.endPacket(false);
@@ -1128,8 +1131,13 @@ void configureINA219Calibration(uint8_t i2cAddr) {
 
   uint16_t calibrationValue = (uint16_t)(0.04096 / (CURRENT_LSB * SHUNT_OHMS));
 
+  // Shunt (current) averages 128 samples over 68.1 ms instead of one 0.53 ms snapshot: the charger
+  // bursts (~-300 mA) and LoRa/LED spikes made single snapshots swing -480..+170 mA (TopTank
+  // 2026-10-10, 21 of 191 packets showed more power into the battery than the panel produced).
+  // Bus voltage stays single-sample - it moves slowly, and keeps the cycle at ~68.6 ms, inside
+  // inaWakeFromSleep()'s 100 ms wait.
   uint16_t config = INA219_CONFIG_BVOLTAGERANGE_32V | INA219_CONFIG_GAIN_8_320MV |  // Higher gain for better resolution
-                    INA219_CONFIG_BADCRES_12BIT | INA219_CONFIG_SADCRES_12BIT_1S_532US | INA219_CONFIG_MODE_SANDBVOLT_CONTINUOUS;
+                    INA219_CONFIG_BADCRES_12BIT | INA219_CONFIG_SADCRES_12BIT_128S_69MS | INA219_CONFIG_MODE_SANDBVOLT_CONTINUOUS;
 
   Wire.beginTransmission(i2cAddr);
   Wire.write(0x00);  // Config register
@@ -1167,6 +1175,21 @@ static void inaSetPowerDown(uint8_t addr, bool down) {
 void inaPowerDownForSleep() {
   inaSetPowerDown(0x41, true);
   inaSetPowerDown(0x45, true);
+}
+
+// Every esp_deep_sleep_start() arms these: the timer for the intended wake, plus ext0 on the
+// TPL5010 WAKE pulse (GPIO35, an RTC GPIO). The TPL5010 pulses WAKE every ~10 min and resets the
+// ESP32 through EN if it gets no DONE before the next pulse (~20 min). That reset is a power-on
+// reset, which clears RTC_DATA_ATTR - so rtc_intended_wakeup_time is lost and the early-wake path
+// in setup() never ran (TopTank 2026-10-11: resets at 03:25, 04:45, 05:17 on 23-33 min night
+// sleeps). Waking on WAKE instead keeps RTC memory: setup()'s early-wake path pets DONE and
+// sleeps the remaining time, so sleeps longer than the watchdog period work as designed.
+void armDeepSleepWakeSources(uint64_t sleepUs) {
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+  esp_sleep_enable_timer_wakeup(sleepUs);
+  // With the USB jumper fitted the watchdog header is open: no TPL5010 resets to dodge, and
+  // GPIO35 (input-only, no internal pull) could float and wake the board over and over.
+  if (!usbJumperFitted()) esp_sleep_enable_ext0_wakeup((gpio_num_t)TPL5010_WAKE, 1);
 }
 
 // Restarts conversions and waits for the first fresh result. Writing the config clears the
@@ -1435,8 +1458,7 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
       gpio_hold_en((gpio_num_t)SLEEP_SWITCH_26);
       gpio_deep_sleep_hold_en();
       inaPowerDownForSleep();
-      esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
-      esp_sleep_enable_timer_wakeup((uint64_t)_remaining * 1000000ULL);
+      armDeepSleepWakeSources((uint64_t)_remaining * 1000000ULL);
       esp_deep_sleep_start();
     }
   }
@@ -1459,8 +1481,7 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
       gpio_deep_sleep_hold_en();
       rtc_intended_wakeup_time = _nowSec + 600;
       inaPowerDownForSleep();
-      esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
-      esp_sleep_enable_timer_wakeup(600ULL * 1000000ULL);
+      armDeepSleepWakeSources(600ULL * 1000000ULL);
       esp_deep_sleep_start();
     }
     // Voltage recovered — exit COMMA and proceed with normal boot.
@@ -2333,7 +2354,7 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
     // sensor objects directly (they were begin()'d earlier in setup()) for the same live-signal
     // veto the loop's CLOUDY logic uses, so a real panel/charging battery isn't overridden by
     // a stale theoretical estimate.
-    bool _quickPanelConfirmsSun = foundINA219Solar && solarIna219.getCurrent_mA() >= panelCurrentCloudyThreshold_mA;
+    bool _quickPanelConfirmsSun = foundINA219Solar && solarIna219.getShuntVoltage_mV() / SHUNT_OHMS >= panelCurrentCloudyThreshold_mA;
     bool _quickV50iConfirmsSun = foundADS && digitalStablesData.v50Voltage >= v50iCloudyThreshold;
     bool _quickBatteryConfirmsCharging = foundINA219 && ina219.getCurrent_mA() < 0;
     if (!(_quickPanelConfirmsSun || _quickV50iConfirmsSun || _quickBatteryConfirmsCharging)) {
@@ -2467,6 +2488,11 @@ void goToSleep() {
     }
   }
   if (seconds_sleep < 30) seconds_sleep = 30;
+  // Night cap: a packet at least every 15 min while the cell is healthy. Below NIGHT_CAP_MIN_VOLTAGE
+  // the formula's longer sleeps stand (safe since the TPL5010 WAKE pulse is a wake source).
+  if (hasBattery && digitalStablesData.batteryVoltage >= NIGHT_CAP_MIN_VOLTAGE && seconds_sleep > NIGHT_MAX_SLEEP_SEC) {
+    seconds_sleep = NIGHT_MAX_SLEEP_SEC;
+  }
   uint64_t sleep_time_us = (uint64_t)(seconds_sleep * 1000000ULL);
   if (debug) Serial.printf("Preparing sleep for %ld seconds\n", seconds_sleep);
 
@@ -2547,8 +2573,7 @@ void goToSleep() {
     rtc_intended_wakeup_time = timeManager.getCurrentTimeInSeconds(_now) + seconds_sleep;
   }
   inaPowerDownForSleep();
-  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
-  esp_sleep_enable_timer_wakeup(sleep_time_us);
+  armDeepSleepWakeSources(sleep_time_us);
   esp_deep_sleep_start();
 }
 
@@ -2751,6 +2776,20 @@ void readSensorData() {
   //
   // current
   //
+  // Battery (0x41) and panel (0x45) INA219s read back to back, before any debug printing or
+  // runtime maths, so both describe the same moment. They used to be ~25 serial prints apart,
+  // which is how one packet could show "panel 43 mA, battery charging 330 mA" (TopTank 2026-10-10).
+  float shuntvoltage = 0, busvoltage = 0;
+  float panelShunt_mV = 0, panelBus_V = -99;
+  if (foundINA219) {
+    shuntvoltage = ina219.getShuntVoltage_mV();
+    busvoltage = ina219.getBusVoltage_V();
+  }
+  if (foundINA219Solar) {
+    panelShunt_mV = solarIna219.getShuntVoltage_mV();
+    panelBus_V = solarIna219.getBusVoltage_V();
+  }
+
   // Read raw shunt voltage register for debugging
   if (foundINA219) {
     Wire.beginTransmission(0x41);
@@ -2765,9 +2804,7 @@ void readSensorData() {
     Wire.requestFrom(0x41, 2);
     int16_t rawCurrent = (Wire.read() << 8) | Wire.read();
 
-    // Get readings using library functions
-    float shuntvoltage = ina219.getShuntVoltage_mV();
-    float busvoltage = ina219.getBusVoltage_V();
+    // Library readings for the debug comparison (shuntvoltage/busvoltage were read above)
     float current_mA = ina219.getCurrent_mA();
     float power_mW = ina219.getPower_mW();
 
@@ -2839,8 +2876,11 @@ void readSensorData() {
   // Wally USB/panel current sensor (0x45) — optional, not present on every board yet.
   // -99 sentinel (matches batteryCurrent's convention) when the sensor wasn't detected.
   if (foundINA219Solar) {
-    digitalStablesData.panelVoltage = solarIna219.getBusVoltage_V();
-    digitalStablesData.panelCurrent = solarIna219.getCurrent_mA();
+    digitalStablesData.panelVoltage = panelBus_V;
+    // Shunt voltage / SHUNT_OHMS, same as batteryCurrent. getCurrent_mA() rewrites the library's
+    // 32V_2A calibration (meant for a 0.1 ohm shunt) on every call, so on these 50 mOhm shunts it
+    // reported HALF the real current.
+    digitalStablesData.panelCurrent = panelShunt_mV / SHUNT_OHMS;
     if (debug) {
       Serial.print("panelVoltage=");
       Serial.print(digitalStablesData.panelVoltage);
