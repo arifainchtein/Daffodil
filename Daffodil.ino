@@ -1144,6 +1144,64 @@ void configureINA219Calibration(uint8_t i2cAddr) {
   Wire.endTransmission();
 }
 
+// INA219 power-down for deep sleep. In continuous mode each INA219 draws ~0.7-1 mA and they stay
+// powered through ESP32 deep sleep (~35 mAh/day for the two on TopTank, ~6% of the 600 mAh cell,
+// never measured). Power-down (config MODE bits 2:0 = 000) draws ~6 uA and keeps the registers,
+// including the last conversion results - so every boot must restart conversions AND wait for a
+// fresh one before quickReadBusVoltage(), or the COMMA check would act on a pre-sleep voltage.
+static void inaSetPowerDown(uint8_t addr, bool down) {
+  Wire.beginTransmission(addr);
+  Wire.write(0x00);  // config register
+  if (Wire.endTransmission() != 0) return;  // chip absent (e.g. no Wally 0x45 panel sensor)
+  if (Wire.requestFrom(addr, (uint8_t)2) < 2) return;
+  uint16_t cfg = ((uint16_t)Wire.read() << 8) | (uint8_t)Wire.read();
+  cfg = (cfg & ~0x0007) | (down ? 0x0000 : INA219_CONFIG_MODE_SANDBVOLT_CONTINUOUS);
+  Wire.beginTransmission(addr);
+  Wire.write(0x00);
+  Wire.write((cfg >> 8) & 0xFF);
+  Wire.write(cfg & 0xFF);
+  Wire.endTransmission();
+}
+
+// Every path into esp_deep_sleep_start() calls this first.
+void inaPowerDownForSleep() {
+  inaSetPowerDown(0x41, true);
+  inaSetPowerDown(0x45, true);
+}
+
+// Restarts conversions and waits for the first fresh result. Writing the config clears the
+// conversion-ready flag (CNVR, bit 1 of the bus voltage register), so poll until it is set again.
+// Bounded at 100 ms - covers a 128-sample averaging config (68.1 ms) too. Harmless on a cold
+// boot, where the chips already start in continuous mode.
+void inaWakeFromSleep() {
+  inaSetPowerDown(0x41, false);
+  inaSetPowerDown(0x45, false);
+  unsigned long start = millis();
+  while (millis() - start < 100) {
+    Wire.beginTransmission(0x41);
+    Wire.write(0x02);  // bus voltage register
+    if (Wire.endTransmission() != 0) break;  // no battery INA219 - nothing to wait for
+    if (Wire.requestFrom((uint8_t)0x41, (uint8_t)2) < 2) break;
+    uint16_t raw = ((uint16_t)Wire.read() << 8) | (uint8_t)Wire.read();
+    if (raw & 0x0002) break;  // CNVR: fresh conversion ready
+    delay(1);
+  }
+}
+
+// USB programming jumper (Wally JP1 / Daffodil JP6) - ties MODE to V50, which powers the CP2104
+// USB chip (~10-20 mA, drains the cell in deep sleep: TopTank 2026-10-09) and leaves the TPL5010
+// watchdog header unconnected. GPIO34 (MODE_MICRO) sees V50 x 62k/(33k+62k) with the jumper fitted,
+// 0 V without it (R8+R12 on Wally and the shield's 10k pull MODE to GND). digitalRead() missed it:
+// at night V50 sits at ~3.35 V -> 2.19 V on the pin, under the ESP32's ~2.48 V logic-high
+// threshold. Read as a voltage instead - any V50 >= 3 V gives >= 1.96 V with the jumper fitted.
+// Sent as opMode bit0 ("Op Mode" in the Teleonome, shown as the USB jumper alert).
+#define USB_JUMPER_THRESHOLD_MV 1000
+bool usbJumperFitted() {
+  uint32_t total = 0;
+  for (uint8_t i = 0; i < 4; i++) total += analogReadMilliVolts(OP_MODE);
+  return (total / 4) > USB_JUMPER_THRESHOLD_MV;
+}
+
 // Packs the boot-time I2C found* flags - sent as VitalSignsRecord.i2cDeviceMask (was
 // DIAGNOSTIC_TYPE_I2C_STATUS). DS18B20 is OneWire, not I2C, and is deliberately excluded:
 //   bit0=lcd(0x03) bit1=temp(0x40) bit2=ADS1115(0x48) bit3=BH1750(0x23)
@@ -1199,6 +1257,7 @@ void setup() {
   Wire.setClock(400000);
 
   resetI2CDevices();
+  inaWakeFromSleep();  // INA219s were powered down for deep sleep - before ANY quickReadBusVoltage() (COMMA check, wake voltage)
 
 
   // Try to mount LittleFS if (!LittleFS.begin()) { Serial.println("LittleFS mount failed! Formatting..."); if (LittleFS.format()) { Serial.println("LittleFS formatted successfully."); if (LittleFS.begin()) { Serial.println("LittleFS mounted successfully after formatting."); } else { Serial.println("Failed to mount LittleFS after formatting."); } } else { Serial.println("Failed to format LittleFS."); } } else { Serial.println("LittleFS mounted successfully."); } }
@@ -1375,6 +1434,7 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
       gpio_hold_en((gpio_num_t)LED_CONTROL);
       gpio_hold_en((gpio_num_t)SLEEP_SWITCH_26);
       gpio_deep_sleep_hold_en();
+      inaPowerDownForSleep();
       esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
       esp_sleep_enable_timer_wakeup((uint64_t)_remaining * 1000000ULL);
       esp_deep_sleep_start();
@@ -1398,6 +1458,7 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
       gpio_hold_en((gpio_num_t)SLEEP_SWITCH_26);
       gpio_deep_sleep_hold_en();
       rtc_intended_wakeup_time = _nowSec + 600;
+      inaPowerDownForSleep();
       esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
       esp_sleep_enable_timer_wakeup(600ULL * 1000000ULL);
       esp_deep_sleep_start();
@@ -2178,9 +2239,11 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
   pinMode(RTC_BATT_VOLT, INPUT);
   analogSetPinAttenuation(RTC_BATT_VOLT, ADC_11db);  // must be set before first analogRead; default ADC_0db saturates at 1.1V giving 4.95V false reading
 
-  opmode = digitalRead(OP_MODE);
-  // Encode all device status into opMode byte (bit 1 updated each tick in loop).
-  digitalStablesData.opMode = (opmode       ? 0x01 : 0x00)
+  analogSetPinAttenuation(OP_MODE, ADC_11db);  // full 0-3.1 V range; GPIO34 is ADC1, so it works with WiFi on
+  opmode = usbJumperFitted();
+  // Encode all device status into opMode byte (bit 1 updated each tick in loop, bit 0 in
+  // readSensorData() so every packet carries the current USB jumper state).
+  digitalStablesData.opMode = (opmode       ? 0x01 : 0x00)  // bit0 = USB programming jumper fitted
                              | (foundINA219  ? 0x04 : 0x00)
                              | (foundBH1750  ? 0x08 : 0x00)
                              | (foundADS     ? 0x10 : 0x00)
@@ -2483,6 +2546,7 @@ void goToSleep() {
     RTCInfoRecord _now = timeManager.now();
     rtc_intended_wakeup_time = timeManager.getCurrentTimeInSeconds(_now) + seconds_sleep;
   }
+  inaPowerDownForSleep();
   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
   esp_sleep_enable_timer_wakeup(sleep_time_us);
   esp_deep_sleep_start();
@@ -2575,6 +2639,11 @@ void readTankPressure2() {
 }
 
 void readSensorData() {
+  // USB programming jumper (opMode bit0) - re-checked before every send, so a unit that stays
+  // awake all day still reports a jumper fitted after boot (see usbJumperFitted()).
+  opmode = usbJumperFitted();
+  if (opmode) digitalStablesData.opMode |= 0x01;
+  else        digitalStablesData.opMode &= ~0x01;
   //
   // V50_I (raw solar/USB input, pre-diode) — see setup() for why this isn't battery voltage.
   //
@@ -4138,7 +4207,7 @@ void loop() {
       // opMode bits decoded
       uint8_t om = digitalStablesData.opMode;
       Serial.println("opMode=0x" + String(om, HEX) + " (0b" + String(om, BIN) + ")");
-      Serial.println("  bit0 hwPin="        + String(om & 0x01 ? "1"   : "0"));
+      Serial.println("  bit0 usbJumper="    + String(om & 0x01 ? "FITTED" : "off"));
       Serial.println("  bit1 weatherFresh=" + String(om & 0x02 ? "YES" : "NO"));
       Serial.println("  bit2 INA219="       + String(om & 0x04 ? "OK"  : "MISSING"));
       Serial.println("  bit3 BH1750="       + String(om & 0x08 ? "OK"  : "MISSING"));
