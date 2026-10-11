@@ -34,6 +34,7 @@
 #include <Adafruit_INA219.h>
 #include <VitalSignsTracker.h>
 #include <DeviceIdentityTracker.h>
+#include <PowerProfileRecord.h>
 #include <esp_sleep.h>
 //#include <driver/adc.h>
 
@@ -148,6 +149,56 @@ bool daffodilTxSample(int16_t &batteryDraw_mA, uint16_t &battery_mV) {
   return true;
 }
 
+// The battery ledger (VitalSignsTracker::startLedger) reads both INA219s from core 0 every ~70 ms
+// while the main code on core 1 also reads them. An INA219 read is a register-pointer write then a
+// read, so the two can get each other's register - every INA219 access holds this lock (recursive,
+// so nested helpers are fine). Created first thing in setup().
+SemaphoreHandle_t inaMutex = nullptr;
+struct InaLock {
+  InaLock() { if (inaMutex) xSemaphoreTakeRecursive(inaMutex, portMAX_DELAY); }
+  ~InaLock() { if (inaMutex) xSemaphoreGiveRecursive(inaMutex); }
+};
+
+extern bool foundINA219;       // defined with the other sensor flags further down
+extern bool foundINA219Solar;
+
+// Ledger callback (core 0): battery and panel read back to back under the lock.
+bool daffodilLedgerSample(LedgerSample &s) {
+  if (!foundINA219) return false;
+  InaLock lock;
+  float batShunt_mV = ina219.getShuntVoltage_mV();
+  float batBus_V = ina219.getBusVoltage_V();
+  s.battery_uA = (int32_t)(batShunt_mV / SHUNT_OHMS * 1000.0f);
+  s.battery_mV = batBus_V > 0 ? (uint16_t)(batBus_V * 1000.0f) : 0;
+  if (foundINA219Solar) {
+    float panShunt_mV = solarIna219.getShuntVoltage_mV();
+    float panBus_V = solarIna219.getBusVoltage_V();
+    s.panel_uA = (int32_t)(panShunt_mV / SHUNT_OHMS * 1000.0f);
+    s.panel_mV = panBus_V > 0 ? (uint16_t)(panBus_V * 1000.0f) : 0;
+  } else {
+    s.panel_uA = 0;
+    s.panel_mV = 0;
+  }
+  return true;
+}
+
+// Ledger mode callback: single-sample battery conversions during a LoRa TX (true peak), back to
+// 128-sample averaging after. Only the shunt ADC bits (6:3) change.
+void daffodilLedgerMode(bool fastMode) {
+  InaLock lock;
+  Wire.beginTransmission(0x41);
+  Wire.write(0x00);
+  if (Wire.endTransmission() != 0) return;
+  if (Wire.requestFrom((uint8_t)0x41, (uint8_t)2) < 2) return;
+  uint16_t cfg = ((uint16_t)Wire.read() << 8) | (uint8_t)Wire.read();
+  cfg = (cfg & ~0x0078) | (fastMode ? INA219_CONFIG_SADCRES_12BIT_1S_532US : INA219_CONFIG_SADCRES_12BIT_128S_69MS);
+  Wire.beginTransmission(0x41);
+  Wire.write(0x00);
+  Wire.write((cfg >> 8) & 0xFF);
+  Wire.write(cfg & 0xFF);
+  Wire.endTransmission();
+}
+
 // Waterproof DS18B20 water temperature on pin 33 (DAFFODIL_WATER_TROUGH_WATER_TEMP only), its own OneWire
 // bus separate from the board DS18B20 on pin 27. No external pull-up needed: the pin-33 terminal
 // already goes through the board's 2N7002 level shifter (Q1, R5 4.7k to V33 on the GPIO side,
@@ -245,7 +296,22 @@ float avgRssi = 0;
 //
 // LiFePO4 battery thresholds (Build 7: replaced supercapacitors with 3.2V LiFePO4 cell)
 #define BATTERY_CAPACITY_MAH 600.0   // usable capacity of LiFePO4 123A cell
-#define NIGHT_MAX_SLEEP_SEC 900      // longest sleep while the cell is healthy: a packet every 15 min all night
+// PowerProfileRecord - this product's battery/sensor hardware facts for the Cerebellum's SOC
+// (a battery or panel change means editing these and reflashing). 0 = "use the default".
+#define PP_CHEMISTRY            BATTERY_CHEMISTRY_LIFEPO4
+#define PP_CELLS_IN_SERIES      1
+#define PP_CAPACITY_MAH         600
+#define PP_CHARGE_EFFICIENCY    0         // Cerebellum default for LiFePO4
+#define PP_REST_FULL_MV         0
+#define PP_REST_EMPTY_MV        0
+#define PP_ABSORPTION_MV        3600      // MCP73123-22 regulation voltage
+#define PP_CUTOFF_MV            2800      // = commaVoltage
+#define PP_BATTERY_TEMP_SOURCE  BATTERY_TEMP_SOURCE_NONE
+#define PP_BATTERY_LSB_UA       200       // 50 mOhm shunt, 10 uV INA219 shunt LSB
+#define PP_PANEL_LSB_UA         200
+#define PP_SLEEP_UA             0         // not bench-measured yet
+#define PP_UNMEASURED_BASELINE_UA 0
+#define NIGHT_MAX_SLEEP_SEC 600      // longest sleep while the cell is healthy: a packet every 10 min all night (~ the TPL5010 period, so few early wakes)
 #define NIGHT_CAP_MIN_VOLTAGE 3.15   // battery (under wake load) at or above this gets the 15 min cap
 float sleepingVoltage = 3.12;         // Force deep sleep — cliff edge for LiFePO4 123A
 float commaVoltage    = 2.80;         // COMMA threshold — below this, skip all work and wait for solar recovery
@@ -492,6 +558,8 @@ uint8_t calculateChecksum(const T &data) {
     checksumOffset = offsetof(CommaRecord, checksum);
   } else if constexpr (std::is_same<T, DeviceIdentityRecord>::value) {
     checksumOffset = offsetof(DeviceIdentityRecord, checksum);
+  } else if constexpr (std::is_same<T, PowerProfileRecord>::value) {
+    checksumOffset = offsetof(PowerProfileRecord, checksum);
   }
 
   for (size_t i = 0; i < checksumOffset; i++) {
@@ -513,7 +581,7 @@ int sendMessage(const T &inputData, bool skipCAD = false) {
 
   long code = secretManager.generateCode();
 
-  if constexpr (std::is_same<T, DigitalStablesData>::value || std::is_same<T, RequestCommand>::value || std::is_same<T, VitalSignsRecord>::value || std::is_same<T, CommaRecord>::value || std::is_same<T, DeviceIdentityRecord>::value) {
+  if constexpr (std::is_same<T, DigitalStablesData>::value || std::is_same<T, RequestCommand>::value || std::is_same<T, VitalSignsRecord>::value || std::is_same<T, CommaRecord>::value || std::is_same<T, DeviceIdentityRecord>::value || std::is_same<T, PowerProfileRecord>::value) {
     dataToSend.totpcode = code;
     dataToSend.checksum = 0;
     dataToSend.checksum = calculateChecksum(dataToSend);
@@ -559,10 +627,15 @@ int sendMessage(const T &inputData, bool skipCAD = false) {
       // packet's transmit. The old TX_CURRENT path polled LoRa.isTransmitting(), which never
       // read busy on this hardware (pollIterations==0) - the tracker samples from a core-0 task
       // while endPacket(false) blocks on the real TX-done flag instead.
-      constexpr bool trackTx = !std::is_same<T, VitalSignsRecord>::value && !std::is_same<T, CommaRecord>::value && !std::is_same<T, DeviceIdentityRecord>::value;
+      constexpr bool trackTx = !std::is_same<T, VitalSignsRecord>::value && !std::is_same<T, CommaRecord>::value && !std::is_same<T, DeviceIdentityRecord>::value && !std::is_same<T, PowerProfileRecord>::value;
       if (trackTx) {
+        int16_t txPanel_mA = -1;
+        if (foundINA219Solar) {
+          InaLock lock;
+          txPanel_mA = (int16_t)(solarIna219.getShuntVoltage_mV() / SHUNT_OHMS);
+        }
         vitalSigns.beginTx(foundINA219 ? daffodilTxSample : nullptr,
-                           foundINA219Solar ? (int16_t)(solarIna219.getShuntVoltage_mV() / SHUNT_OHMS) : -1,
+                           txPanel_mA,
                            foundADS && digitalStablesData.v50Voltage > 0 ? (uint16_t)(digitalStablesData.v50Voltage * 1000) : 0);
       }
       bool txOk = LoRa.endPacket(false);
@@ -1102,6 +1175,7 @@ int16_t readADCAveraged(uint8_t channel, uint8_t samples) {
 // every subsequent readSensorData() call, right after a burst of I2C traffic (127-address scan,
 // ADS.begin, ina219.begin+calibration reset) immediately before this call.
 float quickReadBusVoltage() {
+  InaLock lock;
   const uint8_t samples = 5;
   float total = 0;
   uint8_t validCount = 0;
@@ -1242,6 +1316,13 @@ uint8_t buildI2CStatusMask() {
 }
 
 void setup() {
+  // 80 MHz instead of the 240 MHz default: the board idles awake for hours in FULL_MODE, and an
+  // idle-ish ESP32 draws roughly half the current at 80 MHz. 80 is the floor that keeps APB at
+  // 80 MHz (UART, I2C, SPI/LoRa and the RMT behind FastLED keep their timing) and still allows WiFi.
+  // PowerManager::begin() was meant to do this but is never called. Every wake resets the clock
+  // to the default, so it goes first - the early-wake/COMMA paths below benefit too.
+  setCpuFrequencyMhz(80);
+  inaMutex = xSemaphoreCreateRecursiveMutex();  // before any INA219 access - see InaLock
   lastResetReason = esp_reset_reason();
   vitalSigns.captureBoot();  // reset reason + wake cause only, no I/O
 
@@ -1443,7 +1524,7 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
   deviceIdentity.begin(vitalSigns.wasRealReset());
 
   // 1. TPL5010 watchdog reset during deep sleep: return to sleep for the remaining intended time.
-  //    Petting the watchdog here resets its 15-min window so it won't fire again mid-sleep.
+  //    Petting acknowledges this WAKE pulse so the TPL5010 does not reset at the next one (~10 min).
   //    This lets PowerManager sleep times longer than the watchdog period work transparently.
   if (rtc_intended_wakeup_time > 0 && _nowSec < rtc_intended_wakeup_time) {
     uint32_t _remaining = rtc_intended_wakeup_time - _nowSec;
@@ -1468,7 +1549,7 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
     float _qv = quickReadBusVoltage();
     if (_qv < 0 || _qv < commaVoltage) {
       if (debug) { Serial.printf("COMMA: %.2fV — returning to sleep.\n", _qv); Serial.flush(); }
-      // Pet the TPL5010 watchdog so it gets a fresh 15-min window from now.
+      // Acknowledge the TPL5010 (DONE) so its next ~10-min WAKE pulse is not a reset.
       pinMode(TPL5010_DONE, OUTPUT);
       digitalWrite(TPL5010_DONE, HIGH);
       delayMicroseconds(100);
@@ -2354,6 +2435,7 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
     // sensor objects directly (they were begin()'d earlier in setup()) for the same live-signal
     // veto the loop's CLOUDY logic uses, so a real panel/charging battery isn't overridden by
     // a stale theoretical estimate.
+    InaLock _inaLock;
     bool _quickPanelConfirmsSun = foundINA219Solar && solarIna219.getShuntVoltage_mV() / SHUNT_OHMS >= panelCurrentCloudyThreshold_mA;
     bool _quickV50iConfirmsSun = foundADS && digitalStablesData.v50Voltage >= v50iCloudyThreshold;
     bool _quickBatteryConfirmsCharging = foundINA219 && ina219.getCurrent_mA() < 0;
@@ -2399,6 +2481,10 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
     LoRa.receive();
   }
 
+  // Battery ledger (VitalSignsRecord v3): integrate battery charge/discharge and panel energy on
+  // core 0 for the rest of this awake cycle. recordSleep() in goToSleep() stops it.
+  if (foundINA219) vitalSigns.startLedger(daffodilLedgerSample, daffodilLedgerMode, 70);
+
   if (isSleepMode) {
     Serial.println("Calling deepsleep line 1378");
     goToSleep();
@@ -2438,6 +2524,29 @@ void sendDeviceIdentityIfDue() {
   DeviceIdentityRecord record = deviceIdentity.buildRecord(secretManager, digitalStablesData.serialnumberarray, FIRMWARE_BUILD);
   delay(VITAL_SIGNS_GAP_MS);
   if (sendMessage(record, false) == LORA_OK) deviceIdentity.markSent(nowSec);
+  sendPowerProfile(record.reason);
+}
+
+// PowerProfileRecord rides on the identity schedule (after a real reset, then daily).
+void sendPowerProfile(uint8_t reason) {
+  PowerProfileRecord p;
+  memcpy(p.serialnumberarray, digitalStablesData.serialnumberarray, sizeof(p.serialnumberarray));
+  p.reason = reason;
+  p.chemistry = PP_CHEMISTRY;
+  p.cellsInSeries = PP_CELLS_IN_SERIES;
+  p.capacity_mAh = PP_CAPACITY_MAH;
+  p.chargeEfficiency_pct = PP_CHARGE_EFFICIENCY;
+  p.restFullVoltage_mV = PP_REST_FULL_MV;
+  p.restEmptyVoltage_mV = PP_REST_EMPTY_MV;
+  p.absorptionVoltage_mV = PP_ABSORPTION_MV;
+  p.cutoffVoltage_mV = PP_CUTOFF_MV;
+  p.batteryTempSource = PP_BATTERY_TEMP_SOURCE;
+  p.batteryCurrentLsb_uA = PP_BATTERY_LSB_UA;
+  p.panelCurrentLsb_uA = foundINA219Solar ? PP_PANEL_LSB_UA : 0;
+  p.sleepCurrent_uA = PP_SLEEP_UA;
+  p.unmeasuredBaseline_uA = PP_UNMEASURED_BASELINE_UA;
+  delay(VITAL_SIGNS_GAP_MS);
+  sendMessage(p, false);
 }
 
 void goToSleep() {
@@ -2488,7 +2597,7 @@ void goToSleep() {
     }
   }
   if (seconds_sleep < 30) seconds_sleep = 30;
-  // Night cap: a packet at least every 15 min while the cell is healthy. Below NIGHT_CAP_MIN_VOLTAGE
+  // Night cap: a packet at least every NIGHT_MAX_SLEEP_SEC (10 min) while the cell is healthy. Below NIGHT_CAP_MIN_VOLTAGE
   // the formula's longer sleeps stand (safe since the TPL5010 WAKE pulse is a wake source).
   if (hasBattery && digitalStablesData.batteryVoltage >= NIGHT_CAP_MIN_VOLTAGE && seconds_sleep > NIGHT_MAX_SLEEP_SEC) {
     seconds_sleep = NIGHT_MAX_SLEEP_SEC;
@@ -2561,7 +2670,8 @@ void goToSleep() {
     Serial.println("Entering deep sleep.");
     Serial.flush();
   }
-  // Pet the TPL5010 watchdog immediately before sleeping so it gets a fresh 15-min window.
+  // Acknowledge the TPL5010 (DONE) before sleeping. Its WAKE pulses keep coming every ~10 min
+  // regardless; each one wakes us (ext0) and setup()s early-wake path acknowledges it again.
   digitalWrite(TPL5010_DONE, HIGH);
   delayMicroseconds(100);
   digitalWrite(TPL5010_DONE, LOW);
@@ -2781,6 +2891,9 @@ void readSensorData() {
   // which is how one packet could show "panel 43 mA, battery charging 330 mA" (TopTank 2026-10-10).
   float shuntvoltage = 0, busvoltage = 0;
   float panelShunt_mV = 0, panelBus_V = -99;
+  // INA219 lock from here to the end of the panel block below (covers the debug register reads);
+  // released explicitly so the rest of readSensorData doesn't hold up the core-0 ledger.
+  if (inaMutex) xSemaphoreTakeRecursive(inaMutex, portMAX_DELAY);
   if (foundINA219) {
     shuntvoltage = ina219.getShuntVoltage_mV();
     busvoltage = ina219.getBusVoltage_V();
@@ -2891,6 +3004,7 @@ void readSensorData() {
     digitalStablesData.panelVoltage = -99;
     digitalStablesData.panelCurrent = -99;
   }
+  if (inaMutex) xSemaphoreGiveRecursive(inaMutex);
 
   /*
  * 
