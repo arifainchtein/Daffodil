@@ -332,6 +332,11 @@ float panelCurrentCloudyThreshold_mA = 30.0;  // Doubled 2026-10-10 when panelCu
 float minimumWifiVoltage = 3.28;      // Turn off WiFi first to preserve power for LoRa
 uint8_t secondsSinceLastDataSampling = 0;
 uint16_t secondsSinceLastWeatherData = 9999; // 9999 = never received
+// RTC time the last forecast was accepted, so "weather fresh" (opMode bit1, LED 14, the cloudy
+// forecast check) survives deep sleep: secondsSinceLastWeatherData is plain RAM and restarted at
+// 9999 on every wake, so a sleeping unit reported "not fresh" right after accepting a forecast
+// (TopTank 2026-10-12). Lost on a real reset like every RTC_DATA_ATTR - then "never" is correct.
+RTC_DATA_ATTR uint32_t rtc_lastWeatherEpoch = 0;
 uint8_t cloudyDutyCyclePercent = 50;         // % of display cycles with LEDs on in CLOUDY mode
 uint8_t cloudyThreshold = 70;               // forecast cloudiness % to enter CLOUDY mode
 bool cloudyLedCycleOn = true;               // toggles each full display cycle in CLOUDY mode
@@ -677,6 +682,29 @@ int sendMessage(const T &inputData, bool skipCAD = false) {
 void IRAM_ATTR onLoraDio0() {
   loraDio0Fired = true;
 }
+
+// Received packet, copied out of the radio the moment DIO0 is seen so the radio can go straight
+// back to listening (2026-10-12). Before, parsePacket() left the radio idle until the next 1 s
+// clockTicked pass processed the packet - and that pass can also run delay(random(100,3000)) and a
+// ~1.3 s transmit - so every packet heard (FISH sends one every few seconds) left this unit deaf
+// for seconds, and it missed most of Annabelle's weather/time broadcasts (TopTank, while a bench
+// unit with the same firmware caught them). processLora() reads from here instead of the radio.
+uint8_t loraRxBuf[256];
+int loraRxLen = 0;
+int loraRxPos = 0;
+int loraRxRssi = 0;
+float loraRxSnr = 0;
+
+size_t loraRxRead(uint8_t *dst, size_t len) {
+  size_t n = 0;
+  while (n < len && loraRxPos < loraRxLen) dst[n++] = loraRxBuf[loraRxPos++];
+  while (n < len) dst[n++] = 0;
+  return len;
+}
+
+int loraRxByte() {
+  return loraRxPos < loraRxLen ? loraRxBuf[loraRxPos++] : -1;
+}
 void processLora(int packetSize) {
   if (debug) Serial.print(" Receive lora: ");
   if (debug) Serial.println(packetSize);
@@ -695,7 +723,7 @@ void processLora(int packetSize) {
 
   if (packetSize == sizeof(DigitalStablesData)) {
     DigitalStablesData receivedDigitalStablesData;
-    LoRa.readBytes((uint8_t *)&receivedDigitalStablesData, sizeof(DigitalStablesData));
+    loraRxRead((uint8_t *)&receivedDigitalStablesData, sizeof(DigitalStablesData));
     long commandcode = receivedDigitalStablesData.totpcode;
     bool validCode = secretManager.checkCode(commandcode);
 
@@ -716,8 +744,8 @@ void processLora(int packetSize) {
         // secretManager.saveSleepPingMinutes(rosieConfigData.sleepPingMinutes);
         // secretManager.saveConfigData(rosieConfigData.fieldId,  stationName );
 
-        int rssi = LoRa.packetRssi();
-        float Snr = LoRa.packetSnr();
+        int rssi = loraRxRssi;
+        float Snr = loraRxSnr;
         if (debug) Serial.print(" valid code ");
         if (debug) Serial.print("  from: ");
         if (debug) Serial.println(receivedDigitalStablesData.devicename);
@@ -732,7 +760,7 @@ void processLora(int packetSize) {
 
   } else if (packetSize == sizeof(RequestCommand)) {
     RequestCommand rc;
-    LoRa.readBytes((uint8_t *)&rc, sizeof(RequestCommand));
+    loraRxRead((uint8_t *)&rc, sizeof(RequestCommand));
     long totpcode = rc.totpcode;
     bool validCode = secretManager.checkCode(totpcode);
     if (validCode) {
@@ -784,14 +812,14 @@ void processLora(int packetSize) {
     }
   } else if (packetSize == sizeof(WeatherForecastUpdate)) {
     WeatherForecastUpdate weatherForecastUpdate;
-    LoRa.readBytes((uint8_t *)&weatherForecastUpdate, sizeof(WeatherForecastUpdate));
+    loraRxRead((uint8_t *)&weatherForecastUpdate, sizeof(WeatherForecastUpdate));
     long commandcode = weatherForecastUpdate.totpcode;
     bool validCode = acceptAnnabelleTime(weatherForecastUpdate);  // also sets the RTC from Annabelle's time
     if (validCode) {
       //WeatherForecast forecasts=weatherForecastUpdate.forecasts;
       weatherForecastManager->saveForecasts(weatherForecastUpdate.forecasts);
       solarInfo->setWeatherForecast(weatherForecastUpdate.forecasts, 4);
-      secondsSinceLastWeatherData = 0;
+      markWeatherReceived();
       if (debug) Serial.println(" Receive and processed weatherForecast ");
     } else {
       if (debug) Serial.print(" Receive WeatherForecastUpdate but invalid code: ");
@@ -803,7 +831,7 @@ void processLora(int packetSize) {
     uint8_t buffer[packetSize];
     // Read all bytes into the buffer
     for (int i = 0; i < packetSize; i++) {
-      buffer[i] = LoRa.read();
+      buffer[i] = loraRxByte();
     }
     // Display as hex values (with position)
     if (debug) Serial.print("HEX: ");
@@ -1115,6 +1143,25 @@ void writeRtcFromCodeTime(uint32_t codeTime) {
   Wire.write(bcd(t.tm_mon + 1));
   Wire.write(bcd(t.tm_year - 100));
   Wire.endTransmission();
+}
+
+void markWeatherReceived() {
+  secondsSinceLastWeatherData = 0;
+  rtc_lastWeatherEpoch = (uint32_t)timeManager.getCurrentTimeInSeconds(timeManager.now());
+}
+
+// After a deep-sleep wake: how long ago the last forecast was accepted, from the RTC. While still
+// fresh, hand the forecasts loadForecasts() just read from flash back to SolarInfo as well.
+void restoreWeatherFreshness() {
+  if (rtc_lastWeatherEpoch == 0) return;
+  long now = timeManager.getCurrentTimeInSeconds(timeManager.now());
+  long age = now - (long)rtc_lastWeatherEpoch;
+  if (age < 0 || age >= 9999) return;
+  secondsSinceLastWeatherData = (uint16_t)age;
+  if (age < 1860) {
+    WeatherForecast *forecasts = weatherForecastManager->getForecasts();
+    if (forecasts != nullptr) solarInfo->setWeatherForecast(forecasts, 4);
+  }
 }
 
 // Checks a WeatherForecastUpdate and, if it is genuine, sets the RTC from it. Returns whether the
@@ -1596,6 +1643,7 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
   weatherForecastManager = new WeatherForecastManager(Serial, latitude, longitude, apiKey);
   weatherForecastManager->initialize(currentTimerRecord);
   weatherForecastManager->loadForecasts(Serial);
+  restoreWeatherFreshness();
   if (debug) Serial.print("hasValidForecasts=");
   if (debug) Serial.println(weatherForecastManager->hasValidForecasts());
 
@@ -3523,8 +3571,17 @@ void loop() {
     loraDio0Fired = false;
     int packetSize = LoRa.parsePacket();
     if (packetSize > 0) {
-      loraPacketSize = packetSize;
-      loraReceived = true;
+      // Copy it out and listen again immediately - see loraRxBuf. A packet still waiting to be
+      // processed is replaced by the newer one (the old code lost the newer one instead).
+      loraRxRssi = LoRa.packetRssi();
+      loraRxSnr = LoRa.packetSnr();
+      int n = 0;
+      while (LoRa.available() && n < (int)sizeof(loraRxBuf)) loraRxBuf[n++] = (uint8_t)LoRa.read();
+      loraRxLen = n;
+      loraRxPos = 0;
+      loraPacketSize = n;
+      loraReceived = n > 0;
+      LoRa_rxMode();
     } else {
       LoRa_rxMode();  // DIO0 without a good packet (CRC error, TxDone): back to continuous receive
     }
@@ -3580,8 +3637,9 @@ void loop() {
 
     if (loraReceived) {
       loraReceived = false;
-      processLora(loraPacketSize);
-      LoRa_rxMode();  // parsePacket() leaves the radio idle after a packet
+      processLora(loraPacketSize);  // from loraRxBuf - the radio has been listening since it was copied out
+      // (no LoRa_rxMode() here any more: re-entering receive could cut off a packet arriving right now;
+      // sendMessage() already ends in receive if processLora() replied)
     }
     secondsSinceLastDataSampling++;
     if (secondsSinceLastWeatherData < 9999) secondsSinceLastWeatherData++;
@@ -3871,7 +3929,7 @@ void loop() {
   if (staledata && wifistatus && !wifiManager.getAPStatus()) {
     // Fetch weather data and update SolarInfo
     weatherForecastManager->downloadWeatherData(solarInfo);
-    secondsSinceLastWeatherData = 0;
+    markWeatherReceived();
   }
   // if(debug)Serial.println("line 1139");
   boolean showError = false;
