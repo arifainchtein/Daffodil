@@ -311,7 +311,7 @@ float avgRssi = 0;
 #define PP_PANEL_LSB_UA         200
 #define PP_SLEEP_UA             0         // not bench-measured yet
 #define PP_UNMEASURED_BASELINE_UA 0
-#define NIGHT_MAX_SLEEP_SEC 600      // longest sleep while the cell is healthy: a packet every 10 min all night (~ the TPL5010 period, so few early wakes)
+#define NIGHT_MAX_SLEEP_SEC 300      // longest sleep while the cell is healthy: a packet every 5 min all night (timer wakes before the ~10 min TPL5010 pulse)
 #define NIGHT_CAP_MIN_VOLTAGE 3.15   // battery (under wake load) at or above this gets the 15 min cap
 float sleepingVoltage = 3.12;         // Force deep sleep — cliff edge for LiFePO4 123A
 float commaVoltage    = 2.80;         // COMMA threshold — below this, skip all work and wait for solar recovery
@@ -1162,6 +1162,37 @@ void restoreWeatherFreshness() {
     WeatherForecast *forecasts = weatherForecastManager->getForecasts();
     if (forecasts != nullptr) solarInfo->setWeatherForecast(forecasts, 4);
   }
+}
+
+// Weather on request (2026-10-13): Annabelle's 5-minute forecast broadcast almost never finds a
+// sleeping unit awake (~2 s per wake), so the forecast went stale every night. When it is stale,
+// the pre-sleep data packet says so (opMode bit 1 clear) and Annabelle answers right after this
+// unit's VitalSigns (Annabelle.ino queueWeatherReply). Listen for that answer before the radio
+// sleeps: 169 bytes is ~0.86 s on air, plus Annabelle's CAD. Costs ~2.5 s awake only while stale.
+#define WEATHER_REPLY_LISTEN_MS 2500
+void listenForWeatherReply() {
+  if (!loraActive || secondsSinceLastWeatherData < 1860) return;
+  LoRa_rxMode();
+  unsigned long start = millis();
+  while (millis() - start < WEATHER_REPLY_LISTEN_MS) {
+    if (loraDio0Fired) {
+      loraDio0Fired = false;
+      int packetSize = LoRa.parsePacket();
+      if (packetSize == sizeof(WeatherForecastUpdate)) {
+        loraRxRssi = LoRa.packetRssi();
+        loraRxSnr = LoRa.packetSnr();
+        int n = 0;
+        while (LoRa.available() && n < (int)sizeof(loraRxBuf)) loraRxBuf[n++] = (uint8_t)LoRa.read();
+        loraRxLen = n;
+        loraRxPos = 0;
+        processLora(n);
+        if (secondsSinceLastWeatherData < 1860) break;  // accepted
+      }
+      LoRa_rxMode();
+    }
+    delay(5);
+  }
+  if (debug) Serial.printf("weather reply %s after %lu ms\n", secondsSinceLastWeatherData < 1860 ? "accepted" : "not received", millis() - start);
 }
 
 // Checks a WeatherForecastUpdate and, if it is genuine, sets the RTC from it. Returns whether the
@@ -2645,7 +2676,7 @@ void goToSleep() {
     }
   }
   if (seconds_sleep < 30) seconds_sleep = 30;
-  // Night cap: a packet at least every NIGHT_MAX_SLEEP_SEC (10 min) while the cell is healthy. Below NIGHT_CAP_MIN_VOLTAGE
+  // Night cap: a packet at least every NIGHT_MAX_SLEEP_SEC (5 min) while the cell is healthy. Below NIGHT_CAP_MIN_VOLTAGE
   // the formula's longer sleeps stand (safe since the TPL5010 WAKE pulse is a wake source).
   if (hasBattery && digitalStablesData.batteryVoltage >= NIGHT_CAP_MIN_VOLTAGE && seconds_sleep > NIGHT_MAX_SLEEP_SEC) {
     seconds_sleep = NIGHT_MAX_SLEEP_SEC;
@@ -2692,6 +2723,7 @@ void goToSleep() {
   }
   if (digitalStablesData.operatingStatus != OPERATING_STATUS_COMMA || vitalSigns.resetReportPending()) {
     sendVitalSigns();
+    listenForWeatherReply();
   }
   LoRa.sleep();
 
