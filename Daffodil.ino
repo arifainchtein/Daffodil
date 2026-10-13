@@ -153,6 +153,10 @@ bool daffodilTxSample(int16_t &batteryDraw_mA, uint16_t &battery_mV) {
 // while the main code on core 1 also reads them. An INA219 read is a register-pointer write then a
 // read, so the two can get each other's register - every INA219 access holds this lock (recursive,
 // so nested helpers are fine). Created first thing in setup().
+// Since 2026-10-13 it guards EVERY I2C read on core 1, not just the INA219s: Wire has one receive
+// buffer, so a ledger read between another device's requestFrom() and its Wire.read()s replaces
+// those bytes (an RTC read gave 2030-2032 dates with the right time of day). The RTC is read once
+// per clock tick (loop) under this lock; everything else uses currentTimerRecord.
 SemaphoreHandle_t inaMutex = nullptr;
 struct InaLock {
   InaLock() { if (inaMutex) xSemaphoreTakeRecursive(inaMutex, portMAX_DELAY); }
@@ -584,7 +588,7 @@ int sendMessage(const T &inputData, bool skipCAD = false) {
 
   readSensorData();
 
-  long code = secretManager.generateCode();
+  long code = secretManager.generateCode(timeManager.getTimeForCodeGeneration(currentTimerRecord));
 
   if constexpr (std::is_same<T, DigitalStablesData>::value || std::is_same<T, RequestCommand>::value || std::is_same<T, VitalSignsRecord>::value || std::is_same<T, CommaRecord>::value || std::is_same<T, DeviceIdentityRecord>::value || std::is_same<T, PowerProfileRecord>::value) {
     dataToSend.totpcode = code;
@@ -725,7 +729,7 @@ void processLora(int packetSize) {
     DigitalStablesData receivedDigitalStablesData;
     loraRxRead((uint8_t *)&receivedDigitalStablesData, sizeof(DigitalStablesData));
     long commandcode = receivedDigitalStablesData.totpcode;
-    bool validCode = secretManager.checkCode(commandcode);
+    bool validCode = secretManager.checkCode(commandcode, timeManager.getTimeForCodeGeneration(currentTimerRecord));
 
     if (debug) Serial.print(" Received DigitalStablesData code  : ");
     if (debug) Serial.print(commandcode);
@@ -750,7 +754,7 @@ void processLora(int packetSize) {
         if (debug) Serial.print("  from: ");
         if (debug) Serial.println(receivedDigitalStablesData.devicename);
       } else {
-        long currentcode = secretManager.generateCode();
+        long currentcode = secretManager.generateCode(timeManager.getTimeForCodeGeneration(currentTimerRecord));
         if (debug) Serial.print(" Receive digitalStablesData but invalid code: ");
         if (debug) Serial.print(commandcode);
         if (debug) Serial.print(" currentcode: ");
@@ -762,7 +766,7 @@ void processLora(int packetSize) {
     RequestCommand rc;
     loraRxRead((uint8_t *)&rc, sizeof(RequestCommand));
     long totpcode = rc.totpcode;
-    bool validCode = secretManager.checkCode(totpcode);
+    bool validCode = secretManager.checkCode(totpcode, timeManager.getTimeForCodeGeneration(currentTimerRecord));
     if (validCode) {
       String commandcode = String(rc.commandString);
       if (commandcode == "SendAsyncData") {
@@ -776,7 +780,7 @@ void processLora(int packetSize) {
         if (!dataManager.readAllDSDData(dataArray, MAX_RECORDS, actualSize)) {
           if (debug) Serial.println("No data to send or error reading data");
           RequestCommand rc;
-          rc.totpcode = secretManager.generateCode();
+          rc.totpcode = secretManager.generateCode(timeManager.getTimeForCodeGeneration(currentTimerRecord));
           rc.setCommand("NoData");
           sendMessage(rc,false);
         }
@@ -784,7 +788,7 @@ void processLora(int packetSize) {
 
         // Send each record as binary data
         for (int i = 0; i < actualSize; i++) {
-          dataArray[i].totpcode = secretManager.generateCode();
+          dataArray[i].totpcode = secretManager.generateCode(timeManager.getTimeForCodeGeneration(currentTimerRecord));
           sendMessage(dataArray[i],false);
           // LoRa.endPacket();
           if (debug) Serial.printf("Sent record %d/%d (%d bytes)\n",
@@ -1123,7 +1127,7 @@ bool rtcLostPower() {
   Wire.requestFrom(0x51, 1);
   if (!Wire.available()) return false;
   bool vl = Wire.read() & 0x80;
-  return vl || timeManager.now().year < 2025;
+  return vl || currentTimerRecord.year < 2025;
 }
 
 // Writes a getTimeForCodeGeneration()-style time into the RTC. Writing the seconds register
@@ -1147,14 +1151,14 @@ void writeRtcFromCodeTime(uint32_t codeTime) {
 
 void markWeatherReceived() {
   secondsSinceLastWeatherData = 0;
-  rtc_lastWeatherEpoch = (uint32_t)timeManager.getCurrentTimeInSeconds(timeManager.now());
+  rtc_lastWeatherEpoch = (uint32_t)timeManager.getCurrentTimeInSeconds(currentTimerRecord);
 }
 
 // After a deep-sleep wake: how long ago the last forecast was accepted, from the RTC. While still
 // fresh, hand the forecasts loadForecasts() just read from flash back to SolarInfo as well.
 void restoreWeatherFreshness() {
   if (rtc_lastWeatherEpoch == 0) return;
-  long now = timeManager.getCurrentTimeInSeconds(timeManager.now());
+  long now = timeManager.getCurrentTimeInSeconds(currentTimerRecord);
   long age = now - (long)rtc_lastWeatherEpoch;
   if (age < 0 || age >= 9999) return;
   secondsSinceLastWeatherData = (uint16_t)age;
@@ -1213,7 +1217,7 @@ bool acceptAnnabelleTime(const WeatherForecastUpdate &u) {
     if (debug) Serial.printf(" time sync: annabelleTime %u not after last accepted %u (replay?)\n", u.annabelleTime, last);
     return false;
   }
-  long deviceTime = timeManager.getTimeForCodeGeneration();
+  long deviceTime = timeManager.getTimeForCodeGeneration(currentTimerRecord);
   long diff = (long)u.annabelleTime - deviceTime;
   if (labs(diff) > TIME_SYNC_MAX_JUMP_SEC && !rtcLostPower()) {
     prefs.end();
@@ -1223,8 +1227,7 @@ bool acceptAnnabelleTime(const WeatherForecastUpdate &u) {
   prefs.putUInt(TIME_SYNC_LAST_KEY, u.annabelleTime);
   prefs.end();
   if (labs(diff) > TIME_SYNC_TOLERANCE_SEC) {
-    writeRtcFromCodeTime(u.annabelleTime);
-    currentTimerRecord = timeManager.now();
+    writeRtcFromCodeTime(u.annabelleTime);  // currentTimerRecord picks it up at the next clock tick
     if (debug) Serial.printf(" time sync: RTC corrected by %ld s (Annabelle %s)\n", diff, (u.flags & WEATHER_FLAG_DST) ? "DST" : "standard time");
   }
   return true;
@@ -1237,6 +1240,7 @@ bool acceptAnnabelleTime(const WeatherForecastUpdate &u) {
 // conversion and waits for it — no stale-mux-read risk), so this just reduces sensitivity to
 // any one noisy sample (e.g. charge-circuit switching transients) by averaging several.
 int16_t readADCAveraged(uint8_t channel, uint8_t samples) {
+  InaLock lock;  // every I2C read shares the Wire buffer with the core-0 ledger - see InaLock
   long total = 0;
   for (uint8_t i = 0; i < samples; i++) {
     total += ADS.readADC(channel);
@@ -2598,7 +2602,7 @@ void sendVitalSigns() {
 // worth a separate voltage gate - it rides wherever VitalSigns is allowed to go.
 void sendDeviceIdentityIfDue() {
   if (!loraActive) return;
-  uint32_t nowSec = timeManager.getCurrentTimeInSeconds(timeManager.now());
+  uint32_t nowSec = timeManager.getCurrentTimeInSeconds(currentTimerRecord);
   if (!deviceIdentity.isDue(nowSec)) return;
   DeviceIdentityRecord record = deviceIdentity.buildRecord(secretManager, digitalStablesData.serialnumberarray, FIRMWARE_BUILD);
   delay(VITAL_SIGNS_GAP_MS);
@@ -2718,8 +2722,7 @@ void goToSleep() {
   // COMMA (battery critically low) - the running totals carry over to the first pulse after
   // recovery - except right after a real reset, which is always reported.
   {
-    RTCInfoRecord _vsNow = timeManager.now();
-    vitalSigns.recordSleep(timeManager.getCurrentTimeInSeconds(_vsNow), (uint32_t)seconds_sleep);
+    vitalSigns.recordSleep(timeManager.getCurrentTimeInSeconds(currentTimerRecord), (uint32_t)seconds_sleep);
   }
   if (digitalStablesData.operatingStatus != OPERATING_STATUS_COMMA || vitalSigns.resetReportPending()) {
     sendVitalSigns();
@@ -2759,8 +2762,7 @@ void goToSleep() {
   // Record the Unix-seconds time we expect to wake, so the early-exit block in setup()
   // can detect and immediately dismiss TPL5010 watchdog resets during sleep.
   {
-    RTCInfoRecord _now = timeManager.now();
-    rtc_intended_wakeup_time = timeManager.getCurrentTimeInSeconds(_now) + seconds_sleep;
+    rtc_intended_wakeup_time = timeManager.getCurrentTimeInSeconds(currentTimerRecord) + seconds_sleep;
   }
   inaPowerDownForSleep();
   armDeepSleepWakeSources(sleep_time_us);
@@ -2832,6 +2834,7 @@ void readFlowMeter2() {
 // (sensor 2 / tank2). 0.5V=0psi, 4.5V=5psi (live-zero transducer, so 0V reads as a fault).
 //
 void readTankPressure1() {
+  InaLock lock;
   ADS.setGain(0);
   int16_t raw = ADS.readADC(1);
   float volts = raw * ADS.toVoltage(1);
@@ -2843,6 +2846,7 @@ void readTankPressure1() {
 }
 
 void readTankPressure2() {
+  InaLock lock;
   ADS.setGain(0);
   int16_t raw = ADS.readADC(0);
   float volts = raw * ADS.toVoltage(1);
@@ -2862,22 +2866,28 @@ void readSensorData() {
   //
   // V50_I (raw solar/USB input, pre-diode) — see setup() for why this isn't battery voltage.
   //
-  ADS.setGain(0);
-  int16_t val_3 = ADS.readADC(3);
-  float f = ADS.toVoltage(1);  //  voltage factor
-  digitalStablesData.v50Voltage = val_3 * f;
-
-  if (digitalStablesData.currentFunctionValue == VOLTAGE_MONITOR) {
-    // read the voltage on sensor 1 ie pin 32
-    int16_t val_1 = ADS.readADC(1);
+  {
+    InaLock lock;  // ADS1115 reads: same Wire buffer as the core-0 ledger - see InaLock
+    ADS.setGain(0);
+    int16_t val_3 = ADS.readADC(3);
     float f = ADS.toVoltage(1);  //  voltage factor
-    digitalStablesData.flowRate = val_1 * f;
+    digitalStablesData.v50Voltage = val_3 * f;
+
+    if (digitalStablesData.currentFunctionValue == VOLTAGE_MONITOR) {
+      // read the voltage on sensor 1 ie pin 32
+      int16_t val_1 = ADS.readADC(1);
+      float f = ADS.toVoltage(1);  //  voltage factor
+      digitalStablesData.flowRate = val_1 * f;
+    }
   }
 
-  tempSensor.requestTemperatures();
+  tempSensor.requestTemperatures();  // 1-Wire, not I2C - outside the lock (blocks ~750 ms)
   float tempC = tempSensor.getTempCByIndex(0);
   digitalStablesData.temperature = tempC;
-  readI2CTemp();
+  {
+    InaLock lock;
+    readI2CTemp();
+  }
   digitalStablesData.secondsTime = timeManager.getCurrentTimeInSeconds(currentTimerRecord);
   // sleepTime is NOT set here — only goToSleep() knows the actual intended sleep duration
   // (after applying the sanity floor). Setting it here would corrupt records stored before
@@ -2890,7 +2900,10 @@ void readSensorData() {
     // the value of correcting factor was obtained by comparing the output to the output of the Davies Vantage Pro 2 sensor
     // which it is assume that is correct.3.45
 
-    currentLux = lightMeter.readLightLevel() * lightMeterCorrectingFactor;
+    {
+      InaLock lock;
+      currentLux = lightMeter.readLightLevel() * lightMeterCorrectingFactor;
+    }
   } else {
     currentLux = -99;
   }
@@ -3623,7 +3636,15 @@ void loop() {
     portENTER_CRITICAL(&mux);
     clockTicked = false;
     portEXIT_CRITICAL(&mux);
-    currentTimerRecord = timeManager.now();
+    // The ONLY RTC read in the running sketch (setup() reads it once before the first tick).
+    // Everything else uses currentTimerRecord - 1 s resolution is enough, and each extra read
+    // raced the core-0 ledger's INA219 traffic for the shared Wire buffer (2026-10-13: date bytes
+    // replaced by INA data -> TopTank packets dated 2030-2032 with the right time of day). This
+    // one read takes the same lock as the ledger, so it can't be interleaved either.
+    {
+      InaLock lock;
+      currentTimerRecord = timeManager.now();
+    }
 
     if (wakeSignalReceived) {
       wakeSignalReceived = false;
@@ -3646,7 +3667,7 @@ void loop() {
     }
 
     if (currentTimerRecord.second % 10 == 0) {
-      secretManager.generateCode();
+      secretManager.generateCode(timeManager.getTimeForCodeGeneration(currentTimerRecord));
       //   Serial.print("update code history: ");
       //  long* history = secretManager.getCommandCodeHistory();
       // for (int i = 0; i < 5; i++) {
@@ -4764,7 +4785,7 @@ void loop() {
       Serial.println("Ok-GetTime");
       Serial.flush();
     } else if (command.startsWith("GetCommandCode")) {
-      long code = secretManager.generateCode();
+      long code = secretManager.generateCode(timeManager.getTimeForCodeGeneration(currentTimerRecord));
       //
       // patch a bug in the totp library
       // if the first digit is a zero, it
@@ -4844,7 +4865,7 @@ void loop() {
       if (!loraActive) {
         Serial.println("Failure-SendDeviceIdentity#LoRa not active");
       } else {
-        uint32_t nowSec = timeManager.getCurrentTimeInSeconds(timeManager.now());
+        uint32_t nowSec = timeManager.getCurrentTimeInSeconds(currentTimerRecord);
         DeviceIdentityRecord record = deviceIdentity.buildRecord(secretManager, digitalStablesData.serialnumberarray, FIRMWARE_BUILD);
         int result = sendMessage(record, true);
         if (result == LORA_OK) {
@@ -4865,7 +4886,7 @@ void loop() {
       // recapture, instead of permanently keeping whatever garbage the RTC had the first
       // time this was called (e.g. before SetTime had ever actually run correctly).
       if (commissionDate < 1704067200UL) {
-        commissionDate = timeManager.getCurrentTimeInSeconds(timeManager.now());
+        commissionDate = timeManager.getCurrentTimeInSeconds(currentTimerRecord);
         secretManager.setCommissionDate(commissionDate);
       }
       // WiFi params configured via Upload Firmware (ConfigWifiSTA/ConfigWifiAP), persisted
@@ -4876,7 +4897,7 @@ void loop() {
       String pdSoftAPPassword = secretManager.getSoftAPPASS();
       String pdHostName = secretManager.getHostName();
       String pdStationMode = secretManager.getStationMode() ? "Station" : "AccessPoint";
-      unsigned long pdCurrentTime = timeManager.getCurrentTimeInSeconds(timeManager.now());
+      unsigned long pdCurrentTime = timeManager.getCurrentTimeInSeconds(currentTimerRecord);
       String pdDeviceName = String(digitalStablesData.devicename);
       String pdDeviceShortName = String(digitalStablesData.deviceshortname);
       char pdSerialNumberBuf[13];
