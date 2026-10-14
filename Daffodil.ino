@@ -35,6 +35,7 @@
 #include <VitalSignsTracker.h>
 #include <DeviceIdentityTracker.h>
 #include <PowerProfileRecord.h>
+#include <DeviceCommandRecord.h>
 #include <esp_sleep.h>
 //#include <driver/adc.h>
 
@@ -317,6 +318,25 @@ float avgRssi = 0;
 #define PP_UNMEASURED_BASELINE_UA 0
 #define NIGHT_MAX_SLEEP_SEC 300      // longest sleep while the cell is healthy: a packet every 5 min all night (timer wakes before the ~10 min TPL5010 pulse)
 #define NIGHT_CAP_MIN_VOLTAGE 3.15   // battery (under wake load) at or above this gets the 15 min cap
+
+// WiFi on demand (2026-10-14). The automatic start needs the battery above 3.35 V for 30 s, which
+// a Daffodil only reaches while charging hard around midday - so its web page (settings, vital
+// signs) was out of reach most of the day. A DeviceCommandRecord from Annabelle's web page or
+// Paula turns WiFi on for a while regardless (and keeps the unit awake for it), or off. See
+// acceptDeviceCommand() and listenForReplies().
+#define WIFI_ON_DEMAND_DEFAULT_MIN 15
+#define WIFI_ON_DEMAND_MAX_MIN 60
+#define WIFI_ON_DEMAND_FLOOR_V 3.20f    // below this (under load) on-demand WiFi ends and the unit may sleep
+#define WIFI_OFF_SUPPRESS_AUTO_SEC 3600 // after an explicit "off", the automatic midday start waits this long
+#define COMMAND_LISTEN_MS 700           // listen after each VitalSigns: sender's 100 ms + CAD + ~0.19 s on air + margin
+// 1 = listen after every VitalSigns, day and night (~1.5-2 mAh a night at 5 min wakes, whether
+// or not a command ever comes). 0 = daylight only: no night cost, a night command waits for sunrise.
+#define LISTEN_FOR_COMMANDS_AT_NIGHT 1
+#define DEVICE_COMMAND_MAX_CLOCK_DIFF_SEC 900
+RTC_DATA_ATTR uint32_t wifiOnDemandUntil = 0;        // code-time seconds (getTimeForCodeGeneration), 0 = off
+RTC_DATA_ATTR uint32_t wifiAutoSuppressedUntil = 0;  // code-time seconds, see WIFI_OFF_SUPPRESS_AUTO_SEC
+bool wifiOnDemandWasOn = false;  // loop(): on-demand WiFi was running last pass - notices its end
+bool wifiOffRequested = false;   // set by acceptDeviceCommand(), acted on in loop()
 float sleepingVoltage = 3.12;         // Force deep sleep — cliff edge for LiFePO4 123A
 float commaVoltage    = 2.80;         // COMMA threshold — below this, skip all work and wait for solar recovery
 
@@ -814,6 +834,12 @@ void processLora(int packetSize) {
       if (debug) Serial.print(" Receive RequestCommand but invalid code: ");
       if (debug) Serial.println(totpcode);
     }
+  } else if (packetSize == sizeof(DeviceCommandRecord)) {
+    DeviceCommandRecord deviceCommand;
+    loraRxRead((uint8_t *)&deviceCommand, sizeof(DeviceCommandRecord));
+    bool accepted = acceptDeviceCommand(deviceCommand);
+    if (debug) Serial.printf(" DeviceCommand %u (%u min) from sender %u: %s\n", deviceCommand.command,
+                             deviceCommand.minutes, deviceCommand.sender, accepted ? "accepted" : "ignored");
   } else if (packetSize == sizeof(WeatherForecastUpdate)) {
     WeatherForecastUpdate weatherForecastUpdate;
     loraRxRead((uint8_t *)&weatherForecastUpdate, sizeof(WeatherForecastUpdate));
@@ -1173,16 +1199,24 @@ void restoreWeatherFreshness() {
 // the pre-sleep data packet says so (opMode bit 1 clear) and Annabelle answers right after this
 // unit's VitalSigns (Annabelle.ino queueWeatherReply). Listen for that answer before the radio
 // sleeps: 169 bytes is ~0.86 s on air, plus Annabelle's CAD. Costs ~2.5 s awake only while stale.
+// Commands (2026-10-14): Annabelle and Paula hold a DeviceCommandRecord for a sleeping unit and send
+// it in the same moment (DeviceCommandQueue.h), before any weather reply. With a fresh forecast the
+// window is only COMMAND_LISTEN_MS. See LISTEN_FOR_COMMANDS_AT_NIGHT.
 #define WEATHER_REPLY_LISTEN_MS 2500
-void listenForWeatherReply() {
-  if (!loraActive || secondsSinceLastWeatherData < 1860) return;
+void listenForReplies() {
+  if (!loraActive) return;
+  bool weatherStale = secondsSinceLastWeatherData >= 1860;
+  bool commandWindow = LISTEN_FOR_COMMANDS_AT_NIGHT || solarInfo->calculateActualPower(currentTimerRecord).efficiency > 0;
+  if (!weatherStale && !commandWindow) return;
+  unsigned long window = weatherStale ? WEATHER_REPLY_LISTEN_MS : COMMAND_LISTEN_MS;
+  bool commandHeard = false;
   LoRa_rxMode();
   unsigned long start = millis();
-  while (millis() - start < WEATHER_REPLY_LISTEN_MS) {
+  while (millis() - start < window) {
     if (loraDio0Fired) {
       loraDio0Fired = false;
       int packetSize = LoRa.parsePacket();
-      if (packetSize == sizeof(WeatherForecastUpdate)) {
+      if (packetSize == sizeof(WeatherForecastUpdate) || packetSize == sizeof(DeviceCommandRecord)) {
         loraRxRssi = LoRa.packetRssi();
         loraRxSnr = LoRa.packetSnr();
         int n = 0;
@@ -1190,13 +1224,17 @@ void listenForWeatherReply() {
         loraRxLen = n;
         loraRxPos = 0;
         processLora(n);
-        if (secondsSinceLastWeatherData < 1860) break;  // accepted
+        if (packetSize == sizeof(DeviceCommandRecord)) commandHeard = true;
+        // Stale: wait for the forecast (a command comes before it). Fresh: only a command was due.
+        if (weatherStale ? secondsSinceLastWeatherData < 1860 : commandHeard) break;
       }
       LoRa_rxMode();
     }
     delay(5);
   }
-  if (debug) Serial.printf("weather reply %s after %lu ms\n", secondsSinceLastWeatherData < 1860 ? "accepted" : "not received", millis() - start);
+  if (debug) Serial.printf("listened %lu ms: weather %s, command %s\n", millis() - start,
+                           !weatherStale ? "fresh" : secondsSinceLastWeatherData < 1860 ? "accepted" : "not received",
+                           commandHeard ? "heard" : "none");
 }
 
 // Checks a WeatherForecastUpdate and, if it is genuine, sets the RTC from it. Returns whether the
@@ -1229,6 +1267,65 @@ bool acceptAnnabelleTime(const WeatherForecastUpdate &u) {
   if (labs(diff) > TIME_SYNC_TOLERANCE_SEC) {
     writeRtcFromCodeTime(u.annabelleTime);  // currentTimerRecord picks it up at the next clock tick
     if (debug) Serial.printf(" time sync: RTC corrected by %ld s (Annabelle %s)\n", diff, (u.flags & WEATHER_FLAG_DST) ? "DST" : "standard time");
+  }
+  return true;
+}
+
+long codeTimeNow() {
+  return timeManager.getTimeForCodeGeneration(currentTimerRecord);
+}
+
+bool wifiOnDemandActive() {
+  return wifiOnDemandUntil != 0 && codeTimeNow() < (long)wifiOnDemandUntil;
+}
+
+// Active and the battery (under load) still above the floor.
+bool wifiOnDemandAllowed(float batteryVoltage) {
+  return wifiOnDemandActive() && (!hasBattery || batteryVoltage >= WIFI_ON_DEMAND_FLOOR_V);
+}
+
+// Checks a DeviceCommandRecord and carries it out. Accepted only when:
+//  - the checksum matches and it is addressed to this unit's serial
+//  - the code matches senderTime (proves the sender knows the shared secret)
+//  - senderTime is within DEVICE_COMMAND_MAX_CLOCK_DIFF_SEC of this clock
+//  - senderTime is later than the last command accepted from that sender (kept in NVS) - no replays
+bool acceptDeviceCommand(const DeviceCommandRecord &c) {
+  if (deviceCommandChecksum(c) != c.checksum) return false;
+  if (memcmp(c.serialnumberarray, digitalStablesData.serialnumberarray, 8) != 0) return false;  // another unit's
+  if (c.senderTime == 0 || secretManager.generateCodeAt(c.senderTime) != c.totpcode) {
+    if (debug) Serial.println(" command: code does not match senderTime");
+    return false;
+  }
+  long now = codeTimeNow();
+  if (labs((long)c.senderTime - now) > DEVICE_COMMAND_MAX_CLOCK_DIFF_SEC) {
+    if (debug) Serial.printf(" command: sender clock %ld s off\n", (long)c.senderTime - now);
+    return false;
+  }
+  char key[12];
+  snprintf(key, sizeof(key), "lastCmd%u", c.sender);
+  Preferences prefs;
+  prefs.begin(TIME_SYNC_PREFS, false);
+  uint32_t last = prefs.getUInt(key, 0);
+  if (c.senderTime <= last) {
+    prefs.end();
+    if (debug) Serial.printf(" command: senderTime %u not after last accepted %u (replay?)\n", c.senderTime, last);
+    return false;
+  }
+  prefs.putUInt(key, c.senderTime);
+  prefs.end();
+
+  if (c.command == DEVICE_COMMAND_WIFI_ON) {
+    int minutes = c.minutes ? min((int)c.minutes, WIFI_ON_DEMAND_MAX_MIN) : WIFI_ON_DEMAND_DEFAULT_MIN;
+    wifiOnDemandUntil = (uint32_t)(now + minutes * 60L);
+    wifiAutoSuppressedUntil = 0;
+    if (debug) Serial.printf(" command: WiFi on for %d min\n", minutes);
+  } else if (c.command == DEVICE_COMMAND_WIFI_OFF) {
+    wifiOnDemandUntil = 0;
+    wifiAutoSuppressedUntil = (uint32_t)(now + WIFI_OFF_SUPPRESS_AUTO_SEC);
+    wifiOffRequested = true;
+    if (debug) Serial.println(" command: WiFi off");
+  } else {
+    return false;
   }
   return true;
 }
@@ -2511,7 +2608,8 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
   }
 
   boolean isSleepMode = false;
-  if (usingSolarPower && hourlySolarPowerData.efficiency * 100 < digitalStablesData.minimumEfficiencyForLed) {
+  if (usingSolarPower && hourlySolarPowerData.efficiency * 100 < digitalStablesData.minimumEfficiencyForLed
+      && !(wifiOnDemandActive() && wifiOnDemandAllowed(quickReadBusVoltage()))) {  // WiFi on demand keeps it awake (see acceptDeviceCommand)
     // The geometric efficiency model is time-of-day only — it has no idea whether the panel
     // is actually delivering power right now. readSensorData() hasn't run yet at this point
     // in setup(), so digitalStablesData.panelCurrent/batteryCurrent aren't populated; read the
@@ -2726,7 +2824,14 @@ void goToSleep() {
   }
   if (digitalStablesData.operatingStatus != OPERATING_STATUS_COMMA || vitalSigns.resetReportPending()) {
     sendVitalSigns();
-    listenForWeatherReply();
+    listenForReplies();
+  }
+  // WiFi on demand arrived in that window: wake again in 1 s and stay awake for it (setup() and
+  // loop() skip sleep while wifiOnDemandAllowed). The VitalSigns just sent already counted the
+  // full planned sleep - a rare few minutes of overstated sleep in the ledger, accepted.
+  if (wifiOnDemandAllowed(digitalStablesData.batteryVoltage)) {
+    seconds_sleep = 1;
+    sleep_time_us = 1000000ULL;
   }
   LoRa.sleep();
 
@@ -3872,6 +3977,8 @@ void loop() {
      isSleepMode = true;
       if (debug) Serial.print("line 2609 isSleepMode=true because of is cloudy");
   }
+  // WiFi on demand keeps it awake (the floor is above sleepingVoltage, so a low cell still sleeps).
+  if (isSleepMode && wifiOnDemandAllowed(digitalStablesData.batteryVoltage)) isSleepMode = false;
   if (isSleepMode) {
     if (digitalStablesData.operatingStatus != OPERATING_STATUS_CLOUDY) {
       digitalStablesData.operatingStatus = OPERATING_STATUS_SLEEP;
@@ -3911,6 +4018,20 @@ void loop() {
   // Unconditional voltage-based WiFi shutoff: if battery is below minimumWifiVoltage,
   // always call stop() — even if wifistatus is false (WiFi may be retrying and drawing current).
   if (hasBattery && digitalStablesData.batteryVoltage > commaVoltage && digitalStablesData.batteryVoltage < minimumWifiVoltage) {
+    turnOffWifi = true;
+  }
+  // WiFi on demand overrides all of the above down to WIFI_ON_DEMAND_FLOOR_V. When it ends, WiFi
+  // goes off unless the automatic rule would have started it anyway.
+  bool wifiOnDemandOn = wifiOnDemandAllowed(digitalStablesData.batteryVoltage);
+  if (wifiOnDemandActive() && !wifiOnDemandOn) wifiOnDemandUntil = 0;  // battery under the floor: over
+  if (wifiOnDemandOn) {
+    turnOffWifi = false;
+  } else if (wifiOnDemandWasOn && hasBattery && digitalStablesData.batteryVoltage < minimumInitWifiVoltage) {
+    turnOffWifi = true;
+  }
+  wifiOnDemandWasOn = wifiOnDemandOn;
+  if (wifiOffRequested) {
+    wifiOffRequested = false;
     turnOffWifi = true;
   }
   if (turnOffWifi) {
@@ -3962,8 +4083,10 @@ void loop() {
     turnOnWifi = (hourlySolarPowerData.efficiency * 100 > digitalStablesData.minimumEfficiencyForWifi)
               && (currentSecondsWithWifiVoltage >= numberSecondsWithMinimumWifiVoltageForStartWifi)
               && (digitalStablesData.batteryVoltage >= minimumInitWifiVoltage)
-              && !wifistatus;
+              && !wifistatus
+              && codeTimeNow() >= (long)wifiAutoSuppressedUntil;  // not right after an explicit "off"
   }
+  if (!wifistatus && wifiOnDemandOn) turnOnWifi = true;
 
   if (turnOnWifi) {
     if (debug) Serial.print("turning on  wifi");
@@ -4181,7 +4304,7 @@ void loop() {
       boolean displayWifi = false;
       if (!usingSolarPower) displayWifi = true;
       else {
-        displayWifi = wifistatus && (hourlySolarPowerData.efficiency * 100 > digitalStablesData.minimumEfficiencyForWifi);
+        displayWifi = wifistatus && (hourlySolarPowerData.efficiency * 100 > digitalStablesData.minimumEfficiencyForWifi || wifiOnDemandActive());
       }
       if (displayWifi) {
         if (wifiManager.getAPStatus()) {
