@@ -89,6 +89,12 @@ const uint32_t FIRMWARE_BUILD = VitalSignsTracker::buildStamp(__DATE__, __TIME__
 DeviceIdentityTracker deviceIdentity;
 #define VITAL_SIGNS_AWAKE_INTERVAL_MS (10UL * 60UL * 1000UL)  // only for a unit that stays awake
 unsigned long lastVitalSignsMs = 0;
+// Copy of the last VitalSignsRecord built, for the web page's Power panel (fillPowerData, 2026-10-14).
+// Written in loop(), read by the async_tcp task - lastVitalSignsMux.
+VitalSignsRecord lastVitalSigns;
+bool haveLastVitalSigns = false;
+unsigned long lastVitalSignsBuiltMs = 0;
+portMUX_TYPE lastVitalSignsMux = portMUX_INITIALIZER_UNLOCKED;
 // COMMA log relay (sendNextCommaRecord): position in the log, consecutive send failures, and a
 // stop flag after too many failures this wake. Not RTC - a new wake starts again from record 0.
 int commaSendIndex = 0;
@@ -2672,6 +2678,7 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
   } else {
     digitalStablesData.operatingStatus = OPERATING_STATUS_NO_LED;
   }
+  wifiManager.setPowerDataProvider(fillPowerData);
   if (debug) Serial.println(F("Finished Setup"));
 }
 
@@ -2690,10 +2697,88 @@ void sleepDS18B20() {  // Put OneWire bus in high impedance state pinMode(ONE_WI
 void sendVitalSigns() {
   if (!loraActive) return;
   VitalSignsRecord record = vitalSigns.buildRecord(digitalStablesData.serialnumberarray, FIRMWARE_BUILD, buildI2CStatusMask());
+  portENTER_CRITICAL(&lastVitalSignsMux);
+  lastVitalSigns = record;
+  haveLastVitalSigns = true;
+  lastVitalSignsBuiltMs = millis();
+  portEXIT_CRITICAL(&lastVitalSignsMux);
   delay(VITAL_SIGNS_GAP_MS);
   if (sendMessage(record, false) == LORA_OK) vitalSigns.markSent();
   lastVitalSignsMs = millis();
   sendDeviceIdentityIfDue();
+}
+
+// The web page's Power panel (data/index.js, lightning button): live battery/panel readings, the
+// latest ledger sample, WiFi on demand and weather state, and the last VitalSignsRecord built.
+// Runs in the async_tcp task: reads digitalStablesData like generateWebData() does, the ledger
+// through latestSample() (its own lock) and the record copy under lastVitalSignsMux. The page
+// works out SOC from the voltage itself, with the Cerebellum's LiFePO4 table.
+void fillPowerData(JsonDocument &json) {
+  unsigned long nowMs = millis();
+  json["capacityMah"] = PP_CAPACITY_MAH;
+  json["uptimeSec"] = nowMs / 1000;
+  JsonObject live = json["live"].to<JsonObject>();
+  live["batteryV"] = digitalStablesData.batteryVoltage;
+  live["batteryMa"] = digitalStablesData.batteryCurrent;
+  live["panelV"] = digitalStablesData.panelVoltage;
+  live["panelMa"] = digitalStablesData.panelCurrent;
+  live["v50iV"] = digitalStablesData.v50Voltage;
+  live["operatingStatus"] = digitalStablesData.operatingStatus;
+  live["weatherAgeSec"] = secondsSinceLastWeatherData;  // 9999 = never received
+  long now = codeTimeNow();
+  live["wifiOnDemandSec"] = (wifiOnDemandUntil != 0 && now < (long)wifiOnDemandUntil) ? (long)wifiOnDemandUntil - now : 0;
+  LedgerSample sample;
+  {
+    // What WiFi has cost since the last real reset: the core-0 ledger, tagged while WiFi is on.
+    uint32_t wifiMs;
+    float wifiOut, wifiIn;
+    vitalSigns.taggedTotals(wifiMs, wifiOut, wifiIn);
+    JsonObject w = json["wifiEnergy"].to<JsonObject>();
+    w["onSec"] = wifiMs / 1000;
+    w["dischargeOutMah"] = wifiOut;
+    w["chargeInMah"] = wifiIn;
+  }
+  if (vitalSigns.latestSample(sample)) {
+    JsonObject l = json["ledger"].to<JsonObject>();  // 70 ms sampler on core 0 - the freshest reading
+    l["batteryMa"] = sample.battery_uA / 1000.0;
+    l["batteryV"] = sample.battery_mV / 1000.0;
+    l["panelMa"] = sample.panel_uA / 1000.0;
+    l["panelV"] = sample.panel_mV / 1000.0;
+  }
+  VitalSignsRecord r;
+  bool have;
+  unsigned long builtMs;
+  portENTER_CRITICAL(&lastVitalSignsMux);
+  have = haveLastVitalSigns;
+  r = lastVitalSigns;
+  builtMs = lastVitalSignsBuiltMs;
+  portEXIT_CRITICAL(&lastVitalSignsMux);
+  if (!have) return;  // none built since this boot yet
+  JsonObject v = json["vital"].to<JsonObject>();
+  uint32_t nowSec = timeManager.getCurrentTimeInSeconds(currentTimerRecord);
+  v["ageSec"] = (nowMs - builtMs) / 1000;
+  v["firmwareBuild"] = r.firmwareBuild;
+  v["resetCount"] = r.resetCount;
+  v["lastResetReason"] = r.lastResetReason;
+  v["lastResetAgoSec"] = (r.lastResetTime && nowSec > r.lastResetTime) ? nowSec - r.lastResetTime : 0;
+  v["wakeCount"] = r.wakeCount;
+  v["earlyWakeCount"] = r.earlyWakeCount;
+  v["commaWakeCount"] = r.commaWakeCount;
+  v["awakeSec"] = r.awakeSecondsTotal;
+  v["sleptSec"] = r.sleptSecondsTotal;
+  v["lastAwakeSec"] = r.lastAwakeSec;
+  v["wakeV"] = r.wakeVoltage_mV / 1000.0;
+  v["minV"] = r.minVoltageSinceReport_mV / 1000.0;
+  v["txMs"] = r.txDurationMs;
+  v["txPeakMa"] = r.txBatteryPeak_mA;
+  v["txMinV"] = r.txMinVoltage_mV / 1000.0;
+  v["loraTxFails"] = r.loraTxFailCount;
+  v["seq"] = r.seq;
+  v["chargeInMah"] = r.chargeIn_cmAh / 100.0;
+  v["dischargeOutMah"] = r.dischargeOut_cmAh / 100.0;
+  v["panelInWh"] = r.panelIn_dmWh / 10000.0;
+  v["ledgerMeasuredSec"] = r.ledgerMeasuredSec;
+  v["ledgerMaxGapMs"] = r.ledgerMaxGapMs;
 }
 
 // DeviceIdentityRecord, same gap after VitalSigns. Rare (see DeviceIdentityTracker.h), so not
@@ -3717,6 +3802,7 @@ void loop() {
   uint16_t dscount;
   boolean turnOffWifi = false;
   bool wifistatus = wifiManager.getWifiStatus();
+  vitalSigns.setLedgerTag(wifistatus);  // WiFi energy on the Power panel (fillPowerData)
   if (loraDio0Fired) {
     loraDio0Fired = false;
     int packetSize = LoRa.parsePacket();

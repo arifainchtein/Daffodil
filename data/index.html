@@ -19,7 +19,7 @@
                 <div class="col-7" stylw="margin-top:80px;">
                     <h5 id="host-name" class="show-raw-data" style="font-size:24px;margin-top:20px"></h5>
                     <h6 id="time" style="font-size:16px"></h6>
-                </div><a id="system-info-icon" class="col-1" href="#"><i class="fas fa-cog text-primary col-3" style="font-size: 24px;margin-left: 5px;padding-top: 20px;" onclick=""></i></a>
+                </div><div class="col-1" style="display:flex;flex-direction:column;align-items:center;"><a id="system-info-icon" href="#"><i class="fas fa-cog text-primary" style="font-size: 24px;margin-left: 5px;padding-top: 20px;" onclick=""></i></a><a id="power-info-icon" href="#" title="Power"><i class="fas fa-bolt text-warning" style="font-size: 24px;margin-left: 5px;padding-top: 14px;"></i></a></div>
             </div>
         </div>
         <hr>
@@ -55,6 +55,24 @@
                 </div>
                 <div class="card-footer" style="margin-top:20px;">
                     <div class="btn-group" role="group"><button class="btn btn-success" id="system-info-cancel" type="button" style="margin-right:20px">Close</button></div>
+                </div>
+            </div>
+            <!-- Power panel (2026-10-14): lightning button under the cog. Filled by index.js
+                 showPowerInfo() from /DaffodilServlet?formName=GetPowerData every 5 s while open. -->
+            <div id="power-info" class="col-sm-12 col-md-3 col-lg-3 card display-module d-none" style="margin-bottom:10px;">
+                <div class="card-body" style="padding:10px;text-align:left;">
+                    <h6 style="font-size: 24px;text-align:center;">Power</h6>
+                    <div class="pw-battery-wrap">
+                        <div class="pw-battery"><div id="pw-battery-fill" class="pw-battery-fill"></div><div id="pw-battery-text" class="pw-battery-text">--</div></div><div class="pw-battery-nub"></div>
+                    </div>
+                    <div id="pw-soc-note" style="font-size:12px;color:#6c757d;text-align:center;margin-bottom:10px;"></div>
+                    <h6 class="pw-section">Now</h6>
+                    <div id="pw-sensors"></div>
+                    <h6 class="pw-section">Vital signs</h6>
+                    <div id="pw-vital"></div>
+                </div>
+                <div class="card-footer" style="margin-top:10px;">
+                    <button class="btn btn-success" id="power-info-close" type="button">Close</button>
                 </div>
             </div>
             <div id="wifi-info" class="col-sm-12 col-md-3 col-lg-3 card display-module" style="margin-bottom:10px;">

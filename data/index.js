@@ -808,3 +808,133 @@ function refreshScreen(){
         showDaffodil();
     }
 }
+
+//
+// Power panel (2026-10-14) - lightning button under the cog. GetPowerData is filled by
+// Daffodil.ino fillPowerData(): live readings, the battery ledger's latest 70 ms sample, and the
+// last VitalSignsRecord the device built.
+//
+var powerTimer = null;
+var OP_STATUS_NAMES = {0: 'Unknown', 1: 'Pulse sleep', 2: 'No LED', 3: 'Full', 4: 'Cloudy', 5: 'Comma'};
+var RESET_REASONS = {0: 'Unknown', 1: 'Power on', 2: 'External pin', 3: 'Software', 4: 'Crash', 5: 'Interrupt watchdog',
+    6: 'Task watchdog', 7: 'Watchdog', 8: 'Deep sleep', 9: 'Brownout', 10: 'SDIO'};
+// Same LiFePO4 voltage table as the Cerebellum's LedgerSoc (anchors), interpolated.
+var LIFEPO4_SOC = [[3.65, 100], [3.50, 99], [3.45, 95], [3.40, 90], [3.35, 80], [3.30, 70], [3.25, 60], [3.20, 50],
+    [3.15, 40], [3.10, 30], [3.05, 20], [3.00, 10], [2.90, 5], [2.80, 2], [2.50, 0]];
+
+function socFromVoltage(v){
+    if(v >= LIFEPO4_SOC[0][0]) return 100;
+    for(var i = 1; i < LIFEPO4_SOC.length; i++){
+        var hi = LIFEPO4_SOC[i - 1], lo = LIFEPO4_SOC[i];
+        if(v >= lo[0]) return lo[1] + (v - lo[0]) / (hi[0] - lo[0]) * (hi[1] - lo[1]);
+    }
+    return 0;
+}
+
+function pwRow(label, value){
+    return '<div class="pw-row"><span>' + label + '</span><span>' + value + '</span></div>';
+}
+
+function pwDuration(sec){
+    sec = Math.round(sec);
+    if(sec < 60) return sec + ' s';
+    if(sec < 3600) return Math.floor(sec / 60) + ' min';
+    if(sec < 86400) return Math.floor(sec / 3600) + ' h ' + Math.floor((sec % 3600) / 60) + ' min';
+    return Math.floor(sec / 86400) + ' d ' + Math.floor((sec % 86400) / 3600) + ' h';
+}
+
+function pwCurrent(ma, positiveWord, negativeWord){
+    var a = Math.abs(ma).toFixed(1) + ' mA';
+    if(Math.abs(ma) < 1) return a;
+    return a + ' ' + (ma > 0 ? positiveWord : negativeWord);
+}
+
+function showPowerInfo(d){
+    var live = d.live || {};
+    var l = d.ledger || {};
+    var batteryV = l.batteryV || live.batteryV || 0;
+    var batteryMa = l.batteryV ? l.batteryMa : live.batteryMa;
+    var panelMa = l.batteryV ? l.panelMa : live.panelMa;
+    var panelV = l.panelV || live.panelV || 0;
+
+    // Battery picture: SOC from the voltage, green 50 %+, yellow 20-50 %, red below 20 %.
+    var soc = Math.round(socFromVoltage(batteryV));
+    var color = soc >= 50 ? '#2e7d32' : soc >= 20 ? '#f9c74f' : '#c62828';
+    // The whole battery takes the colour; the number is black on yellow, white on green and red.
+    $('#pw-battery-fill').css({width: '100%', background: color});
+    $('#pw-battery-text').text(batteryV > 1 ? soc + ' %' : 'no battery').css('color', soc >= 20 && soc < 50 ? '#000' : '#fff');
+    $('#pw-soc-note').html(batteryV > 1 ? 'about ' + Math.round(soc / 100 * d.capacityMah) + ' of ' + d.capacityMah + ' mAh &middot; estimated from ' + batteryV.toFixed(3) + ' V'
+        : '');
+
+    var html = '';
+    html += pwRow('Battery', batteryV.toFixed(3) + ' V');
+    html += pwRow('Battery current', pwCurrent(batteryMa, 'out', 'charging'));
+    html += pwRow('Solar panel', panelV.toFixed(2) + ' V');
+    html += pwRow('Solar panel current', Math.max(0, panelMa).toFixed(1) + ' mA');
+    html += pwRow('V50_I (charger input)', (live.v50iV || 0).toFixed(2) + ' V');
+    html += pwRow('Mode', OP_STATUS_NAMES[live.operatingStatus] || ('Mode ' + live.operatingStatus));
+    html += pwRow('Weather forecast', live.weatherAgeSec >= 9999 ? 'never received' : (live.weatherAgeSec < 1860 ? 'fresh, ' : 'stale, ') + pwDuration(live.weatherAgeSec) + ' old');
+    if(live.wifiOnDemandSec > 0) html += pwRow('WiFi on demand', pwDuration(live.wifiOnDemandSec) + ' left');
+    html += pwRow('Awake for', pwDuration(d.uptimeSec));
+    // WiFi's cost since the last reset: battery charge out while WiFi was on, and the average.
+    var we = d.wifiEnergy;
+    if(we && we.onSec > 0){
+        html += pwRow('WiFi used', we.dischargeOutMah.toFixed(2) + ' mAh in ' + pwDuration(we.onSec)
+            + ' (avg ' + (we.dischargeOutMah / (we.onSec / 3600)).toFixed(0) + ' mA)');
+    }
+    $('#pw-sensors').html(html);
+
+    var v = d.vital;
+    if(!v){
+        $('#pw-vital').html('<div style="font-size:14px;color:#6c757d">Not built yet this wake - the first report goes out with the next LoRa send.</div>');
+        return;
+    }
+    var coverage = v.awakeSec > 0 ? Math.min(100, v.ledgerMeasuredSec / v.awakeSec * 100).toFixed(1) + ' %' : '-';
+    html = '';
+    html += pwRow('Report built', pwDuration(v.ageSec) + ' ago (#' + v.seq + ')');
+    html += pwRow('Resets', v.resetCount + ' - last ' + (RESET_REASONS[v.lastResetReason] || v.lastResetReason)
+        + (v.lastResetAgoSec ? ', ' + pwDuration(v.lastResetAgoSec) + ' ago' : ''));
+    html += pwRow('Wakes', v.wakeCount + (v.earlyWakeCount ? ' (' + v.earlyWakeCount + ' early)' : '') + (v.commaWakeCount ? ', ' + v.commaWakeCount + ' comma' : ''));
+    html += pwRow('Awake / asleep', pwDuration(v.awakeSec) + ' / ' + pwDuration(v.sleptSec));
+    html += pwRow('Wake voltage', v.wakeV ? v.wakeV.toFixed(3) + ' V' : '-');
+    html += pwRow('Lowest voltage', v.minV ? v.minV.toFixed(3) + ' V' : '-');
+    html += pwRow('Charge in', v.chargeInMah.toFixed(2) + ' mAh');
+    html += pwRow('Charge out', v.dischargeOutMah.toFixed(2) + ' mAh');
+    html += pwRow('Panel energy', v.panelInWh.toFixed(3) + ' Wh');
+    html += pwRow('Ledger coverage', coverage + (v.ledgerMaxGapMs ? ', max gap ' + v.ledgerMaxGapMs + ' ms' : ''));
+    html += pwRow('Last LoRa send', v.txMs + ' ms, peak ' + v.txPeakMa + ' mA' + (v.txMinV ? ', dip ' + v.txMinV.toFixed(3) + ' V' : ''));
+    html += pwRow('LoRa failures', v.loraTxFails);
+    html += pwRow('Firmware', v.firmwareBuild);
+    $('#pw-vital').html(html);
+}
+
+function loadPowerInfo(){
+    $.ajax({
+        type: "GET",
+        url: "/DaffodilServlet",
+        data: {formName: "GetPowerData"},
+        success: function(result){ showPowerInfo(JSON.parse(result)); },
+        error: function(){ $('#pw-sensors').html('<div style="color:#c62828">Cannot reach the Daffodil</div>'); }
+    });
+}
+
+function stopPowerInfo(){
+    if(powerTimer){ clearInterval(powerTimer); powerTimer = null; }
+}
+
+$(document).on('click','#power-info-icon', function (){
+    $('.display-module').removeClass('d-block').addClass('d-none');
+    $('#power-info').removeClass('d-none').addClass('d-block');
+    loadPowerInfo();
+    stopPowerInfo();
+    powerTimer = setInterval(loadPowerInfo, 5000);
+});
+
+$(document).on('click','#power-info-close', function (){
+    stopPowerInfo();
+    refreshScreen();
+});
+
+$(document).on('click','#system-info-icon', function (){
+    stopPowerInfo();
+});
