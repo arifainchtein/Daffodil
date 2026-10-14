@@ -863,8 +863,14 @@ function showPowerInfo(d){
     // The whole battery takes the colour; the number is black on yellow, white on green and red.
     $('#pw-battery-fill').css({width: '100%', background: color});
     $('#pw-battery-text').text(batteryV > 1 ? soc + ' %' : 'no battery').css('color', soc >= 20 && soc < 50 ? '#000' : '#fff');
-    $('#pw-soc-note').html(batteryV > 1 ? 'about ' + Math.round(soc / 100 * d.capacityMah) + ' of ' + d.capacityMah + ' mAh &middot; estimated from ' + batteryV.toFixed(3) + ' V'
-        : '');
+    // While charging the charger lifts the terminal voltage, so the voltage table reads high
+    // (91 % for a cell at about 65 %, 2026-10-14 on a power bank) - say so, and grey the battery.
+    var charging = batteryMa < -5;
+    $('#pw-battery-fill').css('opacity', charging ? 0.45 : 1);
+    if(charging) $('#pw-battery-text').text(soc + ' %*').css('color', '#000');
+    $('#pw-soc-note').html(batteryV <= 1 ? '' : charging
+        ? '<span style="color:#ef6c00">* Charging - the voltage reads high, so this is too high. It settles 10-30 min after charging stops.</span>'
+        : 'about ' + Math.round(soc / 100 * d.capacityMah) + ' of ' + d.capacityMah + ' mAh &middot; estimated from ' + batteryV.toFixed(3) + ' V');
 
     var html = '';
     html += pwRow('Battery', batteryV.toFixed(3) + ' V');
