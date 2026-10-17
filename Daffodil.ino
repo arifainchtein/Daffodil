@@ -636,6 +636,7 @@ int sendMessage(const T &inputData, bool skipCAD = false) {
   uint8_t result = 99;
   int retries = 0;
   bool keepGoing = true;
+  bool failCounted = false;  // endTx() already counted a failed key-up
   long startsendingtime = millis();
   LoRa.idle();
   LoRa.flush();
@@ -674,7 +675,10 @@ int sendMessage(const T &inputData, bool skipCAD = false) {
                            foundADS && digitalStablesData.v50Voltage > 0 ? (uint16_t)(digitalStablesData.v50Voltage * 1000) : 0);
       }
       bool txOk = LoRa.endPacket(false);
-      if (trackTx) vitalSigns.endTx(txOk);
+      if (trackTx) {
+        vitalSigns.endTx(txOk);
+        failCounted = true;
+      }
       result = txOk ? LORA_OK : LORA_TX_FAILED;
       if (ledsWereOn) digitalWrite(LED_CONTROL, HIGH);  // restore LEDs after TX
       delay(50);
@@ -699,6 +703,10 @@ int sendMessage(const T &inputData, bool skipCAD = false) {
     }
   }
 
+  // Sends that never went out (busy channel through every back-off, CAD error) and failed key-ups
+  // of the packets endTx() doesn't follow (VitalSigns, ...) count as TX failures too - so a
+  // VitalSigns seq gap with no matching loraTxFailCount rise is a packet Annabelle missed.
+  if (result != LORA_OK && !failCounted) vitalSigns.noteTxFailed();
   delay(50);
   msgCount++;
   LoRa_rxMode();
