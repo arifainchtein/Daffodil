@@ -1,5 +1,6 @@
 /// New Version
 #include <PowerManager.h>
+#include <DeviceSerial.h>  // the serial number is the efuse MAC (2026-10-30)
 #include <SolarInfo.h>
 //#include <TimeUtils.h>
 #include "Arduino.h"
@@ -767,10 +768,7 @@ void processLora(int packetSize) {
 
     if (debug) Serial.print(" Received DigitalStablesData code  : ");
     if (debug) Serial.print(commandcode);
-    String receivedSerialNumber;
-    for (uint8_t i = 0; i < 8; i++) {
-      receivedSerialNumber += String(receivedDigitalStablesData.serialnumberarray[i], HEX);
-    }
+    String receivedSerialNumber = DeviceSerial::toString(receivedDigitalStablesData.serialnumberarray);
 
     if (debug) Serial.print(" sn  : ");
     if (debug) Serial.print(receivedSerialNumber);
@@ -2450,7 +2448,8 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
   tempSensor.setResolution(9);
 
   // uint8_t address[8];
-  tempSensor.getAddress(digitalStablesData.serialnumberarray, 0);
+  DeviceSerial::fill(digitalStablesData.serialnumberarray);  // the efuse MAC, not the DS18B20 ID (2026-10-30)
+  serialNumber = DeviceSerial::toString(digitalStablesData.serialnumberarray);  // was never set (the loop below is commented out)
   foundDS18B20 = tempSensor.getDeviceCount() > 0;
   //  for (uint8_t i = 0; i < 8; i++)
   //  {
