@@ -566,17 +566,73 @@ $(document).on('click','#manual-time-submit', function (){
  
   });
 
-  $(document).on('click','#save-gps-button', function (){
-    var lat = $('#latitude').val();
-    var long = $('#longitude').val();
-    if(lat==''){
-        alert("Please input the latitude");
-        return false;
-    }
-    if(long==''){
-        alert("Please input the longitude");
-        return false;
-    }
+  //
+  // GPS: the Latitude/Longitude fields take decimal degrees (-33.859722) or degrees minutes
+  // seconds as the iPhone Compass shows them (33°51′35″ S), or typed with spaces (33 51 35 S).
+  // S and W (or a minus sign) make it negative. Converted to decimal before it is saved.
+  //
+  function parseCoordinate(text, positiveLetter, negativeLetter, max) {
+      var s = String(text).trim().toUpperCase();
+      if (s == '') return null;
+      var sign = 1;
+      var m = s.match(/^([NSEW])\s*(.*)$/) || s.match(/^(.*?)\s*([NSEW])$/);
+      if (m) {
+          var letter = /^[NSEW]$/.test(m[1]) ? m[1] : m[2];
+          s = /^[NSEW]$/.test(m[1]) ? m[2] : m[1];
+          if (letter == negativeLetter) sign = -1;
+          else if (letter != positiveLetter) return null;
+      }
+      if (s.charAt(0) == '-') {
+          sign = -1;
+          s = s.substring(1);
+      }
+      var parts = s.split(/[\s°º˚′'’″"]+/).filter(function(p) { return p != ''; });
+      if (parts.length < 1 || parts.length > 3) return null;
+      for (var i = 0; i < parts.length; i++) {
+          if (!/^\d+(\.\d+)?$/.test(parts[i])) return null;
+      }
+      var deg = parseFloat(parts[0]);
+      var min = parts.length > 1 ? parseFloat(parts[1]) : 0;
+      var sec = parts.length > 2 ? parseFloat(parts[2]) : 0;
+      if (min >= 60 || sec >= 60) return null;
+      var value = deg + min / 60 + sec / 3600;
+      if (value > max) return null;
+      return Math.round(sign * value * 1000000) / 1000000;
+  }
+
+  function showCoordinatePreview(field, positiveLetter, negativeLetter, max) {
+      var text = $('#' + field).val();
+      var value = parseCoordinate(text, positiveLetter, negativeLetter, max);
+      var preview = $('#' + field + '-preview');
+      if (String(text).trim() == '') preview.css('color', '').text('');
+      else if (value == null) preview.css('color', '#c0392b').text('Not understood');
+      else preview.css('color', '#198754').text('= ' + value);
+  }
+
+  $(document).on('input', '#latitude', function() { showCoordinatePreview('latitude', 'N', 'S', 90); });
+  $(document).on('input', '#longitude', function() { showCoordinatePreview('longitude', 'E', 'W', 180); });
+
+  $(document).on('click', '#save-gps-button', function() {
+      var latText = $('#latitude').val();
+      var longText = $('#longitude').val();
+      if (latText.trim() == '') {
+          alert("Please input the latitude");
+          return false;
+      }
+      if (longText.trim() == '') {
+          alert("Please input the longitude");
+          return false;
+      }
+      var lat = parseCoordinate(latText, 'N', 'S', 90);
+      var long = parseCoordinate(longText, 'E', 'W', 180);
+      if (lat == null) {
+          alert("The latitude is not understood. Use decimal (-33.859722) or degrees minutes seconds (33 51 35 S).");
+          return false;
+      }
+      if (long == null) {
+          alert("The longitude is not understood. Use decimal (151.211111) or degrees minutes seconds (151 12 40 E).");
+          return false;
+      }
     $.ajax({
       type: "POST",
       url: "/DaffodilServlet",

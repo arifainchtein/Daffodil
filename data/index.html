@@ -42,9 +42,9 @@
                     </div>
                     <hr>
                     <div id="coordinates" style="margin-top:5px;">
-                        <h5>GPS</h5>
-                        <div class="input-group"><span class="input-group-text">Latitude</span><input class="form-control" type="text" id="latitude"></div>
-                        <div class="input-group" style="margin-top:10px;margin-bottom:10px"><span class="input-group-text">Longitude</span><input class="form-control" type="text" id="longitude"></div><button class="btn btn-success" id="save-gps-button" type="button">Save GPS</button>
+                        <h5>GPS</h5><p class="form-text">Decimal, or degrees minutes seconds as the iPhone Compass shows them. Spaces work instead of the symbols, e.g. 33 51 35 S.</p>
+                        <div class="input-group"><span class="input-group-text">Latitude</span><input class="form-control" type="text" id="latitude" placeholder="33°51′35″ S or -33.859722"></div><small id="latitude-preview"></small>
+                        <div class="input-group" style="margin-top:10px;margin-bottom:10px"><span class="input-group-text">Longitude</span><input class="form-control" type="text" id="longitude" placeholder="151°12′40″ E or 151.211111"></div><small id="longitude-preview"></small><button class="btn btn-success" id="save-gps-button" type="button">Save GPS</button>
                     </div>
                     <hr>
                     <div id="csw-calibration" style="margin-top:5px;">

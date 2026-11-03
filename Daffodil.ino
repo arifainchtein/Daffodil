@@ -37,6 +37,7 @@
 #include <DeviceIdentityTracker.h>
 #include <PowerProfileRecord.h>
 #include <DeviceCommandRecord.h>
+#include <LinkAckRecord.h>
 #include <esp_sleep.h>
 //#include <driver/adc.h>
 
@@ -368,6 +369,11 @@ uint16_t secondsSinceLastWeatherData = 9999; // 9999 = never received
 // 9999 on every wake, so a sleeping unit reported "not fresh" right after accepting a forecast
 // (TopTank 2026-10-12). Lost on a real reset like every RTC_DATA_ATTR - then "never" is correct.
 RTC_DATA_ATTR uint32_t rtc_lastWeatherEpoch = 0;
+// How strongly the last accepted forecast was heard - this unit's link to Annabelle, reported in the
+// answer to Paula's ping (LinkAckRecord.gatewayRssi), so Paula's map can show which device could
+// relay a spot Annabelle can't hear. 0 = none since the last real reset.
+RTC_DATA_ATTR int16_t rtc_weatherRssi = 0;
+RTC_DATA_ATTR int8_t rtc_weatherSnrQ = 0;
 uint8_t cloudyDutyCyclePercent = 50;         // % of display cycles with LEDs on in CLOUDY mode
 uint8_t cloudyThreshold = 70;               // forecast cloudiness % to enter CLOUDY mode
 bool cloudyLedCycleOn = true;               // toggles each full display cycle in CLOUDY mode
@@ -733,6 +739,7 @@ int loraRxLen = 0;
 int loraRxPos = 0;
 int loraRxRssi = 0;
 float loraRxSnr = 0;
+uint32_t loraRxAtMs = 0;  // when it was copied out - Paula's ping answer slot counts from here (packets are handled on the 1 s tick)
 
 size_t loraRxRead(uint8_t *dst, size_t len) {
   size_t n = 0;
@@ -849,6 +856,10 @@ void processLora(int packetSize) {
   } else if (packetSize == sizeof(DeviceCommandRecord)) {
     DeviceCommandRecord deviceCommand;
     loraRxRead((uint8_t *)&deviceCommand, sizeof(DeviceCommandRecord));
+    if (isBroadcastPing(deviceCommand.serialnumberarray, deviceCommand.command)) {
+      handlePing(deviceCommand);  // Paula's signal survey - see handlePing
+      return;
+    }
     bool accepted = acceptDeviceCommand(deviceCommand);
     if (debug) Serial.printf(" DeviceCommand %u (%u min) from sender %u: %s\n", deviceCommand.command,
                              deviceCommand.minutes, deviceCommand.sender, accepted ? "accepted" : "ignored");
@@ -858,6 +869,8 @@ void processLora(int packetSize) {
     long commandcode = weatherForecastUpdate.totpcode;
     bool validCode = acceptAnnabelleTime(weatherForecastUpdate);  // also sets the RTC from Annabelle's time
     if (validCode) {
+      rtc_weatherRssi = (int16_t)loraRxRssi;
+      rtc_weatherSnrQ = (int8_t)lroundf(loraRxSnr * 4);
       //WeatherForecast forecasts=weatherForecastUpdate.forecasts;
       weatherForecastManager->saveForecasts(weatherForecastUpdate.forecasts);
       solarInfo->setWeatherForecast(weatherForecastUpdate.forecasts, 4);
@@ -1231,6 +1244,7 @@ void listenForReplies() {
       if (packetSize == sizeof(WeatherForecastUpdate) || packetSize == sizeof(DeviceCommandRecord)) {
         loraRxRssi = LoRa.packetRssi();
         loraRxSnr = LoRa.packetSnr();
+        loraRxAtMs = millis();
         int n = 0;
         while (LoRa.available() && n < (int)sizeof(loraRxBuf)) loraRxBuf[n++] = (uint8_t)LoRa.read();
         loraRxLen = n;
@@ -1340,6 +1354,69 @@ bool acceptDeviceCommand(const DeviceCommandRecord &c) {
     return false;
   }
   return true;
+}
+
+// ---- Signal survey ping (2026-11-03) ----
+// Paula's Nearby Devices map pings every device at once (DEVICE_COMMAND_PING) to ask "who hears me
+// from here?". An awake Daffodil answers with a LinkAckRecord: how strongly it heard the ping, how
+// well it hears Annabelle (its last forecast), and where it is - in its own time slot
+// (linkAckDelayMs, from the serial) so answers don't collide. A sleeping one only hears it if the
+// ping lands in its listening window after VitalSigns; then it answers before going back to sleep
+// (listenForReplies). Checked like a command (checksum, code, clock) but the replay check is in RAM
+// - nothing is changed, so nothing is written to NVS.
+uint32_t lastPingSenderTime = 0;
+bool linkAckPending = false;
+uint32_t linkAckDueMs = 0;
+LinkAckRecord pendingLinkAck;
+
+void handlePing(const DeviceCommandRecord &c) {
+  if (deviceCommandChecksum(c) != c.checksum) return;
+  if (c.senderTime == 0 || secretManager.generateCodeAt(c.senderTime) != c.totpcode) {
+    if (debug) Serial.println(" ping: code does not match senderTime");
+    return;
+  }
+  long now = codeTimeNow();
+  if (labs((long)c.senderTime - now) > DEVICE_COMMAND_MAX_CLOCK_DIFF_SEC) {
+    if (debug) Serial.printf(" ping: sender clock %ld s off\n", (long)c.senderTime - now);
+    return;
+  }
+  if (c.senderTime <= lastPingSenderTime) return;  // the same ping again
+  lastPingSenderTime = c.senderTime;
+  LinkAckRecord a;
+  a.probeTime = c.senderTime;
+  a.probeSeq = (uint16_t)(c.reserved[0] | (c.reserved[1] << 8));
+  memcpy(a.serialnumberarray, digitalStablesData.serialnumberarray, 8);
+  for (size_t i = 0; i < sizeof(digitalStablesData.devicename) && i < sizeof(a.devicename) - 1 && digitalStablesData.devicename[i]; i++) {
+    a.devicename[i] = digitalStablesData.devicename[i];
+  }
+  a.kind = LINK_ACK_KIND_DAFFODIL;
+  a.probeRssi = (int16_t)loraRxRssi;
+  a.probeSnrQ = (int8_t)lroundf(loraRxSnr * 4);
+  if (rtc_weatherRssi != 0 && secondsSinceLastWeatherData != 9999) {
+    a.gatewayRssi = rtc_weatherRssi;
+    a.gatewaySnrQ = rtc_weatherSnrQ;
+    a.gatewayAgeSec = secondsSinceLastWeatherData;
+  }
+  a.latitude = digitalStablesData.latitude;
+  a.longitude = digitalStablesData.longitude;
+  linkAckSeal(a);
+  pendingLinkAck = a;
+  linkAckDueMs = loraRxAtMs + linkAckDelayMs(a.serialnumberarray, false);  // from arrival, not from the 1 s tick
+  linkAckPending = true;
+  if (debug) Serial.printf(" ping %u #%u heard at %d dBm - answering\n", c.senderTime, a.probeSeq, loraRxRssi);
+}
+
+// Sends the answer once its slot has come. wait: block until then (at most one slot cycle) - used
+// before sleeping, when loop() won't run again to send it.
+void sendPendingLinkAck(bool wait) {
+  if (!linkAckPending) return;
+  if (wait) {
+    while ((int32_t)(millis() - linkAckDueMs) < 0) delay(5);
+  } else if ((int32_t)(millis() - linkAckDueMs) < 0) {
+    return;
+  }
+  linkAckPending = false;
+  sendMessage(pendingLinkAck, false);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -2917,6 +2994,7 @@ void goToSleep() {
   if (digitalStablesData.operatingStatus != OPERATING_STATUS_COMMA || vitalSigns.resetReportPending()) {
     sendVitalSigns();
     listenForReplies();
+    sendPendingLinkAck(true);  // a ping heard in that window: answer before sleeping
   }
   // WiFi on demand arrived in that window: wake again in 1 s and stay awake for it (setup() and
   // loop() skip sleep while wifiOnDemandAllowed). The VitalSigns just sent already counted the
@@ -3818,6 +3896,7 @@ void loop() {
       // processed is replaced by the newer one (the old code lost the newer one instead).
       loraRxRssi = LoRa.packetRssi();
       loraRxSnr = LoRa.packetSnr();
+      loraRxAtMs = millis();
       int n = 0;
       while (LoRa.available() && n < (int)sizeof(loraRxBuf)) loraRxBuf[n++] = (uint8_t)LoRa.read();
       loraRxLen = n;
@@ -3829,6 +3908,7 @@ void loop() {
       LoRa_rxMode();  // DIO0 without a good packet (CRC error, TxDone): back to continuous receive
     }
   }
+  sendPendingLinkAck(false);  // Paula's ping, answered in this unit's slot (handlePing)
   if (clockTicked) {
 
     portENTER_CRITICAL(&mux);
