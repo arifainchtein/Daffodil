@@ -3901,9 +3901,16 @@ void loop() {
       while (LoRa.available() && n < (int)sizeof(loraRxBuf)) loraRxBuf[n++] = (uint8_t)LoRa.read();
       loraRxLen = n;
       loraRxPos = 0;
-      loraPacketSize = n;
-      loraReceived = n > 0;
       LoRa_rxMode();
+      if (n == sizeof(DeviceCommandRecord)) {
+        // A command or Paula's ping: handled now, not on the 1 s tick (2026-11-03). loraRxBuf holds one
+        // packet, and Annabelle answers a ping 150 ms after it - that answer replaced the ping before
+        // the tick ran (found on Langley, same structure here). Handling one is only a code check.
+        processLora(n);
+      } else {
+        loraPacketSize = n;
+        loraReceived = n > 0;
+      }
     } else {
       LoRa_rxMode();  // DIO0 without a good packet (CRC error, TxDone): back to continuous receive
     }
