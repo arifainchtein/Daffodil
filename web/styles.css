@@ -1,5 +1,5 @@
 body {
-  font-family: 'Roboto';
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;  /* system font - the 66 KB Roboto file isn't shipped (2026-11-06) */
 }
 
 

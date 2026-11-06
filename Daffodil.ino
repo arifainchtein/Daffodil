@@ -367,6 +367,13 @@ float ledCurrentPerLedAmps = 0.020;   // Same per-LED current budget PowerManage
 float v50iCloudyThreshold = 3.5;     // V50_I below this during solar hours means the panel isn't harvesting enough — cloudy. Lowered 2026-07-24: field data (TopTank, clear midday sun, actively charging) showed V50_I sitting at 4.09-4.47V — the old 4.5V threshold was false-triggering CLOUDY on every wake. Still wants validation against real overcast-day readings.
 float panelCurrentCloudyThreshold_mA = 30.0;  // Doubled 2026-10-10 when panelCurrent switched from getCurrent_mA() (half scale on the 50mOhm shunt) to shunt mV / SHUNT_OHMS - same real threshold as the old 15. Wally 0x45 panelCurrent below this during solar hours means cloudy. Lowered 2026-07-24: field data (TopTank, clear midday sun) showed panelCurrent as low as 22-80mA during normal charging — the old 60mA threshold was false-triggering CLOUDY. Still wants validation against real overcast-day readings.
 float minimumWifiVoltage = 3.28;      // Turn off WiFi first to preserve power for LoRa
+// Solar switch OFF (2026-11-06): a charged LiFePO4 rests at ~3.30V and sags under the AP's load, so
+// 3.35 start / 3.28 cut-off meant WiFi rarely started and dropped the moment a phone connected
+// (HorseTrough). Same 0.1V start/stop gap, set below the cell's working plateau, above sleepingVoltage.
+float minimumInitWifiVoltageNoSolar = 3.25;
+float minimumWifiVoltageNoSolar = 3.15;
+float wifiStartVoltage() { return usingSolarPower ? minimumInitWifiVoltage : minimumInitWifiVoltageNoSolar; }
+float wifiCutVoltage() { return usingSolarPower ? minimumWifiVoltage : minimumWifiVoltageNoSolar; }
 uint8_t secondsSinceLastDataSampling = 0;
 uint16_t secondsSinceLastWeatherData = 9999; // 9999 = never received
 // RTC time the last forecast was accepted, so "weather fresh" (opMode bit1, LED 14, the cloudy
@@ -4301,7 +4308,7 @@ void loop() {
     // if(debug)Serial.print("External Voltage=");
     //  if(debug)Serial.println(digitalStablesData.flowRate);
 
-    if (digitalStablesData.batteryVoltage > minimumInitWifiVoltage && !wifistatus) {
+    if (digitalStablesData.batteryVoltage > wifiStartVoltage() && !wifistatus) {
       currentSecondsWithWifiVoltage++;
     } else {
       currentSecondsWithWifiVoltage = 0;
@@ -4483,7 +4490,7 @@ void loop() {
 
   // Unconditional voltage-based WiFi shutoff: if battery is below minimumWifiVoltage,
   // always call stop() — even if wifistatus is false (WiFi may be retrying and drawing current).
-  if (hasBattery && digitalStablesData.batteryVoltage > commaVoltage && digitalStablesData.batteryVoltage < minimumWifiVoltage) {
+  if (hasBattery && digitalStablesData.batteryVoltage > commaVoltage && digitalStablesData.batteryVoltage < wifiCutVoltage()) {
     turnOffWifi = true;
   }
   // WiFi on demand overrides all of the above down to WIFI_ON_DEMAND_FLOOR_V. When it ends, WiFi
@@ -4492,7 +4499,7 @@ void loop() {
   if (wifiOnDemandActive() && !wifiOnDemandOn) wifiOnDemandUntil = 0;  // battery under the floor: over
   if (wifiOnDemandOn) {
     turnOffWifi = false;
-  } else if (wifiOnDemandWasOn && hasBattery && digitalStablesData.batteryVoltage < minimumInitWifiVoltage) {
+  } else if (wifiOnDemandWasOn && hasBattery && digitalStablesData.batteryVoltage < wifiStartVoltage()) {
     turnOffWifi = true;
   }
   wifiOnDemandWasOn = wifiOnDemandOn;
@@ -5110,7 +5117,8 @@ void loop() {
       Serial.println("sleepingVoltage=" + String(sleepingVoltage)
                      + "  commaVoltage=" + String(commaVoltage) + "  commaExitV=" + String(commaExitVoltage)
                      + "  minWifiV=" + String(minimumWifiVoltage)
-                     + "  minInitWifiV=" + String(minimumInitWifiVoltage));
+                     + "  minInitWifiV=" + String(minimumInitWifiVoltage)
+                     + "  noSolar start/cut=" + String(minimumInitWifiVoltageNoSolar) + "/" + String(minimumWifiVoltageNoSolar));
       Serial.println("currentSecondsWithWifiVoltage=" + String(currentSecondsWithWifiVoltage)
                      + "/" + String(numberSecondsWithMinimumWifiVoltageForStartWifi));
 
