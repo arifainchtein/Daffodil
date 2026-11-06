@@ -19,6 +19,7 @@
 #include <totp.h>
 #include <SolarPowerData.h>
 #include <DigitalStablesData.h>
+#include "ViewerConfig.h"  // Viewer function (switch 1001)
 #include <WeatherForecastManager.h>
 #include <DigitalStablesDataSerializer.h>
 #include "ADS1X15.h"
@@ -755,6 +756,243 @@ size_t loraRxRead(uint8_t *dst, size_t len) {
 int loraRxByte() {
   return loraRxPos < loraRxLen ? loraRxBuf[loraRxPos++] : -1;
 }
+// =====================================================================================
+// Viewer (DAFFODIL_VIEWER, switch 1001) - see ViewerConfig.h for the config format.
+// =====================================================================================
+#define VIEWER_LISTEN_MS 25000  // solar pulse wake: Chinampa transmits about every 20 s
+
+static_assert(sizeof(ChinampaData) != sizeof(DigitalStablesData) && sizeof(ChinampaData) != sizeof(RequestCommand)
+                && sizeof(ChinampaData) != sizeof(DeviceCommandRecord) && sizeof(ChinampaData) != sizeof(WeatherForecastUpdate),
+              "ChinampaData needs a size no other LoRa packet uses - processLora() tells packets apart by size");
+static_assert(sizeof(ChinampaData) <= 255, "ChinampaData is over the LoRa payload limit");
+
+ViewerConfig viewerCfg;
+ViewerConfig viewerPendingCfg;          // set by the web/serial handler, applied by loop()
+volatile bool viewerCfgPending = false;
+uint8_t viewerPageIndex = 0;
+
+// Latest Chinampa packet, in RTC memory so a solar viewer keeps it across deep sleep. Raw bytes,
+// not a ChinampaData: its member initializers would make the startup code wipe it every boot.
+RTC_DATA_ATTR uint8_t viewerChinampaRaw[sizeof(ChinampaData)];
+RTC_DATA_ATTR long viewerChinampaAt = 0;  // codeTimeNow() when it arrived, 0 = never
+
+bool viewerBlinkActive = false;  // the page on screen is a forecast: loop() blinks it
+bool viewerBlinkOn = true;
+unsigned long viewerBlinkAtMs = 0;
+CRGB viewerFrame[NUM_LEDS];
+
+int viewerFieldIndex(const char *id) {
+  for (uint8_t i = 0; i < VIEWER_FIELD_COUNT; i++) {
+    if (strcmp(VIEWER_FIELDS[i].id, id) == 0) return i;
+  }
+  return -1;
+}
+
+// Parses and validates a config JSON into out. Returns an error message, "" when valid.
+String viewerParseConfig(const String &json, ViewerConfig &out) {
+  JsonDocument doc;
+  if (deserializeJson(doc, json)) return "invalid JSON";
+  JsonArray pages = doc["pages"].as<JsonArray>();
+  if (pages.isNull() || pages.size() == 0) return "no pages";
+  if (pages.size() > VIEWER_MAX_PAGES) return "more than " + String(VIEWER_MAX_PAGES) + " pages";
+  ViewerConfig c;
+  for (JsonObject p : pages) {
+    const char *f = p["f"] | "";
+    int fi = viewerFieldIndex(f);
+    if (fi < 0) return "unknown field " + String(f);
+    int s = p["s"] | 0;
+    if (s < 0 || s > 2) return "slot must be 0, 1 or 2";
+    c.field[c.count] = fi;
+    c.slot[c.count] = s;
+    c.count++;
+  }
+  strlcpy(c.source, doc["src"] | "", sizeof(c.source));
+  c.staleSec = doc["stale"] | 600;
+  c.frost = doc["frost"] | 0.0f;
+  out = c;
+  return "";
+}
+
+void viewerConfigToJson(const ViewerConfig &c, JsonObject o) {
+  o["src"] = c.source;
+  o["stale"] = c.staleSec;
+  o["frost"] = c.frost;
+  JsonArray pages = o["pages"].to<JsonArray>();
+  for (uint8_t i = 0; i < c.count; i++) {
+    JsonObject p = pages.add<JsonObject>();
+    p["f"] = VIEWER_FIELDS[c.field[i]].id;
+    if (c.slot[i]) p["s"] = c.slot[i];
+  }
+}
+
+void viewerLoadConfig() {
+  Preferences p;
+  String json = "";
+  if (p.begin("Viewer", true)) {
+    json = p.getString("cfg", "");
+    p.end();
+  }
+  if (json.length() == 0 || viewerParseConfig(json, viewerCfg) != "") viewerParseConfig(VIEWER_DEFAULT_CONFIG, viewerCfg);
+}
+
+// Web (async_tcp task) and serial: validate, save, and hand to loop() to apply. "" = accepted.
+String viewerSetConfig(const String &json) {
+  ViewerConfig c;
+  String err = viewerParseConfig(json, c);
+  if (err != "") return err;
+  JsonDocument doc;
+  viewerConfigToJson(c, doc.to<JsonObject>());
+  String normalized;
+  serializeJson(doc, normalized);
+  Preferences p;
+  p.begin("Viewer", false);
+  p.putString("cfg", normalized);
+  p.end();
+  viewerPendingCfg = c;
+  viewerCfgPending = true;
+  return "";
+}
+
+// GetViewerConfig: the config, the fields the web page can offer, and what the viewer has heard.
+void fillViewerData(JsonDocument &json) {
+  viewerConfigToJson(viewerCfg, json["config"].to<JsonObject>());
+  JsonArray fields = json["fields"].to<JsonArray>();
+  for (uint8_t i = 0; i < VIEWER_FIELD_COUNT; i++) {
+    JsonObject f = fields.add<JsonObject>();
+    f["id"] = VIEWER_FIELDS[i].id;
+    f["label"] = VIEWER_FIELDS[i].label;
+    f["forecast"] = VIEWER_FIELDS[i].source == VIEWER_SOURCE_FORECAST;
+    f["glyph"] = VIEWER_FIELDS[i].glyph == VIEWER_GLYPH_TEMPERATURE ? "temperature" : VIEWER_FIELDS[i].glyph == VIEWER_GLYPH_LEVEL ? "level" : "flow";
+  }
+  JsonObject heard = json["chinampa"].to<JsonObject>();
+  if (viewerChinampaAt != 0) {
+    ChinampaData c;
+    memcpy(&c, viewerChinampaRaw, sizeof(c));
+    heard["name"] = String(c.devicename).substring(0, sizeof(c.devicename));
+    heard["ageSec"] = codeTimeNow() - viewerChinampaAt;
+    heard["outdoorTemp"] = c.outdoortemperature;
+    heard["sumpMeasured"] = c.sumpTroughMeasuredHeight;
+    heard["fishMeasured"] = c.fishTankMeasuredHeight;
+  }
+  json["weatherAgeSec"] = secondsSinceLastWeatherData;
+}
+
+// processLora(): a ChinampaData-sized packet. Chinampa doesn't fill totpcode/checksum (checked
+// 2026-11-06), so there is nothing to authenticate - accepted for display only, never acted on.
+void viewerAcceptChinampa() {
+  ChinampaData c;
+  loraRxRead((uint8_t *)&c, sizeof(ChinampaData));
+  if (digitalStablesData.currentFunctionValue != DAFFODIL_VIEWER) return;
+  c.devicename[sizeof(c.devicename) - 1] = 0;
+  if (viewerCfg.source[0] && strcmp(viewerCfg.source, c.devicename) != 0) {
+    if (debug) Serial.printf(" ChinampaData from %s ignored (viewer listens to %s)\n", c.devicename, viewerCfg.source);
+    return;
+  }
+  memcpy(viewerChinampaRaw, &c, sizeof(c));
+  viewerChinampaAt = codeTimeNow();
+  if (debug) Serial.printf(" ChinampaData from %s: outdoor %.1f, sump %.1f, fish %.1f\n", c.devicename,
+                           c.outdoortemperature, c.sumpTroughMeasuredHeight, c.fishTankMeasuredHeight);
+}
+
+bool viewerChinampaFresh(ChinampaData &c) {
+  if (viewerChinampaAt == 0 || codeTimeNow() - viewerChinampaAt > (long)viewerCfg.staleSec) return false;
+  memcpy(&c, viewerChinampaRaw, sizeof(c));
+  return true;
+}
+
+// Forecast fields. secondsTime is the OWM UTC timestamp, hour the local hour (WeatherForecastManager).
+// "Next morning" = lowest temperature among forecast slots at local 03-09h within 24 h of the first
+// slot; with only 4 LoRa slots (12 h) that exists from roughly mid-afternoon on.
+bool viewerForecastValue(uint8_t fi, float &t) {
+  if (secondsSinceLastWeatherData > 43200 || !weatherForecastManager->hasValidForecasts()) return false;
+  WeatherForecast *f = weatherForecastManager->getForecasts();
+  if (fi == VF_FORECAST_NEXT) {
+    t = f[0].temperature;
+    return true;
+  }
+  bool found = false;
+  for (uint8_t i = 0; i < 8; i++) {
+    if (f[i].secondsTime < f[0].secondsTime || f[i].secondsTime >= f[0].secondsTime + 86400) continue;
+    if (f[i].hour < 3 || f[i].hour > 9) continue;
+    if (!found || f[i].temperature < t) t = f[i].temperature;
+    found = true;
+  }
+  return found;
+}
+
+// Same 3-zone rule as Water Trough: measured is the sonar distance down to the surface, so the
+// water level is height - measured. Red below the minimum level, blue above the maximum, else green.
+bool viewerLevelColor(float measured, float height, float minLevel, float maxLevel, CRGB &c) {
+  if (measured <= 0 || height <= 0) return false;  // -99 = no reading
+  float level = height - measured;
+  c = level < minLevel ? CRGB(255, 0, 0) : level > maxLevel ? CRGB(0, 0, 255) : CRGB(0, 255, 0);
+  return true;
+}
+
+void drawViewerPage(uint8_t page) {
+  for (int i = 0; i < NUM_LEDS; i++) leds[i] = CRGB(0, 0, 0);
+  uint8_t fi = viewerCfg.field[page];
+  uint8_t slot = viewerCfg.slot[page];
+  const ViewerField &fd = VIEWER_FIELDS[fi];
+  bool ok = false;
+  if (fd.source == VIEWER_SOURCE_CHINAMPA) {
+    ChinampaData c;
+    if (viewerChinampaFresh(c)) {
+      CRGB col;
+      if (fi == VF_OUTDOOR_TEMP && c.outdoortemperature != -99) {
+        float t = c.outdoortemperature;
+        CRGB tc = t > 0 ? CRGB(0, 255, 0) : t < 0 ? CRGB(0, 0, 255) : CRGB(255, 255, 0);
+        drawTemperatureValue(t, tc.r, tc.g, tc.b);
+        ok = true;
+      } else if (fi == VF_SUMP_LEVEL && viewerLevelColor(c.sumpTroughMeasuredHeight, c.sumpTroughHeight, c.minimumSumpTroughLevel, c.maximumSumpTroughLevel, col)) {
+        drawTower(col, slot != 0);
+        ok = true;
+      } else if (fi == VF_FISH_LEVEL && viewerLevelColor(c.fishTankMeasuredHeight, c.fishTankHeight, c.minimumFishTankLevel, c.maximumFishTankLevel, col)) {
+        drawTower(col, slot != 0);
+        ok = true;
+      } else if (fi == VF_FISH_OUTFLOW || fi == VF_PUMP_FLOW) {
+        float rate = fi == VF_FISH_OUTFLOW ? c.fishtankoutflowflowRate : c.pumpflowRate;
+        if (rate >= 0) {
+          drawFlowSymbol(rate > 0 ? CRGB(0, 0, 255) : CRGB(255, 0, 0));
+          ok = true;
+        }
+      }
+    }
+  } else {
+    float t;
+    if (viewerForecastValue(fi, t)) {
+      // At or below the frost threshold = blue (frost); otherwise the usual sign colours.
+      CRGB tc = t <= viewerCfg.frost ? CRGB(0, 0, 255) : t > 0 ? CRGB(0, 255, 0) : CRGB(255, 255, 0);
+      drawTemperatureValue(t, tc.r, tc.g, tc.b);
+      ok = true;
+    }
+  }
+  if (!ok) {
+    for (int i = 0; i < NUM_LEDS; i++) leds[i] = CRGB(0, 0, 0);
+    leds[7] = CRGB(255, 0, 0);  // nothing current to show for this page (never heard, stale, no reading)
+  }
+  if (fd.glyph != VIEWER_GLYPH_TEMPERATURE) {
+    if (slot == 1) leds[4] = CRGB(0, 0, 255);
+    if (slot == 2) leds[14] = CRGB(0, 0, 255);
+  }
+  memcpy(viewerFrame, leds, sizeof(viewerFrame));
+  viewerBlinkActive = ok && fd.source == VIEWER_SOURCE_FORECAST;
+  viewerBlinkOn = true;
+  viewerBlinkAtMs = millis();
+  FastLED.show();
+}
+
+// loop(): forecast pages blink, 0.5 s on / 0.5 s off.
+void viewerBlinkTick() {
+  if (!viewerBlinkActive || millis() - viewerBlinkAtMs < 500) return;
+  viewerBlinkAtMs = millis();
+  viewerBlinkOn = !viewerBlinkOn;
+  if (viewerBlinkOn) memcpy(leds, viewerFrame, sizeof(viewerFrame));
+  else
+    for (int i = 0; i < NUM_LEDS; i++) leds[i] = CRGB(0, 0, 0);
+  FastLED.show();
+}
+
 void processLora(int packetSize) {
   if (debug) Serial.print(" Receive lora: ");
   if (debug) Serial.println(packetSize);
@@ -876,7 +1114,7 @@ void processLora(int packetSize) {
       rtc_weatherRssi = (int16_t)loraRxRssi;
       rtc_weatherSnrQ = (int8_t)lroundf(loraRxSnr * 4);
       //WeatherForecast forecasts=weatherForecastUpdate.forecasts;
-      weatherForecastManager->saveForecasts(weatherForecastUpdate.forecasts);
+      weatherForecastManager->saveForecasts(weatherForecastUpdate.forecasts, 4);  // the packet carries 4; the default 8 copied 160 bytes past the array
       solarInfo->setWeatherForecast(weatherForecastUpdate.forecasts, 4);
       markWeatherReceived();
       if (debug) Serial.println(" Receive and processed weatherForecast ");
@@ -884,6 +1122,8 @@ void processLora(int packetSize) {
       if (debug) Serial.print(" Receive WeatherForecastUpdate but invalid code: ");
       if (debug) Serial.println(commandcode);
     }
+  } else if (packetSize == sizeof(ChinampaData)) {
+    viewerAcceptChinampa();
   } else {  //if(packetSize==14){
     if (debug) Serial.println("\n--- RECEIVED unknown size  PACKET ---");
     // Create a buffer to store the received bytes
@@ -1236,8 +1476,11 @@ void listenForReplies() {
   if (!loraActive) return;
   bool weatherStale = secondsSinceLastWeatherData >= 1860;
   bool commandWindow = LISTEN_FOR_COMMANDS_AT_NIGHT || solarInfo->calculateActualPower(currentTimerRecord).efficiency > 0;
-  if (!weatherStale && !commandWindow) return;
+  bool viewer = digitalStablesData.currentFunctionValue == DAFFODIL_VIEWER;
+  long chinampaBefore = viewerChinampaAt;
+  if (!weatherStale && !commandWindow && !viewer) return;
   unsigned long window = weatherStale ? WEATHER_REPLY_LISTEN_MS : COMMAND_LISTEN_MS;
+  if (viewer && window < VIEWER_LISTEN_MS) window = VIEWER_LISTEN_MS;  // long enough to hear Chinampa once
   bool commandHeard = false;
   LoRa_rxMode();
   unsigned long start = millis();
@@ -1245,7 +1488,7 @@ void listenForReplies() {
     if (loraDio0Fired) {
       loraDio0Fired = false;
       int packetSize = LoRa.parsePacket();
-      if (packetSize == sizeof(WeatherForecastUpdate) || packetSize == sizeof(DeviceCommandRecord)) {
+      if (packetSize == sizeof(WeatherForecastUpdate) || packetSize == sizeof(DeviceCommandRecord) || (viewer && packetSize == sizeof(ChinampaData))) {
         loraRxRssi = LoRa.packetRssi();
         loraRxSnr = LoRa.packetSnr();
         loraRxAtMs = millis();
@@ -1256,7 +1499,9 @@ void listenForReplies() {
         processLora(n);
         if (packetSize == sizeof(DeviceCommandRecord)) commandHeard = true;
         // Stale: wait for the forecast (a command comes before it). Fresh: only a command was due.
-        if (weatherStale ? secondsSinceLastWeatherData < 1860 : commandHeard) break;
+        // A viewer also waits for a Chinampa packet.
+        bool viewerDone = !viewer || viewerChinampaAt != chinampaBefore;
+        if (viewerDone && (weatherStale ? secondsSinceLastWeatherData < 1860 : (commandHeard || !commandWindow))) break;
       }
       LoRa_rxMode();
     }
@@ -2790,6 +3035,9 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
     digitalStablesData.operatingStatus = OPERATING_STATUS_NO_LED;
   }
   wifiManager.setPowerDataProvider(fillPowerData);
+  viewerLoadConfig();  // Viewer function (switch 1001) - kept loaded in every mode, it's tiny
+  wifiManager.setViewerDataProvider(fillViewerData);
+  wifiManager.setViewerConfigSetter(viewerSetConfig);
   if (debug) Serial.println(F("Finished Setup"));
 }
 
@@ -3716,13 +3964,18 @@ void drawFlowSymbol(CRGB c) {
 }
 
 void drawTemperature(uint8_t red, uint8_t green, uint8_t blue) {
+  drawTemperatureValue(digitalStablesData.outdoortemperature, red, green, blue);
+}
+
+// The temperature digits for any value (the Viewer draws other devices' and forecast temperatures).
+void drawTemperatureValue(float value, uint8_t red, uint8_t green, uint8_t blue) {
 
   for (int i = 0; i < NUM_LEDS; i++) {
     leds[i] = CRGB(0, 0, 0);
   }
   uint8_t ld = 0;
   uint8_t hd = 0;
-  float t = abs(digitalStablesData.outdoortemperature);
+  float t = abs(value);
 
   if (t > 0 && t < 10) {
     ld = t;
@@ -3943,6 +4196,12 @@ void loop() {
     }
   }
   sendPendingLinkAck(false);  // Paula's ping, answered in this unit's slot (handlePing)
+  if (viewerCfgPending) {  // a new Viewer config from the web page or serial
+    viewerCfg = viewerPendingCfg;
+    viewerCfgPending = false;
+    viewerPageIndex = 0;
+  }
+  viewerBlinkTick();
   if (clockTicked) {
 
     portENTER_CRITICAL(&mux);
@@ -4345,7 +4604,20 @@ void loop() {
     FastLED.setBrightness(digitalStablesData.ledBrightness);
 
 
-    if (displayStatus == SHOW_TEMPERATURE) {
+    viewerBlinkActive = false;
+    if (digitalStablesData.currentFunctionValue == DAFFODIL_VIEWER && (displayStatus == SHOW_TEMPERATURE || displayStatus == SHOW_SCEPTIC)) {
+      // Viewer: the configured pages replace the temperature and tank states, shown back to back
+      // (same hold as the two-slot modes); then the cycle carries on with internet/LoRa/error.
+      if (viewerPageIndex >= viewerCfg.count) viewerPageIndex = 0;
+      drawViewerPage(viewerPageIndex);
+      viewerPageIndex++;
+      if (viewerPageIndex < viewerCfg.count) {
+        holdDisplayStatus = true;
+      } else {
+        viewerPageIndex = 0;
+        displayStatus = SHOW_SCEPTIC;  // the displayStatus++ below moves on to internet status
+      }
+    } else if (displayStatus == SHOW_TEMPERATURE) {
 
       if (debug) Serial.print("showing temperature=");
 
@@ -4894,6 +5166,21 @@ void loop() {
       }
       Serial.println("Current Function Value: " + functionname);
       Serial.println("Ok-printCSWData");
+      Serial.flush();
+    } else if (command.startsWith("GetViewerConfig")) {
+      JsonDocument json;
+      fillViewerData(json);
+      serializeJson(json, Serial);
+      Serial.println();
+      Serial.println("Ok-GetViewerConfig");
+      Serial.flush();
+    } else if (command.startsWith("SetViewerConfig#")) {
+      // SetViewerConfig#{"src":"","stale":600,"frost":0,"pages":[{"f":"outdoorTemp"},...]}
+      String json = command.substring(command.indexOf('#') + 1);
+      json.trim();
+      String err = viewerSetConfig(json);
+      if (err == "") Serial.println("Ok-SetViewerConfig");
+      else Serial.println("Failure-SetViewerConfig-" + err);
       Serial.flush();
     } else if (command.startsWith("CalibrateCSWReference")) {
       // One-time per-device calibration step, run at install time with the switches set to
