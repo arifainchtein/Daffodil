@@ -1960,7 +1960,19 @@ void setup() {
   double troughlevelmaximumcm = 0;
 
 
-  secretManager.getDeviceSensorConfig(digitalStablesData.devicename, digitalStablesData.deviceshortname, digitalStablesData.sensor1name, digitalStablesData.sensor2name, timezone, latitude, longitude, altitude, digitalStablesData.minimumEfficiencyForLed, digitalStablesData.minimumEfficiencyForWifi);
+  // getDeviceSensorConfig() strcpy()s with no size limit. Straight into DigitalStablesData it overflowed:
+  // the default "NoData" is 7 bytes and sensor1name/sensor2name are char[6], so sensor1name lost its
+  // terminator and sensor2name wrote past its end. The web page then read the names on into binary bytes,
+  // the browser rejected GetWebData's JSON and the page stayed empty (HorseTrough, 2026-11-06). Read into
+  // big buffers, then copy with a limit (the same way Langley and Paula call it).
+  {
+    char nameBuf[33], shortBuf[33], s1Buf[33], s2Buf[33];
+    secretManager.getDeviceSensorConfig(nameBuf, shortBuf, s1Buf, s2Buf, timezone, latitude, longitude, altitude, digitalStablesData.minimumEfficiencyForLed, digitalStablesData.minimumEfficiencyForWifi);
+    strlcpy(digitalStablesData.devicename, nameBuf, sizeof(digitalStablesData.devicename));
+    strlcpy(digitalStablesData.deviceshortname, shortBuf, sizeof(digitalStablesData.deviceshortname));
+    strlcpy(digitalStablesData.sensor1name, s1Buf, sizeof(digitalStablesData.sensor1name));
+    strlcpy(digitalStablesData.sensor2name, s2Buf, sizeof(digitalStablesData.sensor2name));
+  }
   strncpy(rtc_device_shortname, digitalStablesData.deviceshortname, 7);
   rtc_device_shortname[7] = '\0';
   secretManager.getTroughParameters(maximumScepticHeight, troughlevelminimumcm, troughlevelmaximumcm);
