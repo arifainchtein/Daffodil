@@ -347,6 +347,10 @@ bool wifiOnDemandWasOn = false;  // loop(): on-demand WiFi was running last pass
 bool wifiOffRequested = false;   // set by acceptDeviceCommand(), acted on in loop()
 float sleepingVoltage = 3.12;         // Force deep sleep — cliff edge for LiFePO4 123A
 float commaVoltage    = 2.80;         // COMMA threshold — below this, skip all work and wait for solar recovery
+float commaExitVoltage = 3.12;        // COMMA only ends once the resting battery reaches this (= sleepingVoltage).
+                                      // Exiting at commaVoltage itself looped forever on a weak cell: it rests
+                                      // just above 2.80V, boots, WiFi load sags it below, COMMA again (2026-11-06).
+                                      // A charging LiFePO4 sits well above this, so charging also ends COMMA.
 
 uint8_t numberSecondsWithMinimumWifiVoltageForStartWifi = 30;
 uint8_t currentSecondsWithWifiVoltage = 0;
@@ -1815,8 +1819,8 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
   // 2. COMMA mode already active: quick voltage check — if still critically low, sleep again.
   if (rtc_comma_mode) {
     float _qv = quickReadBusVoltage();
-    if (_qv < 0 || _qv < commaVoltage) {
-      if (debug) { Serial.printf("COMMA: %.2fV — returning to sleep.\n", _qv); Serial.flush(); }
+    if (_qv < 0 || _qv < commaExitVoltage) {
+      if (debug) { Serial.printf("COMMA: %.2fV (exit needs %.2fV) — returning to sleep.\n", _qv, commaExitVoltage); Serial.flush(); }
       // Acknowledge the TPL5010 (DONE) so its next ~10-min WAKE pulse is not a reset.
       pinMode(TPL5010_DONE, OUTPUT);
       digitalWrite(TPL5010_DONE, HIGH);
@@ -2170,8 +2174,9 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
     // 0110  0    | 7174  | DAFFODIL_WATER_TROUGH
     // 1110  0    | 6965  | DAFFODIL_WATER_TROUGH_TANK1
     // 0001  0    | 6689  | DAFFODIL_WATER_TROUGH_WATER_TEMP
-    // 1001,0101,1101  0 (merged)      | 6469-6012 | (unassigned)
-    // 0011  0    | 5800  | DAFFODIL_WATER_TROUGH
+    // 1001  0    | 6469  | DAFFODIL_VIEWER (HorseTrough 2026-11-06: 6413)
+    // 0101,1101  0 (merged)      | 6181-6012 | (unassigned; 0101=6181 on HorseTrough)
+    // 0011  0    | 5800  | DAFFODIL_2_WATER_TROUGH (reclaimed 2026-09-01)
     // 1011,0111,1111  0 (merged)      | 5558-5060 | (unassigned)
     // 0000  1    | 4806  | FUN_1_FLOW
     // 1000  1    | 4541  | FUN_2_FLOW
@@ -2182,8 +2187,9 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
     // 0110  1    | 3147  | DAFFODIL_WATER_TROUGH
     // 1110  1    | 2841  | DAFFODIL_WATER_TROUGH_TANK1
     // 0001  1    | 2437  | DAFFODIL_WATER_TROUGH_WATER_TEMP
-    // 1001,0101,1101  1 (merged)      | 2111-1433 | (unassigned)
-    // 0011  1    | 1116  | DAFFODIL_WATER_TROUGH
+    // 1001  1    | 2111  | DAFFODIL_VIEWER (HorseTrough 2026-11-06: 2145)
+    // 0101,1101  1 (merged)      | 1804-1433 | (unassigned; 0101=1804 on HorseTrough)
+    // 0011  1    | 1116  | DAFFODIL_2_WATER_TROUGH (reclaimed 2026-09-01)
     // 1011,0111,1111  1 (merged)      | 753,-3,-3 | (unassigned, saturates near 0)
     if (cswDecodeValue >= 8233) {
       // 00000, solar off — FUN_1_FLOW
@@ -2235,9 +2241,13 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
       // 00010, solar off — DAFFODIL_WATER_TROUGH_WATER_TEMP (raw 6689, midpoints to 1110=6965 / 1001=6469)
       digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH_WATER_TEMP;
       usingSolarPower = false;
-    } else if (cswDecodeValue >= 5906 && cswDecodeValue < 6579) {
-      // 1001/0101/1101, solar off — unassigned (merged: none of these three carry a
-      // function, so one wide band is as safe as three narrow ones and far simpler)
+    } else if (cswDecodeValue >= 6300 && cswDecodeValue < 6579) {
+      // 10010, solar off — DAFFODIL_VIEWER (added 2026-11-06). Measured on HorseTrough
+      // (calibrated, ref 8231): 1001=6413, 0101=6181; lower edge = their midpoint.
+      digitalStablesData.currentFunctionValue = DAFFODIL_VIEWER;
+      usingSolarPower = false;
+    } else if (cswDecodeValue >= 5906 && cswDecodeValue < 6300) {
+      // 0101/1101, solar off — unassigned (merged)
       usingSolarPower = false;
     } else if (cswDecodeValue >= 5679 && cswDecodeValue < 5906) {
       // 00110, solar off — DAFFODIL_2_WATER_TROUGH (was a duplicate DAFFODIL_WATER_TROUGH slot,
@@ -2296,8 +2306,13 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
       // 00011, solar on — DAFFODIL_WATER_TROUGH_WATER_TEMP (raw 2437, midpoints to 1110=2841 / 1001=2111)
       digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH_WATER_TEMP;
       usingSolarPower = true;
-    } else if (cswDecodeValue >= 1274 && cswDecodeValue < 2274) {
-      // 1001/0101/1101, solar on — unassigned (merged, same reasoning as the solar-off gaps)
+    } else if (cswDecodeValue >= 1975 && cswDecodeValue < 2274) {
+      // 10011, solar on — DAFFODIL_VIEWER (added 2026-11-06). Measured on HorseTrough
+      // (calibrated, ref 8231): 1001=2145, 0101=1804; lower edge = their midpoint.
+      digitalStablesData.currentFunctionValue = DAFFODIL_VIEWER;
+      usingSolarPower = true;
+    } else if (cswDecodeValue >= 1274 && cswDecodeValue < 1975) {
+      // 0101/1101, solar on — unassigned (merged)
       usingSolarPower = true;
     } else if (cswDecodeValue >= 934 && cswDecodeValue < 1274) {
       // 00111, solar on — DAFFODIL_2_WATER_TROUGH (was a duplicate DAFFODIL_WATER_TROUGH slot,
@@ -2336,8 +2351,9 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
     // 0110  0    | 5746 @ 4.348       | DAFFODIL_WATER_TROUGH
     // 1110  0    | 5575 @ 4.348       | DAFFODIL_WATER_TROUGH_TANK1
     // 0001  0    | 5356 @ 4.374       | DAFFODIL_WATER_TROUGH_WATER_TEMP (normalized ~6122)
-    // 1001,0101,1101  0 (merged)      | 5177-4814 @ ~4.36 | (unassigned)
-    // 0011  0    | 4645 @ 4.367       | DAFFODIL_WATER_TROUGH
+    // 1001  0    | 5177 @ ~4.36       | DAFFODIL_VIEWER (band estimated)
+    // 0101,1101  0 (merged)      | ?-4814 @ ~4.36 | (unassigned)
+    // 0011  0    | 4645 @ 4.367       | DAFFODIL_2_WATER_TROUGH (reclaimed 2026-09-01)
     // 1011,0111,1111  0 (merged)      | 4450-3850 @ ~4.35 | (unassigned)
     // 1000  1    | 3621 @ 4.330       | FUN_2_FLOW  <- reads ABOVE 0000+solar, see quirk note
     // 0000  1    | 3198 @ 4.349       | FUN_1_FLOW
@@ -2348,8 +2364,9 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
     // 0110  1    | 2274 @ 4.349       | DAFFODIL_WATER_TROUGH
     // 1110  1    | 1951 @ 4.350       | DAFFODIL_WATER_TROUGH_TANK1
     // 0001  1    | 1690 @ 4.350       | DAFFODIL_WATER_TROUGH_WATER_TEMP (normalized ~1943)
-    // 1001,0101,1101  1 (merged)      | 1423-907 @ ~4.35  | (unassigned)
-    // 0011  1    | -2 @ 4.349         | DAFFODIL_WATER_TROUGH (bottom catch-all)
+    // 1001  1    | 1423 @ ~4.35       | DAFFODIL_VIEWER (band estimated)
+    // 0101,1101  1 (merged)      | ?-907 @ ~4.35  | (unassigned)
+    // 0011  1    | -2 @ 4.349         | DAFFODIL_2_WATER_TROUGH (bottom catch-all, reclaimed 2026-09-01)
     // 1011,0111,1111  1 (merged)      | -2 @ ~4.35 | (unassigned, saturates near 0)
     if (cswOutput >= 7587) {
       // 00000, solar off — FUN_1_FLOW
@@ -2400,8 +2417,13 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
       // 00010, solar off — DAFFODIL_WATER_TROUGH_WATER_TEMP (normalized ~6122, midpoints to 1110 / 1001)
       digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH_WATER_TEMP;
       usingSolarPower = false;
-    } else if (cswOutput >= 5427 && cswOutput < 6017) {
-      // 1001/0101/1101, solar off — unassigned (merged)
+    } else if (cswOutput >= 5833 && cswOutput < 6017) {
+      // 10010, solar off — DAFFODIL_VIEWER (added 2026-11-06). ESTIMATED, not measured with
+      // no battery: 1001 ~5937 normalized (raw 5177 @ ~4.36), 0101 assumed midway to 1101.
+      digitalStablesData.currentFunctionValue = DAFFODIL_VIEWER;
+      usingSolarPower = false;
+    } else if (cswOutput >= 5427 && cswOutput < 5833) {
+      // 0101/1101, solar off — unassigned (merged)
       usingSolarPower = false;
     } else if (cswOutput >= 5206 && cswOutput < 5427) {
       // 00110, solar off — DAFFODIL_2_WATER_TROUGH (was a duplicate DAFFODIL_WATER_TROUGH slot,
@@ -2463,8 +2485,13 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
       // 00011, solar on — DAFFODIL_WATER_TROUGH_WATER_TEMP (normalized ~1943, midpoints to 1110 / 1001)
       digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH_WATER_TEMP;
       usingSolarPower = true;
-    } else if (cswOutput >= 519 && cswOutput < 1789) {
-      // 1001/0101/1101, solar on — unassigned (merged)
+    } else if (cswOutput >= 1487 && cswOutput < 1789) {
+      // 10011, solar on — DAFFODIL_VIEWER (added 2026-11-06). ESTIMATED, not measured with
+      // no battery: 1001 ~1635 normalized (raw 1423 @ ~4.35), 0101 assumed midway to 1101.
+      digitalStablesData.currentFunctionValue = DAFFODIL_VIEWER;
+      usingSolarPower = true;
+    } else if (cswOutput >= 519 && cswOutput < 1487) {
+      // 0101/1101, solar on — unassigned (merged)
       usingSolarPower = true;
     } else if (cswOutput >= 0 && cswOutput < 519) {
       // 00111 + 1011/0111/1111, solar on — 00111 is DAFFODIL_2_WATER_TROUGH (was
@@ -4258,7 +4285,12 @@ void loop() {
   wifistatus = wifiManager.getWifiStatus();
   boolean turnOnWifi = false;
   if (!usingSolarPower) {
-    if (!wifistatus) turnOnWifi = true;
+    // With a battery attached, use the same start rule as the solar branch (battery held above
+    // minimumInitWifiVoltage for numberSecondsWithMinimumWifiVoltageForStartWifi). Without it,
+    // the minimumWifiVoltage shutoff above stopped WiFi and this restarted it on every loop pass
+    // whenever the battery sat below 3.28V — the AP restart loop seen on HorseTrough 2026-11-06.
+    turnOnWifi = !wifistatus
+              && (!hasBattery || currentSecondsWithWifiVoltage >= numberSecondsWithMinimumWifiVoltageForStartWifi);
   } else {
     turnOnWifi = (hourlySolarPowerData.efficiency * 100 > digitalStablesData.minimumEfficiencyForWifi)
               && (currentSecondsWithWifiVoltage >= numberSecondsWithMinimumWifiVoltageForStartWifi)
@@ -4800,7 +4832,7 @@ void loop() {
 
       // Battery thresholds
       Serial.println("sleepingVoltage=" + String(sleepingVoltage)
-                     + "  commaVoltage=" + String(commaVoltage)
+                     + "  commaVoltage=" + String(commaVoltage) + "  commaExitV=" + String(commaExitVoltage)
                      + "  minWifiV=" + String(minimumWifiVoltage)
                      + "  minInitWifiV=" + String(minimumInitWifiVoltage));
       Serial.println("currentSecondsWithWifiVoltage=" + String(currentSecondsWithWifiVoltage)
@@ -4857,6 +4889,8 @@ void loop() {
         functionname = "DAFFODIL_2_WATER_TROUGH";
       } else if (digitalStablesData.currentFunctionValue == DAFFODIL_WATER_TROUGH_WATER_TEMP) {
         functionname = "DAFFODIL_WATER_TROUGH_WATER_TEMP";
+      } else if (digitalStablesData.currentFunctionValue == DAFFODIL_VIEWER) {
+        functionname = "DAFFODIL_VIEWER";
       }
       Serial.println("Current Function Value: " + functionname);
       Serial.println("Ok-printCSWData");
@@ -4918,6 +4952,8 @@ void loop() {
         functionname = "DAFFODIL_2_WATER_TROUGH";
       } else if (digitalStablesData.currentFunctionValue == DAFFODIL_WATER_TROUGH_WATER_TEMP) {
         functionname = "DAFFODIL_WATER_TROUGH_WATER_TEMP";
+      } else if (digitalStablesData.currentFunctionValue == DAFFODIL_VIEWER) {
+        functionname = "DAFFODIL_VIEWER";
       }
       Serial.println("Current Function Value: " + functionname);
       Serial.println("");
