@@ -878,14 +878,21 @@ int viewerFindLocked(uint8_t type, const char *name) {
   return best;
 }
 
-// Copies the device's last packet into raw if it isn't stale.
-bool viewerFreshPacket(uint8_t type, const char *name, uint8_t *raw) {
+// Copies the device's last packet into raw; ageSec = how long ago it was heard. False if never heard.
+bool viewerPacket(uint8_t type, const char *name, uint8_t *raw, long &ageSec) {
   portENTER_CRITICAL(&viewerHeardMux);
   int i = viewerFindLocked(type, name);
-  bool ok = i >= 0 && codeTimeNow() - viewerHeard[i].at <= (long)viewerCfg.staleSec;
-  if (ok) memcpy(raw, viewerHeard[i].raw, VIEWER_RAW_MAX);
+  if (i >= 0) {
+    memcpy(raw, viewerHeard[i].raw, VIEWER_RAW_MAX);
+    ageSec = codeTimeNow() - viewerHeard[i].at;
+  }
   portEXIT_CRITICAL(&viewerHeardMux);
-  return ok;
+  return i >= 0;
+}
+
+bool viewerFreshPacket(uint8_t type, const char *name, uint8_t *raw) {
+  long age;
+  return viewerPacket(type, name, raw, age) && age <= (long)viewerCfg.staleSec;
 }
 
 // Parses and validates a config JSON into out. Returns an error message, "" when valid.
@@ -893,7 +900,8 @@ String viewerParseConfig(const String &json, ViewerConfig &out) {
   JsonDocument doc;
   if (deserializeJson(doc, json)) return "invalid JSON";
   JsonArray pages = doc["pages"].as<JsonArray>();
-  if (pages.isNull() || pages.size() == 0) return "no pages";
+  // No pages is valid (2026-11-07): a new Viewer starts empty and pages are added from the devices
+  // it actually hears - the LEDs show the "no data" dot until then.
   if (pages.size() > VIEWER_MAX_PAGES) return "more than " + String(VIEWER_MAX_PAGES) + " pages";
   const char *legacySource = doc["src"] | "";  // before 2026-11-07: one Chinampa name for all pages
   ViewerConfig c;
@@ -963,7 +971,10 @@ String viewerSetConfig(const String &json) {
   return "";
 }
 
-// GetViewerConfig: the config, every device type with its fields, and the devices heard so far.
+void viewerPageReading(uint8_t page, JsonObject r);
+
+// GetViewerConfig: the config, every device type with its fields, what each page shows now, and the
+// devices heard so far.
 void fillViewerData(JsonDocument &json) {
   viewerConfigToJson(viewerCfg, json["config"].to<JsonObject>());
   JsonArray types = json["types"].to<JsonArray>();
@@ -980,6 +991,8 @@ void fillViewerData(JsonDocument &json) {
       f["glyph"] = VIEWER_FIELDS[i].glyph == VIEWER_GLYPH_TEMPERATURE ? "temperature" : VIEWER_FIELDS[i].glyph == VIEWER_GLYPH_LEVEL ? "level" : "flow";
     }
   }
+  JsonArray readings = json["readings"].to<JsonArray>();
+  for (uint8_t p = 0; p < viewerCfg.count; p++) viewerPageReading(p, readings.add<JsonObject>());
   JsonArray devices = json["devices"].to<JsonArray>();
   if (secondsSinceLastWeatherData < 9999) {
     JsonObject d = devices.add<JsonObject>();
@@ -1007,6 +1020,37 @@ void fillViewerData(JsonDocument &json) {
   }
 }
 
+// GetViewerConfig "readings": what each page shows, for the web page's data card (2026-11-07).
+// {"ok":true,"v":14.2,"ageSec":20,"stale":false,"state":"low|ok|high|flowing|stopped|frost"}
+// ok false = never heard / no reading.
+bool viewerForecastValue(uint8_t fi, float &t);
+bool viewerFieldValue(uint8_t fi, const uint8_t *raw, float &t, CRGB &col);
+void viewerPageReading(uint8_t page, JsonObject r) {
+  uint8_t fi = viewerCfg.field[page];
+  const ViewerField &fd = VIEWER_FIELDS[fi];
+  float t = 0;
+  CRGB col;
+  bool ok;
+  long age = 0;
+  if (fd.type == VIEWER_TYPE_FORECAST) {
+    ok = viewerForecastValue(fi, t);
+    age = secondsSinceLastWeatherData;
+    if (ok && t <= viewerCfg.frost) r["state"] = "frost";
+  } else {
+    uint8_t *raw = (uint8_t *)malloc(VIEWER_RAW_MAX);  // async_tcp task: keep it off its small stack
+    ok = raw && viewerPacket(fd.type, viewerCfg.device[page], raw, age) && viewerFieldValue(fi, raw, t, col);
+    free(raw);
+    if (ok && fd.glyph == VIEWER_GLYPH_LEVEL) r["state"] = col.r ? "low" : col.b ? "high" : "ok";
+    if (ok && fd.glyph == VIEWER_GLYPH_FLOW) r["state"] = t > 0 ? "flowing" : "stopped";
+    if (ok) r["stale"] = age > (long)viewerCfg.staleSec;
+  }
+  r["ok"] = ok;
+  if (ok) {
+    r["v"] = round(t * 10) / 10.0;
+    r["ageSec"] = age;
+  }
+}
+
 // Forecast fields. secondsTime is the OWM UTC timestamp, hour the local hour (WeatherForecastManager).
 // "Next morning" = lowest temperature among forecast slots at local 03-09h within 24 h of the first
 // slot; with only 4 LoRa slots (12 h) that exists from roughly mid-afternoon on.
@@ -1029,15 +1073,15 @@ bool viewerForecastValue(uint8_t fi, float &t) {
 
 // Same 3-zone rule as Water Trough: measured is the sonar distance down to the surface, so the
 // water level is height - measured. Red below the minimum level, blue above the maximum, else green.
-bool viewerLevelColor(float measured, float height, float minLevel, float maxLevel, CRGB &c) {
+bool viewerLevelColor(float measured, float height, float minLevel, float maxLevel, CRGB &c, float &level) {
   if (measured <= 0 || height <= 0) return false;  // -99 = no reading
-  float level = height - measured;
+  level = height - measured;
   c = level < minLevel ? CRGB(255, 0, 0) : level > maxLevel ? CRGB(0, 0, 255) : CRGB(0, 255, 0);
   return true;
 }
 
-// A device field's value from its last packet: a temperature (t) or a level/flow colour (col).
-// False when the packet has no reading for it.
+// A device field's value from its last packet: t = the temperature (C), water level (cm) or flow
+// rate; col = the level/flow colour. False when the packet has no reading for it.
 bool viewerFieldValue(uint8_t fi, const uint8_t *raw, float &t, CRGB &col) {
   switch (VIEWER_FIELDS[fi].type) {
     case VIEWER_TYPE_CHINAMPA:
@@ -1046,8 +1090,8 @@ bool viewerFieldValue(uint8_t fi, const uint8_t *raw, float &t, CRGB &col) {
         memcpy(&c, raw, sizeof(c));
         switch (fi) {
           case VF_CH_OUTDOOR_TEMP: t = c.outdoortemperature; return t != -99;
-          case VF_CH_SUMP_LEVEL: return viewerLevelColor(c.sumpTroughMeasuredHeight, c.sumpTroughHeight, c.minimumSumpTroughLevel, c.maximumSumpTroughLevel, col);
-          case VF_CH_FISH_LEVEL: return viewerLevelColor(c.fishTankMeasuredHeight, c.fishTankHeight, c.minimumFishTankLevel, c.maximumFishTankLevel, col);
+          case VF_CH_SUMP_LEVEL: return viewerLevelColor(c.sumpTroughMeasuredHeight, c.sumpTroughHeight, c.minimumSumpTroughLevel, c.maximumSumpTroughLevel, col, t);
+          case VF_CH_FISH_LEVEL: return viewerLevelColor(c.fishTankMeasuredHeight, c.fishTankHeight, c.minimumFishTankLevel, c.maximumFishTankLevel, col, t);
           case VF_CH_FISH_OUTFLOW: t = c.fishtankoutflowflowRate; break;
           case VF_CH_PUMP_FLOW: t = c.pumpflowRate; break;
           default: return false;
@@ -1063,7 +1107,7 @@ bool viewerFieldValue(uint8_t fi, const uint8_t *raw, float &t, CRGB &col) {
           case VF_DA_WATER_TEMP:  // only that mode puts the water temperature in measuredHeight2
             t = d.measuredHeight2;
             return d.currentFunctionValue == DAFFODIL_WATER_TROUGH_WATER_TEMP && t != -99;
-          case VF_DA_TROUGH_LEVEL: return viewerLevelColor(d.measuredHeight, d.maximumScepticHeight, d.troughlevelminimumcm, d.troughlevelmaximumcm, col);
+          case VF_DA_TROUGH_LEVEL: return viewerLevelColor(d.measuredHeight, d.maximumScepticHeight, d.troughlevelminimumcm, d.troughlevelmaximumcm, col, t);
           case VF_DA_FLOW1: t = d.flowRate; break;
           case VF_DA_FLOW2: t = d.flowRate2; break;
           default: return false;
@@ -1088,6 +1132,12 @@ bool viewerFieldValue(uint8_t fi, const uint8_t *raw, float &t, CRGB &col) {
 
 void drawViewerPage(uint8_t page) {
   for (int i = 0; i < NUM_LEDS; i++) leds[i] = CRGB(0, 0, 0);
+  if (page >= viewerCfg.count) {  // no pages configured yet
+    leds[7] = CRGB(255, 0, 0);
+    viewerBlinkActive = false;
+    FastLED.show();
+    return;
+  }
   uint8_t fi = viewerCfg.field[page];
   uint8_t slot = viewerCfg.slot[page];
   const ViewerField &fd = VIEWER_FIELDS[fi];

@@ -1013,23 +1013,99 @@ $(document).on('click','#system-info-icon', function (){
 var viewerTypes = {};    // t -> {name, fields:[{id,label,glyph}]}
 var viewerDevices = [];  // [{t, d, ageSec, rssi}] heard, newest first
 var viewerPages = [];    // [{t, d, f, s}]
-var viewerLoaded = false;
+var viewerDataTimer = null;
 var VIEWER_MAX_PAGES = 8;
+var VIEWER_DATA_REFRESH_MS = 10000;
 
+// Data card: what each LED page shows now, refreshed while it is on screen (2026-11-07).
 function showViewer(){
-    $('#viewer-info').removeClass('d-none').addClass('d-block');
-    if(!viewerLoaded) loadViewer();
+    $('#viewer-data').removeClass('d-none').addClass('d-block');
+    loadViewerData();
+    if(!viewerDataTimer) viewerDataTimer = setInterval(function(){
+        if($('#viewer-data').hasClass('d-block')) loadViewerData();
+    }, VIEWER_DATA_REFRESH_MS);
 }
+
+function loadViewerData(){
+    $.ajax({
+        type: "GET",
+        url: "/DaffodilServlet",
+        data:{formName:"GetViewerConfig"},
+        success: function (result) {
+            renderViewerData(JSON.parse(result));
+        },
+        error: function(data){
+            $('#viewer-data-status').text('Could not read the viewer (' + data.status + ')');
+        }
+    });
+}
+
+function renderViewerData(v){
+    var box = $('#viewer-readings').empty();
+    if(!v.types){
+        box.append($('<p class="small text-danger">').text('This page needs newer Daffodil firmware - flash the latest release.'));
+        return;
+    }
+    viewerTypes = {};
+    for(var i=0;i<v.types.length;i++) viewerTypes[v.types[i].t] = {name: v.types[i].name, fields: v.types[i].fields || []};
+    var pages = (v.config && v.config.pages) || [];
+    var readings = v.readings || [];
+    if(pages.length == 0){
+        box.append($('<p class="small text-muted">').text('No pages yet - tap the cog to choose what to show.'));
+    }
+    for(var i=0;i<pages.length;i++){
+        var p = pages[i], r = readings[i] || {ok:false};
+        var f = viewerField(p.t, p.f);
+        var value = $('<div style="font-size:28px;line-height:1.1;text-align:right">');
+        var note = $('<div class="small text-muted" style="text-align:right">');
+        if(!r.ok){
+            value.addClass('text-danger').text('No data');
+            note.text(p.t == 'forecast' ? 'no forecast yet' : 'not heard');
+        }else{
+            var glyph = f ? f.glyph : 'temperature';
+            if(glyph == 'level'){
+                var cls = {low:'text-danger', high:'text-primary', ok:'text-success'}[r.state] || '';
+                var word = {low:'Low', high:'High', ok:'OK'}[r.state] || '';
+                value.append($('<span>').text(r.v + ' cm '), $('<span style="font-size:18px">').addClass(cls).text(word));
+            }else if(glyph == 'flow'){
+                value.addClass(r.state == 'flowing' ? 'text-primary' : 'text-danger')
+                    .text(r.state == 'flowing' ? r.v + ' L/min' : 'Stopped');
+            }else{
+                value.text(r.v + ' \u00B0C');
+                if(r.state == 'frost') value.addClass('text-primary').append($('<span style="font-size:18px">').text(' frost'));
+            }
+            note.text(viewerAge(r.ageSec) + (r.stale ? ' - stale' : ''));
+            if(r.stale) note.removeClass('text-muted').addClass('text-warning');
+        }
+        var left = $('<div>')
+            .append($('<div style="font-weight:600">').text(f ? f.label : p.f))
+            .append($('<div class="small text-muted">').text(viewerDeviceText(p.t, p.d || '') + (p.t == 'forecast' ? ' (blinks)' : '')));
+        box.append($('<div class="d-flex justify-content-between align-items-center" style="padding:6px 0;border-bottom:1px solid rgba(0,0,0,.1)">')
+            .append(left, $('<div>').append(value, note)));
+    }
+    $('#viewer-data-status').text('');
+}
+
+// The cog: the page editor, loaded fresh so it offers the devices heard up to now.
+$(document).on('click','#viewer-config-icon', function (){
+    $('.display-module').removeClass('d-block').addClass('d-none');
+    $('#viewer-info').removeClass('d-none').addClass('d-block');
+    loadViewer();
+});
+
+$(document).on('click','#viewer-close', function (){
+    refreshScreen();
+});
 
 function loadViewer(){
     $('#viewer-status').text('Loading...');
+    $('#viewer-pages').empty();
     $.ajax({
         type: "GET",
         url: "/DaffodilServlet",
         data:{formName:"GetViewerConfig"},
         success: function (result) {
             renderViewer(JSON.parse(result));
-            viewerLoaded = true;
             $('#viewer-status').text('');
         },
         error: function(data){
@@ -1069,7 +1145,7 @@ function viewerHeardDevice(t, d){
     return null;
 }
 
-// The dropdown: devices heard, then any a page uses that hasn't been heard (yet).
+// The dropdown: only the devices the Viewer has heard, newest first (2026-11-07, Ari: nothing assumed).
 function viewerDeviceOptions(){
     var list = [], seen = {};
     for(var i=0;i<viewerDevices.length;i++){
@@ -1077,14 +1153,6 @@ function viewerDeviceOptions(){
         if(seen[k] || !viewerTypes[viewerDevices[i].t]) continue;
         seen[k] = true;
         list.push({t: viewerDevices[i].t, d: viewerDevices[i].d, text: viewerDeviceText(viewerDevices[i].t, viewerDevices[i].d)});
-    }
-    for(var i=0;i<viewerPages.length;i++){
-        var p = viewerPages[i], k = viewerKey(p.t, p.d);
-        if(seen[k]) continue;
-        seen[k] = true;
-        var text = viewerDeviceText(p.t, p.d);
-        if(!viewerHeardDevice(p.t, p.d)) text += ' - not heard';
-        list.push({t: p.t, d: p.d, text: text});
     }
     return list;
 }
@@ -1100,9 +1168,16 @@ function renderViewer(v){
     var types = v.types || [];
     for(var i=0;i<types.length;i++) viewerTypes[types[i].t] = {name: types[i].name, fields: types[i].fields || []};
     viewerDevices = (v.devices || []).slice().sort(function(a, b){ return a.ageSec - b.ageSec; });
+    // Pages for devices not heard (since the Viewer's last cold start) are left out - they go from
+    // the device too on the next Save. A page saved as "any device of a type" stays if one was heard.
     viewerPages = [];
+    var dropped = [];
     var pages = (v.config && v.config.pages) || [];
-    for(var i=0;i<pages.length;i++) viewerPages.push({t:pages[i].t, d:pages[i].d || '', f:pages[i].f, s:pages[i].s || 0});
+    for(var i=0;i<pages.length;i++){
+        var p = {t:pages[i].t, d:pages[i].d || '', f:pages[i].f, s:pages[i].s || 0};
+        if(viewerHeardDevice(p.t, p.d)) viewerPages.push(p);
+        else if(dropped.indexOf(viewerDeviceText(p.t, p.d)) < 0) dropped.push(viewerDeviceText(p.t, p.d));
+    }
     $('#viewer-stale').val(v.config ? v.config.stale : 600);
     $('#viewer-frost').val(v.config ? v.config.frost : 0);
 
@@ -1118,6 +1193,7 @@ function renderViewer(v){
                 + (h.rssi !== undefined ? ', ' + h.rssi + ' dBm' : '')));
         }
     }
+    if(dropped.length) heard.append($('<div class="text-warning">').text('Not heard, left out (Save to remove): ' + dropped.join(', ')));
     drawViewerPages();
 }
 
@@ -1126,6 +1202,7 @@ function drawViewerPages(){
     // device's variables (2026-11-07).
     var options = viewerDeviceOptions();
     var box = $('#viewer-pages').empty();
+    if(viewerPages.length == 0) box.append($('<p class="small text-muted">').text(options.length ? 'No pages yet - add one.' : 'No pages yet. Devices appear here once the Viewer hears them.'));
     for(var i=0;i<viewerPages.length;i++){
         var p = viewerPages[i];
         var f = viewerField(p.t, p.f);
@@ -1133,7 +1210,7 @@ function drawViewerPages(){
             .append($('<strong class="me-auto">').text('Page ' + (i + 1) + (p.t == 'forecast' ? ' (blinks)' : '')))
             .append($('<button type="button" class="btn btn-sm btn-outline-secondary viewer-up" title="Move up">&#8593;</button>').attr('data-i', i).prop('disabled', i == 0))
             .append($('<button type="button" class="btn btn-sm btn-outline-secondary viewer-down" style="margin-left:4px" title="Move down">&#8595;</button>').attr('data-i', i).prop('disabled', i == viewerPages.length - 1))
-            .append($('<button type="button" class="btn btn-sm btn-outline-danger viewer-remove" style="margin-left:4px" title="Remove">&#215;</button>').attr('data-i', i).prop('disabled', viewerPages.length == 1));
+            .append($('<button type="button" class="btn btn-sm btn-outline-danger viewer-remove" style="margin-left:4px" title="Remove">&#215;</button>').attr('data-i', i));
         var device = $('<select class="form-select form-select-sm viewer-device" style="margin-bottom:6px">').attr('data-i', i);
         for(var j=0;j<options.length;j++) device.append($('<option>').val(viewerKey(options[j].t, options[j].d)).text(options[j].text));
         device.val(viewerKey(p.t, p.d));

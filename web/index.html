@@ -165,9 +165,17 @@
                 <h1 id="tank-sensor-2-value" style="font-size:80px;">1500</h1>
                 <h5 id="tank-sensor-2-units" class="card-footer">liters</h5>
             </div>
-            <!-- Viewer (switch 1001, 2026-11-06): which data items the LEDs show. GetViewerConfig / SetViewerConfig. -->
+            <!-- Viewer (switch 1001, 2026-11-06). Data card: what each LED page shows now; the cog opens
+                 the page editor (2026-11-07). GetViewerConfig / SetViewerConfig. -->
+            <div id="viewer-data" class="card display-module col-sm-12 col-md-6 col-lg-4 d-none" style="margin-bottom:20px;">
+                <div class="card-header d-flex align-items-center"><h4 class="me-auto" style="margin:0">Viewer</h4><i class="fas fa-cog text-primary" id="viewer-config-icon" title="Choose pages" style="font-size:24px;cursor:pointer"></i></div>
+                <div class="card-body text-start" style="padding:8px">
+                    <div id="viewer-readings"></div>
+                    <p id="viewer-data-status" class="small text-muted" style="margin:6px 0 0 0"></p>
+                </div>
+            </div>
             <div id="viewer-info" class="card display-module col-sm-12 col-md-6 col-lg-4 d-none" style="margin-bottom:20px;">
-                <div class="card-header"><h4 style="margin:0">Viewer</h4></div>
+                <div class="card-header"><h4 style="margin:0">Viewer pages</h4></div>
                 <div class="card-body text-start">
                     <p id="viewer-heard" class="small" style="margin-bottom:6px"></p>
                     <p class="small text-muted" style="margin-bottom:6px">The LEDs show these pages in order. Forecast pages blink.</p>
@@ -177,7 +185,7 @@
                         <div class="col-6"><label class="form-label small" for="viewer-stale">No data after (seconds)</label><input id="viewer-stale" type="number" min="30" max="65535" class="form-control form-control-sm"></div>
                         <div class="col-6"><label class="form-label small" for="viewer-frost">Frost at or below (&deg;C)</label><input id="viewer-frost" type="number" step="0.5" min="-20" max="20" class="form-control form-control-sm"></div>
                     </div>
-                    <div style="margin-top:12px"><button id="viewer-save" class="btn btn-primary btn-sm" type="button">Save</button> <span id="viewer-status" class="small"></span></div>
+                    <div style="margin-top:12px"><button id="viewer-save" class="btn btn-primary btn-sm" type="button">Save</button> <button id="viewer-close" class="btn btn-outline-secondary btn-sm" type="button">Close</button> <span id="viewer-status" class="small"></span></div>
                 </div>
             </div>
             <div class="d-none card display-module" id="sceptic-configure" style="width: 18rem;margin-bottom:30px;">

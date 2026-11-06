@@ -106,6 +106,7 @@ struct ViewerConfig {
   float frost = 0;
 };
 
-#define VIEWER_DEFAULT_CONFIG "{\"stale\":600,\"frost\":0,\"pages\":[{\"t\":\"chinampa\",\"f\":\"outdoorTemp\"},{\"t\":\"chinampa\",\"f\":\"sumpLevel\",\"s\":1},{\"t\":\"chinampa\",\"f\":\"fishLevel\",\"s\":2},{\"t\":\"forecast\",\"f\":\"frostMorning\"}]}"
+// No pages: the user adds them from the devices the Viewer hears (nothing is assumed to exist).
+#define VIEWER_DEFAULT_CONFIG "{\"stale\":600,\"frost\":0,\"pages\":[]}"
 
 #endif
