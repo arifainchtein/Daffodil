@@ -4786,7 +4786,11 @@ void loop() {
       }
 
       boolean displayWifi = false;
-      if (!usingSolarPower) displayWifi = true;
+      // Solar off: show the WiFi branch only when WiFi is actually running. Before v70 it was always
+      // on with solar off, so this was "true"; since the battery gate it can be off, and the station
+      // branch below then pinged through a never-started network stack (lwIP assert, v70/v71 crash
+      // on HorseTrough 2026-11-06). With displayWifi false the screen shows WiFi as off (all red).
+      if (!usingSolarPower) displayWifi = wifistatus;
       else {
         displayWifi = wifistatus && (hourlySolarPowerData.efficiency * 100 > digitalStablesData.minimumEfficiencyForWifi || wifiOnDemandActive());
       }
@@ -4854,7 +4858,7 @@ void loop() {
             //
             // if we are here it means that there is an ipaddress
             // but internet is not available , check again if there is a reconnection
-            wifiManager.checkInternetConnectionAvailable();
+            if (initiatedWifi) wifiManager.checkInternetConnectionAvailable();  // never through an unstarted stack
 
             digitalStablesData.wifiStatus = wifiManager.getWifiStatus();
             if (debug) Serial.print("after rechecking digitalstable,wifiStatus=");
