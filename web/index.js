@@ -862,6 +862,8 @@ function refreshScreen(){
         // 2nd trough sensor reading isn't implemented yet (pending hardware) - only trough 1's
         // existing config/display applies for now.
         showDaffodil();
+    }else if(currentData.currentFunctionValue==DAFFODIL_VIEWER){
+        showViewer();
     }
 }
 
@@ -999,4 +1001,237 @@ $(document).on('click','#power-info-close', function (){
 
 $(document).on('click','#system-info-icon', function (){
     stopPowerInfo();
+});
+
+//
+// Viewer panel (switch 1001, 2026-11-06; devices dynamic 2026-11-07). The Viewer shows data heard
+// over LoRa on the LEDs; this edits which pages, in what order. GetViewerConfig returns the config,
+// the device types with their fields, and the devices heard so far - only those are offered, plus
+// any device a saved page already uses. SetViewerConfig saves a config (format in ViewerConfig.h).
+// Loaded once - refreshScreen() runs after every other form, and reloading would wipe unsaved edits.
+//
+var viewerTypes = {};    // t -> {name, fields:[{id,label,glyph}]}
+var viewerDevices = [];  // [{t, d, ageSec, rssi}] heard, newest first
+var viewerPages = [];    // [{t, d, f, s}]
+var viewerLoaded = false;
+var VIEWER_MAX_PAGES = 8;
+
+function showViewer(){
+    $('#viewer-info').removeClass('d-none').addClass('d-block');
+    if(!viewerLoaded) loadViewer();
+}
+
+function loadViewer(){
+    $('#viewer-status').text('Loading...');
+    $.ajax({
+        type: "GET",
+        url: "/DaffodilServlet",
+        data:{formName:"GetViewerConfig"},
+        success: function (result) {
+            renderViewer(JSON.parse(result));
+            viewerLoaded = true;
+            $('#viewer-status').text('');
+        },
+        error: function(data){
+            $('#viewer-status').text('Could not load the viewer config (' + data.status + ')');
+        }
+    });
+}
+
+function viewerAge(sec){
+    if(sec < 120) return sec + ' s ago';
+    if(sec < 7200) return Math.round(sec/60) + ' min ago';
+    return Math.round(sec/3600) + ' h ago';
+}
+
+function viewerField(t, id){
+    var type = viewerTypes[t];
+    if(!type) return null;
+    for(var i=0;i<type.fields.length;i++) if(type.fields[i].id==id) return type.fields[i];
+    return null;
+}
+
+function viewerKey(t, d){ return t + '|' + (d || ''); }
+
+function viewerDeviceText(t, d){
+    var type = viewerTypes[t];
+    var typeName = type ? type.name : t;
+    if(t == 'forecast') return typeName;
+    if(!d) return 'Any ' + typeName;
+    return d == typeName ? d : d + ' (' + typeName + ')';
+}
+
+function viewerHeardDevice(t, d){
+    for(var i=0;i<viewerDevices.length;i++){
+        var h = viewerDevices[i];
+        if(h.t == t && (!d || h.d == d)) return h;
+    }
+    return null;
+}
+
+// The dropdown: devices heard, then any a page uses that hasn't been heard (yet).
+function viewerDeviceOptions(){
+    var list = [], seen = {};
+    for(var i=0;i<viewerDevices.length;i++){
+        var k = viewerKey(viewerDevices[i].t, viewerDevices[i].d);
+        if(seen[k] || !viewerTypes[viewerDevices[i].t]) continue;
+        seen[k] = true;
+        list.push({t: viewerDevices[i].t, d: viewerDevices[i].d, text: viewerDeviceText(viewerDevices[i].t, viewerDevices[i].d)});
+    }
+    for(var i=0;i<viewerPages.length;i++){
+        var p = viewerPages[i], k = viewerKey(p.t, p.d);
+        if(seen[k]) continue;
+        seen[k] = true;
+        var text = viewerDeviceText(p.t, p.d);
+        if(!viewerHeardDevice(p.t, p.d)) text += ' - not heard';
+        list.push({t: p.t, d: p.d, text: text});
+    }
+    return list;
+}
+
+function renderViewer(v){
+    if(!v.types){  // firmware before 2026-11-07 sends a fixed field list instead
+        $('#viewer-heard').empty().append($('<div class="text-danger">').text('This page needs newer Daffodil firmware - flash the latest release.'));
+        $('#viewer-pages').empty();
+        $('#viewer-add-page').prop('disabled', true);
+        return;
+    }
+    viewerTypes = {};
+    var types = v.types || [];
+    for(var i=0;i<types.length;i++) viewerTypes[types[i].t] = {name: types[i].name, fields: types[i].fields || []};
+    viewerDevices = (v.devices || []).slice().sort(function(a, b){ return a.ageSec - b.ageSec; });
+    viewerPages = [];
+    var pages = (v.config && v.config.pages) || [];
+    for(var i=0;i<pages.length;i++) viewerPages.push({t:pages[i].t, d:pages[i].d || '', f:pages[i].f, s:pages[i].s || 0});
+    $('#viewer-stale').val(v.config ? v.config.stale : 600);
+    $('#viewer-frost').val(v.config ? v.config.frost : 0);
+
+    var heard = $('#viewer-heard').empty();
+    if(viewerDevices.length == 0){
+        heard.append($('<div class="text-danger">').text('Nothing heard over LoRa yet - devices appear here as they are heard.'));
+    }else{
+        heard.append($('<div>').text('Heard:'));
+        for(var i=0;i<viewerDevices.length;i++){
+            var h = viewerDevices[i];
+            if(!viewerTypes[h.t]) continue;
+            heard.append($('<div>').text('• ' + viewerDeviceText(h.t, h.d) + ' - ' + viewerAge(h.ageSec)
+                + (h.rssi !== undefined ? ', ' + h.rssi + ' dBm' : '')));
+        }
+    }
+    drawViewerPages();
+}
+
+function drawViewerPages(){
+    // One card per page - a table didn't fit a phone (2026-11-06). Device first, then that
+    // device's variables (2026-11-07).
+    var options = viewerDeviceOptions();
+    var box = $('#viewer-pages').empty();
+    for(var i=0;i<viewerPages.length;i++){
+        var p = viewerPages[i];
+        var f = viewerField(p.t, p.f);
+        var header = $('<div class="card-header d-flex align-items-center" style="padding:4px 8px">')
+            .append($('<strong class="me-auto">').text('Page ' + (i + 1) + (p.t == 'forecast' ? ' (blinks)' : '')))
+            .append($('<button type="button" class="btn btn-sm btn-outline-secondary viewer-up" title="Move up">&#8593;</button>').attr('data-i', i).prop('disabled', i == 0))
+            .append($('<button type="button" class="btn btn-sm btn-outline-secondary viewer-down" style="margin-left:4px" title="Move down">&#8595;</button>').attr('data-i', i).prop('disabled', i == viewerPages.length - 1))
+            .append($('<button type="button" class="btn btn-sm btn-outline-danger viewer-remove" style="margin-left:4px" title="Remove">&#215;</button>').attr('data-i', i).prop('disabled', viewerPages.length == 1));
+        var device = $('<select class="form-select form-select-sm viewer-device" style="margin-bottom:6px">').attr('data-i', i);
+        for(var j=0;j<options.length;j++) device.append($('<option>').val(viewerKey(options[j].t, options[j].d)).text(options[j].text));
+        device.val(viewerKey(p.t, p.d));
+        var field = $('<select class="form-select viewer-field">').attr('data-i', i);
+        var type = viewerTypes[p.t];
+        var fields = type ? type.fields : [];
+        for(var j=0;j<fields.length;j++) field.append($('<option>').val(fields[j].id).text(fields[j].label));
+        field.val(p.f);
+        var body = $('<div class="card-body" style="padding:8px">').append(device, field);
+        // Temperature digits use LEDs 4 and 14 themselves, so those pages get no dot.
+        if(!(f && f.glyph == 'temperature')){
+            var dot = $('<select class="form-select form-select-sm viewer-dot" style="width:auto;display:inline-block;margin-left:6px">').attr('data-i', i);
+            dot.append($('<option>').val(0).text('none'));
+            dot.append($('<option>').val(1).text('LED 4'));
+            dot.append($('<option>').val(2).text('LED 14'));
+            dot.val(p.s);
+            body.append($('<div class="small" style="margin-top:6px">').text('Slot dot').append(dot));
+        }
+        box.append($('<div class="card" style="margin-bottom:8px">').append(header, body));
+    }
+    $('#viewer-add-page').prop('disabled', viewerPages.length >= VIEWER_MAX_PAGES || options.length == 0);
+}
+
+// A page on device t/d showing its first field (or keeping f if that device type has it).
+function viewerSetDevice(page, t, d){
+    var type = viewerTypes[t];
+    page.t = t;
+    page.d = t == 'forecast' ? '' : d;
+    if(!viewerField(t, page.f)) page.f = type && type.fields.length ? type.fields[0].id : '';
+    var f = viewerField(t, page.f);
+    if(f && f.glyph == 'temperature') page.s = 0;
+}
+
+$(document).on('change', '.viewer-device', function (){
+    var i = parseInt($(this).attr('data-i'));
+    var k = $(this).val(), bar = k.indexOf('|');
+    viewerSetDevice(viewerPages[i], k.substring(0, bar), k.substring(bar + 1));
+    drawViewerPages();
+});
+
+$(document).on('change', '.viewer-field', function (){
+    var i = parseInt($(this).attr('data-i'));
+    viewerPages[i].f = $(this).val();
+    var f = viewerField(viewerPages[i].t, viewerPages[i].f);
+    if(f && f.glyph == 'temperature') viewerPages[i].s = 0;
+    drawViewerPages();
+});
+
+$(document).on('change', '.viewer-dot', function (){
+    viewerPages[parseInt($(this).attr('data-i'))].s = parseInt($(this).val());
+});
+
+$(document).on('click', '.viewer-up, .viewer-down', function (){
+    var i = parseInt($(this).attr('data-i'));
+    var j = $(this).hasClass('viewer-up') ? i - 1 : i + 1;
+    var t = viewerPages[i]; viewerPages[i] = viewerPages[j]; viewerPages[j] = t;
+    drawViewerPages();
+});
+
+$(document).on('click', '.viewer-remove', function (){
+    viewerPages.splice(parseInt($(this).attr('data-i')), 1);
+    drawViewerPages();
+});
+
+$(document).on('click', '#viewer-add-page', function (){
+    var options = viewerDeviceOptions();
+    if(viewerPages.length >= VIEWER_MAX_PAGES || options.length == 0) return;
+    var page = {t:'', d:'', f:'', s:0};
+    viewerSetDevice(page, options[0].t, options[0].d);  // the device heard most recently
+    viewerPages.push(page);
+    drawViewerPages();
+});
+
+$(document).on('click', '#viewer-save', function (){
+    var stale = parseInt($('#viewer-stale').val());
+    var frost = parseFloat($('#viewer-frost').val());
+    if(isNaN(stale) || stale < 30 || stale > 65535){ alert('"No data after" must be 30 to 65535 seconds'); return; }
+    if(isNaN(frost)){ alert('Frost threshold must be a number'); return; }
+    var pages = [];
+    for(var i=0;i<viewerPages.length;i++){
+        var v = viewerPages[i];
+        var p = {t: v.t, f: v.f};
+        if(v.d) p.d = v.d;
+        if(v.s) p.s = v.s;
+        pages.push(p);
+    }
+    var config = {stale: stale, frost: frost, pages: pages};
+    $('#viewer-status').text('Saving...');
+    $.ajax({
+        type: "POST",
+        url: "/DaffodilServlet",
+        data:{formName:"SetViewerConfig", config: JSON.stringify(config)},
+        success: function (result) {
+            renderViewer(JSON.parse(result));
+            $('#viewer-status').text('Saved - the LEDs use it from the next page.');
+        },
+        error: function(data){
+            $('#viewer-status').text('Not saved: ' + (data.responseText || data.status));
+        }
+    });
 });

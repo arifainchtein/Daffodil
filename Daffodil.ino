@@ -19,6 +19,8 @@
 #include <totp.h>
 #include <SolarPowerData.h>
 #include <DigitalStablesData.h>
+#include <ChinampaData.h>
+#include <LangleyData.h>  // Viewer shows Langley packets
 #include "ViewerConfig.h"  // Viewer function (switch 1001)
 #include <WeatherForecastManager.h>
 #include <DigitalStablesDataSerializer.h>
@@ -768,31 +770,122 @@ int loraRxByte() {
 // =====================================================================================
 #define VIEWER_LISTEN_MS 25000  // solar pulse wake: Chinampa transmits about every 20 s
 
+// processLora() tells packets apart by size, so each viewer type needs a size nothing else uses.
 static_assert(sizeof(ChinampaData) != sizeof(DigitalStablesData) && sizeof(ChinampaData) != sizeof(RequestCommand)
                 && sizeof(ChinampaData) != sizeof(DeviceCommandRecord) && sizeof(ChinampaData) != sizeof(WeatherForecastUpdate),
               "ChinampaData needs a size no other LoRa packet uses - processLora() tells packets apart by size");
-static_assert(sizeof(ChinampaData) <= 255, "ChinampaData is over the LoRa payload limit");
+static_assert(sizeof(LangleyData) != sizeof(DigitalStablesData) && sizeof(LangleyData) != sizeof(ChinampaData)
+                && sizeof(LangleyData) != sizeof(RequestCommand) && sizeof(LangleyData) != sizeof(DeviceCommandRecord)
+                && sizeof(LangleyData) != sizeof(WeatherForecastUpdate),
+              "LangleyData needs a size no other LoRa packet uses - processLora() tells packets apart by size");
+static_assert(sizeof(ChinampaData) <= 255 && sizeof(LangleyData) <= 255, "over the LoRa payload limit");
+
+constexpr size_t viewerMax(size_t a, size_t b) {
+  return a > b ? a : b;
+}
+#define VIEWER_RAW_MAX viewerMax(sizeof(ChinampaData), viewerMax(sizeof(DigitalStablesData), sizeof(LangleyData)))
 
 ViewerConfig viewerCfg;
 ViewerConfig viewerPendingCfg;          // set by the web/serial handler, applied by loop()
 volatile bool viewerCfgPending = false;
 uint8_t viewerPageIndex = 0;
 
-// Latest Chinampa packet, in RTC memory so a solar viewer keeps it across deep sleep. Raw bytes,
-// not a ChinampaData: its member initializers would make the startup code wipe it every boot.
-RTC_DATA_ATTR uint8_t viewerChinampaRaw[sizeof(ChinampaData)];
-RTC_DATA_ATTR long viewerChinampaAt = 0;  // codeTimeNow() when it arrived, 0 = never
+// Every device the viewer has heard: its last packet, as raw bytes (a struct with member
+// initializers would make the startup code wipe it every boot). In RTC memory so a solar viewer
+// keeps it across deep sleep. at = codeTimeNow() when heard, 0 = empty entry.
+struct ViewerHeard {
+  long at;
+  int16_t rssi;
+  uint8_t type;
+  char name[VIEWER_NAME_LEN];
+  uint8_t raw[VIEWER_RAW_MAX];
+};
+RTC_DATA_ATTR ViewerHeard viewerHeard[VIEWER_MAX_DEVICES];
+// The web page (async_tcp task) reads the table while loop() writes it.
+portMUX_TYPE viewerHeardMux = portMUX_INITIALIZER_UNLOCKED;
 
 bool viewerBlinkActive = false;  // the page on screen is a forecast: loop() blinks it
 bool viewerBlinkOn = true;
 unsigned long viewerBlinkAtMs = 0;
 CRGB viewerFrame[NUM_LEDS];
 
-int viewerFieldIndex(const char *id) {
-  for (uint8_t i = 0; i < VIEWER_FIELD_COUNT; i++) {
-    if (strcmp(VIEWER_FIELDS[i].id, id) == 0) return i;
+int viewerTypeIndex(const char *id) {
+  for (uint8_t i = 0; i < VIEWER_TYPE_COUNT; i++) {
+    if (strcmp(VIEWER_TYPES[i].id, id) == 0) return i;
   }
   return -1;
+}
+
+// type < 0: any type (configs saved before devices were dynamic).
+int viewerFieldIndex(int type, const char *id) {
+  for (uint8_t i = 0; i < VIEWER_FIELD_COUNT; i++) {
+    if ((type < 0 || VIEWER_FIELDS[i].type == type) && strcmp(VIEWER_FIELDS[i].id, id) == 0) return i;
+  }
+  return -1;
+}
+
+// XOR over every byte except the checksum byte - what Daffodil and Langley send (calculateChecksum).
+bool viewerChecksumOk(const uint8_t *p, size_t len, size_t checksumOffset) {
+  uint8_t x = 0;
+  for (size_t i = 0; i < len; i++) {
+    if (i != checksumOffset) x ^= p[i];
+  }
+  return x == p[checksumOffset];
+}
+
+// processLora(): a packet from a device the viewer can show. Keeps it under the device's name -
+// replacing that device's previous packet, else an empty entry, else the device heard longest ago.
+// Display only, never acted on, so no TOTP check (Chinampa doesn't fill totpcode or checksum).
+void viewerRecord(uint8_t type, const char *name, size_t nameLen, const void *data, size_t len) {
+  if (digitalStablesData.currentFunctionValue != DAFFODIL_VIEWER) return;
+  char n[VIEWER_NAME_LEN];
+  size_t k = 0;
+  for (; k < nameLen && k < VIEWER_NAME_LEN - 1 && name[k]; k++) {
+    n[k] = (name[k] >= 32 && name[k] < 127 && name[k] != '"' && name[k] != '\\') ? name[k] : '?';  // goes into JSON
+  }
+  n[k] = 0;
+  if (k == 0) strcpy(n, "?");
+  long now = codeTimeNow();
+  portENTER_CRITICAL(&viewerHeardMux);
+  int slot = -1, oldest = 0;
+  for (int i = 0; i < VIEWER_MAX_DEVICES; i++) {
+    if (viewerHeard[i].at != 0 && viewerHeard[i].type == type && strcmp(viewerHeard[i].name, n) == 0) {
+      slot = i;
+      break;
+    }
+    if (viewerHeard[i].at < viewerHeard[oldest].at) oldest = i;  // an empty entry (at 0) wins
+  }
+  if (slot < 0) slot = oldest;
+  ViewerHeard &h = viewerHeard[slot];
+  h.at = now;
+  h.rssi = (int16_t)loraRxRssi;
+  h.type = type;
+  strcpy(h.name, n);
+  memset(h.raw, 0, sizeof(h.raw));
+  memcpy(h.raw, data, len);
+  portEXIT_CRITICAL(&viewerHeardMux);
+  if (debug) Serial.printf(" viewer: heard %s %s (%d dBm)\n", VIEWER_TYPES[type].name, n, (int)loraRxRssi);
+}
+
+// The newest entry of the type (and name, unless name is ""), or -1. Caller holds the lock.
+int viewerFindLocked(uint8_t type, const char *name) {
+  int best = -1;
+  for (int i = 0; i < VIEWER_MAX_DEVICES; i++) {
+    const ViewerHeard &h = viewerHeard[i];
+    if (h.at == 0 || h.type != type || (name[0] && strcmp(h.name, name) != 0)) continue;
+    if (best < 0 || h.at > viewerHeard[best].at) best = i;
+  }
+  return best;
+}
+
+// Copies the device's last packet into raw if it isn't stale.
+bool viewerFreshPacket(uint8_t type, const char *name, uint8_t *raw) {
+  portENTER_CRITICAL(&viewerHeardMux);
+  int i = viewerFindLocked(type, name);
+  bool ok = i >= 0 && codeTimeNow() - viewerHeard[i].at <= (long)viewerCfg.staleSec;
+  if (ok) memcpy(raw, viewerHeard[i].raw, VIEWER_RAW_MAX);
+  portEXIT_CRITICAL(&viewerHeardMux);
+  return ok;
 }
 
 // Parses and validates a config JSON into out. Returns an error message, "" when valid.
@@ -802,18 +895,27 @@ String viewerParseConfig(const String &json, ViewerConfig &out) {
   JsonArray pages = doc["pages"].as<JsonArray>();
   if (pages.isNull() || pages.size() == 0) return "no pages";
   if (pages.size() > VIEWER_MAX_PAGES) return "more than " + String(VIEWER_MAX_PAGES) + " pages";
+  const char *legacySource = doc["src"] | "";  // before 2026-11-07: one Chinampa name for all pages
   ViewerConfig c;
   for (JsonObject p : pages) {
+    int type = -1;
+    if (p["t"].is<const char *>()) {
+      type = viewerTypeIndex(p["t"]);
+      if (type < 0) return "unknown device type " + String((const char *)p["t"]);
+    }
     const char *f = p["f"] | "";
-    int fi = viewerFieldIndex(f);
+    int fi = viewerFieldIndex(type, f);
     if (fi < 0) return "unknown field " + String(f);
     int s = p["s"] | 0;
     if (s < 0 || s > 2) return "slot must be 0, 1 or 2";
+    const char *d = p["d"] | (type < 0 && VIEWER_FIELDS[fi].type == VIEWER_TYPE_CHINAMPA ? legacySource : "");
+    if (VIEWER_FIELDS[fi].type == VIEWER_TYPE_FORECAST) d = "";
+    if (strlen(d) >= VIEWER_NAME_LEN) return "device name too long";
     c.field[c.count] = fi;
     c.slot[c.count] = s;
+    strlcpy(c.device[c.count], d, VIEWER_NAME_LEN);
     c.count++;
   }
-  strlcpy(c.source, doc["src"] | "", sizeof(c.source));
   c.staleSec = doc["stale"] | 600;
   c.frost = doc["frost"] | 0.0f;
   out = c;
@@ -821,12 +923,13 @@ String viewerParseConfig(const String &json, ViewerConfig &out) {
 }
 
 void viewerConfigToJson(const ViewerConfig &c, JsonObject o) {
-  o["src"] = c.source;
   o["stale"] = c.staleSec;
   o["frost"] = c.frost;
   JsonArray pages = o["pages"].to<JsonArray>();
   for (uint8_t i = 0; i < c.count; i++) {
     JsonObject p = pages.add<JsonObject>();
+    p["t"] = VIEWER_TYPES[VIEWER_FIELDS[c.field[i]].type].id;
+    if (c.device[i][0]) p["d"] = c.device[i];
     p["f"] = VIEWER_FIELDS[c.field[i]].id;
     if (c.slot[i]) p["s"] = c.slot[i];
   }
@@ -860,51 +963,48 @@ String viewerSetConfig(const String &json) {
   return "";
 }
 
-// GetViewerConfig: the config, the fields the web page can offer, and what the viewer has heard.
+// GetViewerConfig: the config, every device type with its fields, and the devices heard so far.
 void fillViewerData(JsonDocument &json) {
   viewerConfigToJson(viewerCfg, json["config"].to<JsonObject>());
-  JsonArray fields = json["fields"].to<JsonArray>();
-  for (uint8_t i = 0; i < VIEWER_FIELD_COUNT; i++) {
-    JsonObject f = fields.add<JsonObject>();
-    f["id"] = VIEWER_FIELDS[i].id;
-    f["label"] = VIEWER_FIELDS[i].label;
-    f["forecast"] = VIEWER_FIELDS[i].source == VIEWER_SOURCE_FORECAST;
-    f["glyph"] = VIEWER_FIELDS[i].glyph == VIEWER_GLYPH_TEMPERATURE ? "temperature" : VIEWER_FIELDS[i].glyph == VIEWER_GLYPH_LEVEL ? "level" : "flow";
+  JsonArray types = json["types"].to<JsonArray>();
+  for (uint8_t t = 0; t < VIEWER_TYPE_COUNT; t++) {
+    JsonObject to = types.add<JsonObject>();
+    to["t"] = VIEWER_TYPES[t].id;
+    to["name"] = VIEWER_TYPES[t].name;
+    JsonArray fields = to["fields"].to<JsonArray>();
+    for (uint8_t i = 0; i < VIEWER_FIELD_COUNT; i++) {
+      if (VIEWER_FIELDS[i].type != t) continue;
+      JsonObject f = fields.add<JsonObject>();
+      f["id"] = VIEWER_FIELDS[i].id;
+      f["label"] = VIEWER_FIELDS[i].label;
+      f["glyph"] = VIEWER_FIELDS[i].glyph == VIEWER_GLYPH_TEMPERATURE ? "temperature" : VIEWER_FIELDS[i].glyph == VIEWER_GLYPH_LEVEL ? "level" : "flow";
+    }
   }
-  JsonObject heard = json["chinampa"].to<JsonObject>();
-  if (viewerChinampaAt != 0) {
-    ChinampaData c;
-    memcpy(&c, viewerChinampaRaw, sizeof(c));
-    heard["name"] = String(c.devicename).substring(0, sizeof(c.devicename));
-    heard["ageSec"] = codeTimeNow() - viewerChinampaAt;
-    heard["outdoorTemp"] = c.outdoortemperature;
-    heard["sumpMeasured"] = c.sumpTroughMeasuredHeight;
-    heard["fishMeasured"] = c.fishTankMeasuredHeight;
+  JsonArray devices = json["devices"].to<JsonArray>();
+  if (secondsSinceLastWeatherData < 9999) {
+    JsonObject d = devices.add<JsonObject>();
+    d["t"] = VIEWER_TYPES[VIEWER_TYPE_FORECAST].id;
+    d["d"] = "";
+    d["ageSec"] = secondsSinceLastWeatherData;
   }
-  json["weatherAgeSec"] = secondsSinceLastWeatherData;
-}
-
-// processLora(): a ChinampaData-sized packet. Chinampa doesn't fill totpcode/checksum (checked
-// 2026-11-06), so there is nothing to authenticate - accepted for display only, never acted on.
-void viewerAcceptChinampa() {
-  ChinampaData c;
-  loraRxRead((uint8_t *)&c, sizeof(ChinampaData));
-  if (digitalStablesData.currentFunctionValue != DAFFODIL_VIEWER) return;
-  c.devicename[sizeof(c.devicename) - 1] = 0;
-  if (viewerCfg.source[0] && strcmp(viewerCfg.source, c.devicename) != 0) {
-    if (debug) Serial.printf(" ChinampaData from %s ignored (viewer listens to %s)\n", c.devicename, viewerCfg.source);
-    return;
+  ViewerHeard copy[VIEWER_MAX_DEVICES];
+  portENTER_CRITICAL(&viewerHeardMux);
+  for (int i = 0; i < VIEWER_MAX_DEVICES; i++) {  // names and times only - the packets stay put
+    copy[i].at = viewerHeard[i].at;
+    copy[i].rssi = viewerHeard[i].rssi;
+    copy[i].type = viewerHeard[i].type;
+    memcpy(copy[i].name, viewerHeard[i].name, VIEWER_NAME_LEN);
   }
-  memcpy(viewerChinampaRaw, &c, sizeof(c));
-  viewerChinampaAt = codeTimeNow();
-  if (debug) Serial.printf(" ChinampaData from %s: outdoor %.1f, sump %.1f, fish %.1f\n", c.devicename,
-                           c.outdoortemperature, c.sumpTroughMeasuredHeight, c.fishTankMeasuredHeight);
-}
-
-bool viewerChinampaFresh(ChinampaData &c) {
-  if (viewerChinampaAt == 0 || codeTimeNow() - viewerChinampaAt > (long)viewerCfg.staleSec) return false;
-  memcpy(&c, viewerChinampaRaw, sizeof(c));
-  return true;
+  portEXIT_CRITICAL(&viewerHeardMux);
+  long now = codeTimeNow();
+  for (int i = 0; i < VIEWER_MAX_DEVICES; i++) {
+    if (copy[i].at == 0 || copy[i].type >= VIEWER_TYPE_COUNT) continue;
+    JsonObject d = devices.add<JsonObject>();
+    d["t"] = VIEWER_TYPES[copy[i].type].id;
+    d["d"] = copy[i].name;
+    d["ageSec"] = now - copy[i].at;
+    d["rssi"] = copy[i].rssi;
+  }
 }
 
 // Forecast fields. secondsTime is the OWM UTC timestamp, hour the local hour (WeatherForecastManager).
@@ -936,41 +1036,82 @@ bool viewerLevelColor(float measured, float height, float minLevel, float maxLev
   return true;
 }
 
+// A device field's value from its last packet: a temperature (t) or a level/flow colour (col).
+// False when the packet has no reading for it.
+bool viewerFieldValue(uint8_t fi, const uint8_t *raw, float &t, CRGB &col) {
+  switch (VIEWER_FIELDS[fi].type) {
+    case VIEWER_TYPE_CHINAMPA:
+      {
+        ChinampaData c;
+        memcpy(&c, raw, sizeof(c));
+        switch (fi) {
+          case VF_CH_OUTDOOR_TEMP: t = c.outdoortemperature; return t != -99;
+          case VF_CH_SUMP_LEVEL: return viewerLevelColor(c.sumpTroughMeasuredHeight, c.sumpTroughHeight, c.minimumSumpTroughLevel, c.maximumSumpTroughLevel, col);
+          case VF_CH_FISH_LEVEL: return viewerLevelColor(c.fishTankMeasuredHeight, c.fishTankHeight, c.minimumFishTankLevel, c.maximumFishTankLevel, col);
+          case VF_CH_FISH_OUTFLOW: t = c.fishtankoutflowflowRate; break;
+          case VF_CH_PUMP_FLOW: t = c.pumpflowRate; break;
+          default: return false;
+        }
+        break;
+      }
+    case VIEWER_TYPE_DAFFODIL:
+      {
+        DigitalStablesData d;
+        memcpy(&d, raw, sizeof(d));
+        switch (fi) {
+          case VF_DA_OUTDOOR_TEMP: t = d.outdoortemperature; return t != -99;
+          case VF_DA_WATER_TEMP:  // only that mode puts the water temperature in measuredHeight2
+            t = d.measuredHeight2;
+            return d.currentFunctionValue == DAFFODIL_WATER_TROUGH_WATER_TEMP && t != -99;
+          case VF_DA_TROUGH_LEVEL: return viewerLevelColor(d.measuredHeight, d.maximumScepticHeight, d.troughlevelminimumcm, d.troughlevelmaximumcm, col);
+          case VF_DA_FLOW1: t = d.flowRate; break;
+          case VF_DA_FLOW2: t = d.flowRate2; break;
+          default: return false;
+        }
+        break;
+      }
+    case VIEWER_TYPE_LANGLEY:
+      {
+        LangleyData l;
+        memcpy(&l, raw, sizeof(l));
+        if (fi != VF_LA_TEMP) return false;
+        t = l.temperature;
+        return t != -99;
+      }
+    default: return false;
+  }
+  // Flow: blue while flowing, red when stopped.
+  if (t < 0) return false;
+  col = t > 0 ? CRGB(0, 0, 255) : CRGB(255, 0, 0);
+  return true;
+}
+
 void drawViewerPage(uint8_t page) {
   for (int i = 0; i < NUM_LEDS; i++) leds[i] = CRGB(0, 0, 0);
   uint8_t fi = viewerCfg.field[page];
   uint8_t slot = viewerCfg.slot[page];
   const ViewerField &fd = VIEWER_FIELDS[fi];
   bool ok = false;
-  if (fd.source == VIEWER_SOURCE_CHINAMPA) {
-    ChinampaData c;
-    if (viewerChinampaFresh(c)) {
-      CRGB col;
-      if (fi == VF_OUTDOOR_TEMP && c.outdoortemperature != -99) {
-        float t = c.outdoortemperature;
-        CRGB tc = t > 0 ? CRGB(0, 255, 0) : t < 0 ? CRGB(0, 0, 255) : CRGB(255, 255, 0);
-        drawTemperatureValue(t, tc.r, tc.g, tc.b);
-        ok = true;
-      } else if (fi == VF_SUMP_LEVEL && viewerLevelColor(c.sumpTroughMeasuredHeight, c.sumpTroughHeight, c.minimumSumpTroughLevel, c.maximumSumpTroughLevel, col)) {
-        drawTower(col, slot != 0);
-        ok = true;
-      } else if (fi == VF_FISH_LEVEL && viewerLevelColor(c.fishTankMeasuredHeight, c.fishTankHeight, c.minimumFishTankLevel, c.maximumFishTankLevel, col)) {
-        drawTower(col, slot != 0);
-        ok = true;
-      } else if (fi == VF_FISH_OUTFLOW || fi == VF_PUMP_FLOW) {
-        float rate = fi == VF_FISH_OUTFLOW ? c.fishtankoutflowflowRate : c.pumpflowRate;
-        if (rate >= 0) {
-          drawFlowSymbol(rate > 0 ? CRGB(0, 0, 255) : CRGB(255, 0, 0));
-          ok = true;
-        }
-      }
-    }
-  } else {
-    float t;
+  float t = 0;
+  CRGB col;
+  if (fd.type == VIEWER_TYPE_FORECAST) {
     if (viewerForecastValue(fi, t)) {
       // At or below the frost threshold = blue (frost); otherwise the usual sign colours.
       CRGB tc = t <= viewerCfg.frost ? CRGB(0, 0, 255) : t > 0 ? CRGB(0, 255, 0) : CRGB(255, 255, 0);
       drawTemperatureValue(t, tc.r, tc.g, tc.b);
+      ok = true;
+    }
+  } else {
+    static uint8_t raw[VIEWER_RAW_MAX];  // static: loop() only, keeps ~250 B off the stack
+    if (viewerFreshPacket(fd.type, viewerCfg.device[page], raw) && viewerFieldValue(fi, raw, t, col)) {
+      if (fd.glyph == VIEWER_GLYPH_TEMPERATURE) {
+        CRGB tc = t > 0 ? CRGB(0, 255, 0) : t < 0 ? CRGB(0, 0, 255) : CRGB(255, 255, 0);
+        drawTemperatureValue(t, tc.r, tc.g, tc.b);
+      } else if (fd.glyph == VIEWER_GLYPH_LEVEL) {
+        drawTower(col, slot != 0);
+      } else {
+        drawFlowSymbol(col);
+      }
       ok = true;
     }
   }
@@ -983,10 +1124,25 @@ void drawViewerPage(uint8_t page) {
     if (slot == 2) leds[14] = CRGB(0, 0, 255);
   }
   memcpy(viewerFrame, leds, sizeof(viewerFrame));
-  viewerBlinkActive = ok && fd.source == VIEWER_SOURCE_FORECAST;
+  viewerBlinkActive = ok && fd.type == VIEWER_TYPE_FORECAST;
   viewerBlinkOn = true;
   viewerBlinkAtMs = millis();
   FastLED.show();
+}
+
+// listenForReplies(): every device a page shows has been heard since `since` (forecast pages
+// don't count - the weather has its own rule there).
+bool viewerPagesHeardSince(long since) {
+  bool all = true;
+  portENTER_CRITICAL(&viewerHeardMux);
+  for (uint8_t p = 0; p < viewerCfg.count && all; p++) {
+    uint8_t type = VIEWER_FIELDS[viewerCfg.field[p]].type;
+    if (type == VIEWER_TYPE_FORECAST) continue;
+    int i = viewerFindLocked(type, viewerCfg.device[p]);
+    all = i >= 0 && viewerHeard[i].at >= since;
+  }
+  portEXIT_CRITICAL(&viewerHeardMux);
+  return all;
 }
 
 // loop(): forecast pages blink, 0.5 s on / 0.5 s off.
@@ -1031,6 +1187,12 @@ void processLora(int packetSize) {
     if (receivedSerialNumber == serialNumber) {
       if (debug) Serial.println("Ignored self reception");
     } else {
+      // Viewer: any Daffodil with a good checksum - display only, so no TOTP needed (another
+      // site's Daffodil can have a different secret).
+      if (receivedDigitalStablesData.checksum == calculateChecksum(receivedDigitalStablesData)) {
+        viewerRecord(VIEWER_TYPE_DAFFODIL, receivedDigitalStablesData.devicename, sizeof(receivedDigitalStablesData.devicename),
+                     &receivedDigitalStablesData, sizeof(DigitalStablesData));
+      }
       if (validCode) {
 
         // secretManager.saveSleepPingMinutes(rosieConfigData.sleepPingMinutes);
@@ -1130,7 +1292,18 @@ void processLora(int packetSize) {
       if (debug) Serial.println(commandcode);
     }
   } else if (packetSize == sizeof(ChinampaData)) {
-    viewerAcceptChinampa();
+    // Chinampa fills neither totpcode nor checksum (checked 2026-11-06): nothing to check.
+    ChinampaData c;
+    loraRxRead((uint8_t *)&c, sizeof(c));
+    viewerRecord(VIEWER_TYPE_CHINAMPA, c.devicename, sizeof(c.devicename), &c, sizeof(c));
+  } else if (packetSize == sizeof(LangleyData)) {
+    LangleyData l;
+    loraRxRead((uint8_t *)&l, sizeof(l));
+    if (viewerChecksumOk((const uint8_t *)&l, sizeof(l), offsetof(LangleyData, checksum))) {
+      viewerRecord(VIEWER_TYPE_LANGLEY, l.devicename, sizeof(l.devicename), &l, sizeof(l));
+    } else if (debug) {
+      Serial.println(" LangleyData with a bad checksum - ignored");
+    }
   } else {  //if(packetSize==14){
     if (debug) Serial.println("\n--- RECEIVED unknown size  PACKET ---");
     // Create a buffer to store the received bytes
@@ -1484,7 +1657,7 @@ void listenForReplies() {
   bool weatherStale = secondsSinceLastWeatherData >= 1860;
   bool commandWindow = LISTEN_FOR_COMMANDS_AT_NIGHT || solarInfo->calculateActualPower(currentTimerRecord).efficiency > 0;
   bool viewer = digitalStablesData.currentFunctionValue == DAFFODIL_VIEWER;
-  long chinampaBefore = viewerChinampaAt;
+  long viewerSince = codeTimeNow();
   if (!weatherStale && !commandWindow && !viewer) return;
   unsigned long window = weatherStale ? WEATHER_REPLY_LISTEN_MS : COMMAND_LISTEN_MS;
   if (viewer && window < VIEWER_LISTEN_MS) window = VIEWER_LISTEN_MS;  // long enough to hear Chinampa once
@@ -1495,7 +1668,7 @@ void listenForReplies() {
     if (loraDio0Fired) {
       loraDio0Fired = false;
       int packetSize = LoRa.parsePacket();
-      if (packetSize == sizeof(WeatherForecastUpdate) || packetSize == sizeof(DeviceCommandRecord) || (viewer && packetSize == sizeof(ChinampaData))) {
+      if (packetSize == sizeof(WeatherForecastUpdate) || packetSize == sizeof(DeviceCommandRecord) || (viewer && (packetSize == sizeof(ChinampaData) || packetSize == sizeof(DigitalStablesData) || packetSize == sizeof(LangleyData)))) {
         loraRxRssi = LoRa.packetRssi();
         loraRxSnr = LoRa.packetSnr();
         loraRxAtMs = millis();
@@ -1506,8 +1679,8 @@ void listenForReplies() {
         processLora(n);
         if (packetSize == sizeof(DeviceCommandRecord)) commandHeard = true;
         // Stale: wait for the forecast (a command comes before it). Fresh: only a command was due.
-        // A viewer also waits for a Chinampa packet.
-        bool viewerDone = !viewer || viewerChinampaAt != chinampaBefore;
+        // A viewer also waits until every device its pages show has been heard.
+        bool viewerDone = !viewer || viewerPagesHeardSince(viewerSince);
         if (viewerDone && (weatherStale ? secondsSinceLastWeatherData < 1860 : (commandHeard || !commandWindow))) break;
       }
       LoRa_rxMode();
@@ -5199,7 +5372,7 @@ void loop() {
       Serial.println("Ok-GetViewerConfig");
       Serial.flush();
     } else if (command.startsWith("SetViewerConfig#")) {
-      // SetViewerConfig#{"src":"","stale":600,"frost":0,"pages":[{"f":"outdoorTemp"},...]}
+      // SetViewerConfig#{"stale":600,"frost":0,"pages":[{"t":"chinampa","d":"Chinampa1","f":"outdoorTemp"},...]} - see ViewerConfig.h
       String json = command.substring(command.indexOf('#') + 1);
       json.trim();
       String err = viewerSetConfig(json);
