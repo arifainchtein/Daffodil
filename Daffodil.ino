@@ -383,6 +383,10 @@ uint16_t secondsSinceLastWeatherData = 9999; // 9999 = never received
 // 9999 on every wake, so a sleeping unit reported "not fresh" right after accepting a forecast
 // (TopTank 2026-10-12). Lost on a real reset like every RTC_DATA_ATTR - then "never" is correct.
 RTC_DATA_ATTR uint32_t rtc_lastWeatherEpoch = 0;
+// RTC time the last 8-slot forecast (WeatherForecast8Update) was accepted: Annabelle follows it with
+// the old 4-slot packet, which is then ignored instead of being taken as a replay. 0 = never.
+RTC_DATA_ATTR uint32_t rtc_lastWeather8Epoch = 0;
+#define WEATHER8_PREFERRED_SEC 600
 // How strongly the last accepted forecast was heard - this unit's link to Annabelle, reported in the
 // answer to Paula's ping (LinkAckRecord.gatewayRssi), so Paula's map can show which device could
 // relay a spot Annabelle can't hear. 0 = none since the last real reset.
@@ -779,6 +783,10 @@ static_assert(sizeof(LangleyData) != sizeof(DigitalStablesData) && sizeof(Langle
                 && sizeof(LangleyData) != sizeof(WeatherForecastUpdate),
               "LangleyData needs a size no other LoRa packet uses - processLora() tells packets apart by size");
 static_assert(sizeof(ChinampaData) <= 255 && sizeof(LangleyData) <= 255, "over the LoRa payload limit");
+static_assert(sizeof(WeatherForecast8Update) != sizeof(DigitalStablesData) && sizeof(WeatherForecast8Update) != sizeof(ChinampaData)
+                && sizeof(WeatherForecast8Update) != sizeof(LangleyData) && sizeof(WeatherForecast8Update) != sizeof(RequestCommand)
+                && sizeof(WeatherForecast8Update) != sizeof(DeviceCommandRecord) && sizeof(WeatherForecast8Update) != sizeof(WeatherForecastUpdate),
+              "WeatherForecast8Update needs a size no other LoRa packet uses");
 
 constexpr size_t viewerMax(size_t a, size_t b) {
   return a > b ? a : b;
@@ -1053,7 +1061,7 @@ void viewerPageReading(uint8_t page, JsonObject r) {
 
 // Forecast fields. secondsTime is the OWM UTC timestamp, hour the local hour (WeatherForecastManager).
 // "Next morning" = lowest temperature among forecast slots at local 03-09h within 24 h of the first
-// slot; with only 4 LoRa slots (12 h) that exists from roughly mid-afternoon on.
+// slot. The 8-slot forecast (24 h, 2026-11-07) has it all day; from a 4-slot one (12 h) only from ~8 pm.
 bool viewerForecastValue(uint8_t fi, float &t) {
   if (secondsSinceLastWeatherData > 43200 || !weatherForecastManager->hasValidForecasts()) return false;
   WeatherForecast *f = weatherForecastManager->getForecasts();
@@ -1324,11 +1332,32 @@ void processLora(int packetSize) {
     bool accepted = acceptDeviceCommand(deviceCommand);
     if (debug) Serial.printf(" DeviceCommand %u (%u min) from sender %u: %s\n", deviceCommand.command,
                              deviceCommand.minutes, deviceCommand.sender, accepted ? "accepted" : "ignored");
+  } else if (packetSize == sizeof(WeatherForecast8Update)) {
+    // 8 slots, 24 h (2026-11-07) - see SolarPowerData.h.
+    WeatherForecast8Update update8;
+    loraRxRead((uint8_t *)&update8, sizeof(update8));
+    if (acceptAnnabelleTime(update8.annabelleTime, update8.totpcode, update8.flags)) {
+      WeatherForecast f[WEATHER_FORECAST8_SLOTS];
+      for (int i = 0; i < WEATHER_FORECAST8_SLOTS; i++) f[i] = weatherForecastFromSlot(update8.forecasts[i]);
+      rtc_weatherRssi = (int16_t)loraRxRssi;
+      rtc_weatherSnrQ = (int8_t)lroundf(loraRxSnr * 4);
+      weatherForecastManager->saveForecasts(f, WEATHER_FORECAST8_SLOTS);
+      solarInfo->setWeatherForecast(f, WEATHER_FORECAST8_SLOTS);
+      markWeatherReceived();
+      rtc_lastWeather8Epoch = rtc_lastWeatherEpoch;
+      if (debug) Serial.println(" Receive and processed 8-slot weatherForecast ");
+    } else if (debug) {
+      Serial.println(" Receive WeatherForecast8Update but not accepted");
+    }
+  } else if (packetSize == sizeof(WeatherForecastUpdate) && rtc_lastWeather8Epoch != 0
+             && (long)timeManager.getCurrentTimeInSeconds(currentTimerRecord) - (long)rtc_lastWeather8Epoch < WEATHER8_PREFERRED_SEC) {
+    // The 4-slot copy Annabelle sends right after the 8-slot one, for older receivers.
+    if (debug) Serial.println(" 4-slot weatherForecast ignored - have the 8-slot one");
   } else if (packetSize == sizeof(WeatherForecastUpdate)) {
     WeatherForecastUpdate weatherForecastUpdate;
     loraRxRead((uint8_t *)&weatherForecastUpdate, sizeof(WeatherForecastUpdate));
     long commandcode = weatherForecastUpdate.totpcode;
-    bool validCode = acceptAnnabelleTime(weatherForecastUpdate);  // also sets the RTC from Annabelle's time
+    bool validCode = acceptAnnabelleTime(weatherForecastUpdate.annabelleTime, weatherForecastUpdate.totpcode, weatherForecastUpdate.flags);  // also sets the RTC from Annabelle's time
     if (validCode) {
       rtc_weatherRssi = (int16_t)loraRxRssi;
       rtc_weatherSnrQ = (int8_t)lroundf(loraRxSnr * 4);
@@ -1718,7 +1747,7 @@ void listenForReplies() {
     if (loraDio0Fired) {
       loraDio0Fired = false;
       int packetSize = LoRa.parsePacket();
-      if (packetSize == sizeof(WeatherForecastUpdate) || packetSize == sizeof(DeviceCommandRecord) || (viewer && (packetSize == sizeof(ChinampaData) || packetSize == sizeof(DigitalStablesData) || packetSize == sizeof(LangleyData)))) {
+      if (packetSize == sizeof(WeatherForecastUpdate) || packetSize == sizeof(WeatherForecast8Update) || packetSize == sizeof(DeviceCommandRecord) || (viewer && (packetSize == sizeof(ChinampaData) || packetSize == sizeof(DigitalStablesData) || packetSize == sizeof(LangleyData)))) {
         loraRxRssi = LoRa.packetRssi();
         loraRxSnr = LoRa.packetSnr();
         loraRxAtMs = millis();
@@ -1747,7 +1776,14 @@ void listenForReplies() {
 //  - the code must match annabelleTime (proves it knows the shared secret)
 //  - annabelleTime must be later than the last accepted one (kept in NVS) - no replays
 //  - and within TIME_SYNC_MAX_JUMP_SEC of this clock, unless the RTC lost power
-bool acceptAnnabelleTime(const WeatherForecastUpdate &u) {
+// The forecast packet's annabelleTime/totpcode/flags - both WeatherForecastUpdate and the 8-slot
+// WeatherForecast8Update carry them.
+bool acceptAnnabelleTime(uint32_t annabelleTime, long totpcode, uint8_t flags) {
+  struct {
+    uint32_t annabelleTime;
+    long totpcode;
+    uint8_t flags;
+  } u = { annabelleTime, totpcode, flags };
   if (u.annabelleTime == 0 || secretManager.generateCodeAt(u.annabelleTime) != u.totpcode) {
     if (debug) Serial.println(" time sync: code does not match annabelleTime");
     return false;
