@@ -4933,7 +4933,43 @@ void loop() {
 
       uint8_t fn = digitalStablesData.currentFunctionValue;
 
-      if (fn == DAFFODIL_SCEPTIC_TANK || fn == DAFFODIL_WATER_TROUGH || fn == DAFFODIL_WATER_TROUGH_WATER_TEMP || fn == VOLTAGE_MONITOR) {
+      if (fn == DAFFODIL_WATER_TROUGH_WATER_TEMP && showSensorSlot2) {
+        // Water temperature (measuredHeight2, °C in this mode), shown right after the trough
+        // tower like a two-slot mode's slot 2 (2026-11-08). Same digits and colour code as the
+        // board temperature page (green > 0, blue < 0, yellow 0; red pattern = no reading), plus
+        // led11 blue as the "water" marker. led11 because the slot markers led4/led14 are digit
+        // pixels here; led6/led11 are the only LEDs the digits never use.
+        showSensorSlot2 = false;
+        float wt = digitalStablesData.measuredHeight2;
+        if (wt == -99) {
+          leds[1] = CRGB(255, 0, 0);
+          leds[2] = CRGB(255, 0, 0);
+          leds[3] = CRGB(255, 0, 0);
+          leds[7] = CRGB(255, 0, 0);
+          leds[12] = CRGB(255, 0, 0);
+        } else {
+          if (wt > 0) {
+            red = 0;
+            green = 255;
+            blue = 0;
+          } else if (wt < 0) {
+            red = 0;
+            green = 0;
+            blue = 255;
+          } else {
+            red = 255;
+            green = 255;
+            blue = 0;
+          }
+          drawTemperatureValue(wt, red, green, blue);
+        }
+        leds[11] = CRGB(0, 0, 255);
+      } else if (fn == DAFFODIL_SCEPTIC_TANK || fn == DAFFODIL_WATER_TROUGH || fn == DAFFODIL_WATER_TROUGH_WATER_TEMP || fn == VOLTAGE_MONITOR) {
+        if (fn == DAFFODIL_WATER_TROUGH_WATER_TEMP) {
+          // Trough tower now; hold so the water temperature shows on the very next tick.
+          showSensorSlot2 = true;
+          holdDisplayStatus = true;
+        }
         // Original single-value display — untouched. scepticAvailablePercentage was dropped
         // from DigitalStablesData (purely derived, never needed on the wire) — recomputed here.
         float scepticAvailablePercentage = digitalStablesData.measuredHeight * 100 / MAX_DISTANCE;
