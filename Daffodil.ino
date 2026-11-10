@@ -8,6 +8,7 @@
 #include <PCF8563TimeManager.h>
 #include <SPI.h>
 #include <LoRa.h>
+#include <NewPing.h>  // DAFFODIL_SONAR_TROUGH - echo/trigger ultrasonic on the older boards (2026-11-10)
 #include <Esp32SecretManager.h>
 #include <FastLED.h>
 #include <DaffodilWifiManager.h>
@@ -138,6 +139,7 @@ CRGB leds[NUM_LEDS];
 //   DAFFODIL_2_WATER_TROUGH      pin18 ultrasonic -> measuredHeight, pin33 ultrasonic         -> measuredHeight2 (cm)
 //   DAFFODIL_SCEPTIC_TANK        pin18 ultrasonic -> measuredHeight
 //   DAFFODIL_WATER_TROUGH_TANK1  pin18 is tank1 pressure, so pin33 ultrasonic -> measuredHeight
+//   DAFFODIL_SONAR_TROUGH        echo/trigger ultrasonic, trigger 32 / echo 33 -> measuredHeight (see below)
 #define ULTRASONIC_BAUD 9600
 #define ULTRASONIC_STALE_MS 5000  // no valid frame for this long -> -99
 struct UartUltrasonic {
@@ -150,6 +152,18 @@ struct UartUltrasonic {
 };
 UartUltrasonic ultrasonic1 = { &Serial2, false, { 0 }, 0, -99, 0 };  // measuredHeight
 UartUltrasonic ultrasonic2 = { &Serial1, false, { 0 }, 0, -99, 0 };  // measuredHeight2 (DAFFODIL_2_WATER_TROUGH)
+
+// DAFFODIL_SONAR_TROUGH (2026-11-10, switch 0101): a trough read by an echo/trigger ultrasonic
+// (HC-SR04 / JSN-SR04T in trigger mode) with trigger on 32 and echo on 33 - the wiring of the older
+// boards that ran DaffodilBuild14 (Pancho Build 15), e.g. the Chinampa Fish Tank. Same NewPing reading
+// that firmware did. Created only in this mode: NewPing's constructor drives its trigger pin, and
+// 32/33 have other uses on newer boards. 0 cm = no echo (out of range or no sensor), as DaffodilBuild14
+// sent it - Chinampa treats a measuredHeight of 0 as a sensor failure (alert 7) and stops the pump.
+#define SONAR_TRIGGER_PIN 32
+#define SONAR_ECHO_PIN 33
+#define SONAR_MAX_DISTANCE_CM 200
+#define SONAR_PINGS 5             // median of 5 (~150 ms)
+NewPing *sonar = nullptr;
 
 // TX-summary sampler. Must stay below the struct definitions: the IDE inserts its auto-prototypes
 // just above the first function in the sketch, so defining one earlier hides UartUltrasonic from them.
@@ -532,6 +546,14 @@ void beginUltrasonic(UartUltrasonic &u, int rxPin) {
 
 // Non-blocking: parses whatever frames arrived since the last call and returns the newest valid
 // distance in cm, or -99 if the UART isn't running or no valid frame for ULTRASONIC_STALE_MS.
+// DAFFODIL_SONAR_TROUGH's reading - see SONAR_TRIGGER_PIN. -99 when the mode isn't on.
+float readSonarCm() {
+  if (!sonar) return -99;
+  unsigned long us = sonar->ping_median(SONAR_PINGS);
+  if (us == 0) return 0;  // no echo
+  return us / (float)US_ROUNDTRIP_CM;
+}
+
 float readUltrasonicCm(UartUltrasonic &u) {
   if (!u.started) return -99;
   while (u.serial->available()) {
@@ -2770,7 +2792,9 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
       digitalStablesData.currentFunctionValue = DAFFODIL_VIEWER;
       usingSolarPower = false;
     } else if (cswDecodeValue >= 5906 && cswDecodeValue < 6300) {
-      // 0101/1101, solar off — unassigned (merged)
+      // 0101/1101, solar off — DAFFODIL_SONAR_TROUGH (2026-11-10, was unassigned; 0101 and 1101
+      // read the same, so both select it)
+      digitalStablesData.currentFunctionValue = DAFFODIL_SONAR_TROUGH;
       usingSolarPower = false;
     } else if (cswDecodeValue >= 5679 && cswDecodeValue < 5906) {
       // 00110, solar off — DAFFODIL_2_WATER_TROUGH (was a duplicate DAFFODIL_WATER_TROUGH slot,
@@ -2835,7 +2859,8 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
       digitalStablesData.currentFunctionValue = DAFFODIL_VIEWER;
       usingSolarPower = true;
     } else if (cswDecodeValue >= 1274 && cswDecodeValue < 1975) {
-      // 0101/1101, solar on — unassigned (merged)
+      // 0101/1101, solar on — DAFFODIL_SONAR_TROUGH (2026-11-10, was unassigned)
+      digitalStablesData.currentFunctionValue = DAFFODIL_SONAR_TROUGH;
       usingSolarPower = true;
     } else if (cswDecodeValue >= 934 && cswDecodeValue < 1274) {
       // 00111, solar on — DAFFODIL_2_WATER_TROUGH (was a duplicate DAFFODIL_WATER_TROUGH slot,
@@ -2946,7 +2971,9 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
       digitalStablesData.currentFunctionValue = DAFFODIL_VIEWER;
       usingSolarPower = false;
     } else if (cswOutput >= 5427 && cswOutput < 5833) {
-      // 0101/1101, solar off — unassigned (merged)
+      // 0101/1101, solar off — DAFFODIL_SONAR_TROUGH (2026-11-10, was unassigned; 0101 and 1101
+      // read the same, so both select it)
+      digitalStablesData.currentFunctionValue = DAFFODIL_SONAR_TROUGH;
       usingSolarPower = false;
     } else if (cswOutput >= 5206 && cswOutput < 5427) {
       // 00110, solar off — DAFFODIL_2_WATER_TROUGH (was a duplicate DAFFODIL_WATER_TROUGH slot,
@@ -3014,7 +3041,8 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
       digitalStablesData.currentFunctionValue = DAFFODIL_VIEWER;
       usingSolarPower = true;
     } else if (cswOutput >= 519 && cswOutput < 1487) {
-      // 0101/1101, solar on — unassigned (merged)
+      // 0101/1101, solar on — DAFFODIL_SONAR_TROUGH (2026-11-10, was unassigned)
+      digitalStablesData.currentFunctionValue = DAFFODIL_SONAR_TROUGH;
       usingSolarPower = true;
     } else if (cswOutput >= 0 && cswOutput < 519) {
       // 00111 + 1011/0111/1111, solar on — 00111 is DAFFODIL_2_WATER_TROUGH (was
@@ -3052,6 +3080,9 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
       break;
     case DAFFODIL_WATER_TROUGH_TANK1:
       beginUltrasonic(ultrasonic1, SENSOR_INPUT_2);
+      break;
+    case DAFFODIL_SONAR_TROUGH:
+      sonar = new NewPing(SONAR_TRIGGER_PIN, SONAR_ECHO_PIN, SONAR_MAX_DISTANCE_CM);
       break;
   }
 
@@ -3745,7 +3776,9 @@ void readSensorData() {
   }
   // -99 in every mode where setup() didn't start ultrasonic1 (see the pin table at the top).
   digitalStablesData.measuredHeight = readUltrasonicCm(ultrasonic1);
-  if (digitalStablesData.currentFunctionValue == DAFFODIL_WATER_TROUGH_WATER_TEMP) {
+  if (digitalStablesData.currentFunctionValue == DAFFODIL_SONAR_TROUGH) {
+    digitalStablesData.measuredHeight = readSonarCm();
+  } else if (digitalStablesData.currentFunctionValue == DAFFODIL_WATER_TROUGH_WATER_TEMP) {
     digitalStablesData.measuredHeight2 = readWaterTemperature();  // °C, not cm, in this mode
   } else if (digitalStablesData.currentFunctionValue == DAFFODIL_2_WATER_TROUGH) {
     digitalStablesData.measuredHeight2 = readUltrasonicCm(ultrasonic2);
@@ -4964,7 +4997,7 @@ void loop() {
           drawTemperatureValue(wt, red, green, blue);
         }
         leds[11] = CRGB(0, 0, 255);
-      } else if (fn == DAFFODIL_SCEPTIC_TANK || fn == DAFFODIL_WATER_TROUGH || fn == DAFFODIL_WATER_TROUGH_WATER_TEMP || fn == VOLTAGE_MONITOR) {
+      } else if (fn == DAFFODIL_SCEPTIC_TANK || fn == DAFFODIL_WATER_TROUGH || fn == DAFFODIL_WATER_TROUGH_WATER_TEMP || fn == DAFFODIL_SONAR_TROUGH || fn == VOLTAGE_MONITOR) {
         if (fn == DAFFODIL_WATER_TROUGH_WATER_TEMP) {
           // Trough tower now; hold so the water temperature shows on the very next tick.
           showSensorSlot2 = true;
@@ -4994,7 +5027,7 @@ void loop() {
             green = 0;
             blue = 255;
           }
-        } else if (fn == DAFFODIL_WATER_TROUGH || fn == DAFFODIL_WATER_TROUGH_WATER_TEMP) {
+        } else if (fn == DAFFODIL_WATER_TROUGH || fn == DAFFODIL_WATER_TROUGH_WATER_TEMP || fn == DAFFODIL_SONAR_TROUGH) {
           if (digitalStablesData.measuredHeight >= (digitalStablesData.maximumScepticHeight - digitalStablesData.troughlevelminimumcm)) {
             red = 255;
             green = 0;
@@ -5468,6 +5501,8 @@ void loop() {
         functionname = "DAFFODIL_SCEPTIC_TANK";
       } else if (digitalStablesData.currentFunctionValue == DAFFODIL_WATER_TROUGH) {
         functionname = "DAFFODIL_WATER_TROUGH";
+      } else if (digitalStablesData.currentFunctionValue == DAFFODIL_SONAR_TROUGH) {
+        functionname = "DAFFODIL_SONAR_TROUGH";
       } else if (digitalStablesData.currentFunctionValue == DAFFODIL_TEMP_SOILMOISTURE) {
         functionname = "DAFFODIL_TEMP_SOILMOISTURE";
       } else if (digitalStablesData.currentFunctionValue == DAFFODIL_LIGHT_DETECTOR) {
@@ -5546,6 +5581,8 @@ void loop() {
         functionname = "DAFFODIL_SCEPTIC_TANK";
       } else if (digitalStablesData.currentFunctionValue == DAFFODIL_WATER_TROUGH) {
         functionname = "DAFFODIL_WATER_TROUGH";
+      } else if (digitalStablesData.currentFunctionValue == DAFFODIL_SONAR_TROUGH) {
+        functionname = "DAFFODIL_SONAR_TROUGH";
       } else if (digitalStablesData.currentFunctionValue == DAFFODIL_TEMP_SOILMOISTURE) {
         functionname = "DAFFODIL_TEMP_SOILMOISTURE";
       } else if (digitalStablesData.currentFunctionValue == DAFFODIL_LIGHT_DETECTOR) {
