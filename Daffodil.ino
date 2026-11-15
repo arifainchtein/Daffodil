@@ -140,7 +140,8 @@ CRGB leds[NUM_LEDS];
 //   DAFFODIL_SCEPTIC_TANK        pin18 ultrasonic -> measuredHeight
 //   DAFFODIL_WATER_TROUGH_TANK1  pin18 is tank1 pressure, so pin33 ultrasonic -> measuredHeight
 //   DAFFODIL_SONAR_TROUGH        echo/trigger ultrasonic, trigger 32 / echo 33 -> measuredHeight (see below)
-//   DAFFODIL_FLOW_TROUGH         pin18 is flow meter 1 (flowRate), so pin33 ultrasonic -> measuredHeight
+//   DAFFODIL_FLOW_TROUGH         pin18 ultrasonic -> measuredHeight, pin33 flow meter 1 -> flowRate/totalMilliLitres
+//                                (Clipsal UART box wiring; swapped 2026-11-16, v82 had them the other way round)
 #define ULTRASONIC_BAUD 9600
 #define ULTRASONIC_STALE_MS 5000  // no valid frame for this long -> -99
 struct UartUltrasonic {
@@ -2806,7 +2807,7 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
       // 1111, solar off — DAFFODIL_FLOW_TROUGH (2026-11-14). 1011 and 0111 read the same (merged
       // band), so they select it too - leave them unused.
       digitalStablesData.currentFunctionValue = DAFFODIL_FLOW_TROUGH;
-      attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
+      attachInterrupt(SENSOR_INPUT_2, pulseCounter, FALLING);  // flow meter 1 on pin 33 in this mode (Clipsal box)
       secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
       usingSolarPower = false;
     } else if (cswDecodeValue >= 4674 && cswDecodeValue < 4933) {
@@ -2877,7 +2878,7 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
       // measured -3, 1011 753), so negatives belong here too - this branch used to send < 0 to
       // DAFFODIL_WATER_TROUGH, which is what 1111/0111 + solar actually booted as.
       digitalStablesData.currentFunctionValue = DAFFODIL_FLOW_TROUGH;
-      attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
+      attachInterrupt(SENSOR_INPUT_2, pulseCounter, FALLING);  // flow meter 1 on pin 33 in this mode (Clipsal box)
       secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
       usingSolarPower = true;
     }
@@ -2990,7 +2991,7 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
     } else if (cswOutput >= 4304 && cswOutput < 5206) {
       // 1111, solar off — DAFFODIL_FLOW_TROUGH (2026-11-14; 1011/0111 merged, select it too)
       digitalStablesData.currentFunctionValue = DAFFODIL_FLOW_TROUGH;
-      attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
+      attachInterrupt(SENSOR_INPUT_2, pulseCounter, FALLING);  // flow meter 1 on pin 33 in this mode (Clipsal box)
       secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
       usingSolarPower = false;
     } else if (cswOutput >= 3929 && cswOutput < 4304) {
@@ -3089,9 +3090,11 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
     case DAFFODIL_SCEPTIC_TANK:
       beginUltrasonic(ultrasonic1, SENSOR_INPUT_1);
       break;
-    case DAFFODIL_WATER_TROUGH_TANK1:
-    case DAFFODIL_FLOW_TROUGH:  // pin 18 is flow meter 1 here
+    case DAFFODIL_WATER_TROUGH_TANK1:  // pin 18 is tank1 here
       beginUltrasonic(ultrasonic1, SENSOR_INPUT_2);
+      break;
+    case DAFFODIL_FLOW_TROUGH:  // pin 33 is flow meter 1 here (Clipsal box wiring, 2026-11-16)
+      beginUltrasonic(ultrasonic1, SENSOR_INPUT_1);
       break;
     case DAFFODIL_SONAR_TROUGH:
       sonar = new NewPing(SONAR_TRIGGER_PIN, SONAR_ECHO_PIN, SONAR_MAX_DISTANCE_CM);
@@ -3646,7 +3649,8 @@ void handleWakeInterrupt() {
 }
 
 //
-// Flow meter 1 — SENSOR_INPUT_1 (pin 18), pulses counted by pulseCounter().
+// Flow meter 1 — SENSOR_INPUT_1 (pin 18), pulses counted by pulseCounter(). In DAFFODIL_FLOW_TROUGH
+// pulseCounter is attached to pin 33 instead (Clipsal box wiring) - same counter, same fields.
 // Same convention as the sibling Rosie/Gloria/Pancho boards: pulses/sec scaled by qfactor1
 // gives L/min, then converted to mL and accumulated for this sampling interval.
 //
@@ -3827,7 +3831,7 @@ void readSensorData() {
       // both troughs read above (ultrasonic1 pin18, ultrasonic2 pin33).
       break;
     case DAFFODIL_FLOW_TROUGH:
-      // flow meter 1 on pin18; the trough is the UART ultrasonic on pin 33, read above.
+      // flow meter 1 on pin33 (pulseCounter attached there); the trough is the UART ultrasonic on pin 18, read above.
       readFlowMeter1();
       break;
   }
@@ -5115,7 +5119,7 @@ void loop() {
           } else if (fn == FUN_2_TANK) {
             drawTower(percentBucketColor(tankPercentFull(digitalStablesData.tank2PressurePsi, digitalStablesData.tank2HeightMeters)), true);
           } else if (fn == DAFFODIL_WATER_TROUGH_TANK1 || fn == DAFFODIL_FLOW_TROUGH) {
-            // slot2 here is the trough (UART ultrasonic on pin 33).
+            // slot2 here is the trough (UART ultrasonic: pin 33 for TROUGH_TANK1, pin 18 for FLOW_TROUGH).
             CRGB c;
             if (digitalStablesData.measuredHeight >= (digitalStablesData.maximumScepticHeight - digitalStablesData.troughlevelminimumcm)) {
               c = CRGB(255, 0, 0);

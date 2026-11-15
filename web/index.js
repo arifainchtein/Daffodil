@@ -946,7 +946,7 @@ function refreshScreen(){
         // existing config/display applies for now.
         showDaffodil();
     }else if(currentData.currentFunctionValue==DAFFODIL_FLOW_TROUGH){
-        // flow meter 1 on pin 18 + trough ultrasonic on pin 33
+        // trough ultrasonic on pin 18 + flow meter 1 on pin 33 (Clipsal box)
         showSensor1();
         showDaffodil();
     }else if(currentData.currentFunctionValue==DAFFODIL_VIEWER){
