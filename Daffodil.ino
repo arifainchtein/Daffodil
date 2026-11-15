@@ -140,6 +140,7 @@ CRGB leds[NUM_LEDS];
 //   DAFFODIL_SCEPTIC_TANK        pin18 ultrasonic -> measuredHeight
 //   DAFFODIL_WATER_TROUGH_TANK1  pin18 is tank1 pressure, so pin33 ultrasonic -> measuredHeight
 //   DAFFODIL_SONAR_TROUGH        echo/trigger ultrasonic, trigger 32 / echo 33 -> measuredHeight (see below)
+//   DAFFODIL_FLOW_TROUGH         pin18 is flow meter 1 (flowRate), so pin33 ultrasonic -> measuredHeight
 #define ULTRASONIC_BAUD 9600
 #define ULTRASONIC_STALE_MS 5000  // no valid frame for this long -> -99
 struct UartUltrasonic {
@@ -528,7 +529,7 @@ int view_milliseconds = 5000;
 long lastswitchmillis = 0;
 boolean showTemperature = false;
 // Alternates the sensor-value LED display between slot 1 (pin 18) and slot 2 (pin 33) on
-// two-slot modes (FUN_2_FLOW, FUN_2_TANK, FUN_1_FLOW_1_TANK, DAFFODIL_WATER_TROUGH_TANK1) —
+// two-slot modes (FUN_2_FLOW, FUN_2_TANK, FUN_1_FLOW_1_TANK, DAFFODIL_WATER_TROUGH_TANK1, DAFFODIL_FLOW_TROUGH) —
 // same toggle-per-cycle pattern as showTemperature.
 boolean showSensorSlot2 = false;
 uint8_t color = 0;
@@ -2722,7 +2723,7 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
     // 1001  0    | 6469  | DAFFODIL_VIEWER (HorseTrough 2026-11-06: 6413)
     // 0101,1101  0 (merged)      | 6181-6012 | (unassigned; 0101=6181 on HorseTrough)
     // 0011  0    | 5800  | DAFFODIL_2_WATER_TROUGH (reclaimed 2026-09-01)
-    // 1011,0111,1111  0 (merged)      | 5558-5060 | (unassigned)
+    // 1011,0111,1111  0 (merged)      | 5558-5060 | DAFFODIL_FLOW_TROUGH (1111; 2026-11-14)
     // 0000  1    | 4806  | FUN_1_FLOW
     // 1000  1    | 4541  | FUN_2_FLOW
     // 0100  1    | 4271  | FUN_1_FLOW_1_TANK
@@ -2735,7 +2736,7 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
     // 1001  1    | 2111  | DAFFODIL_VIEWER (HorseTrough 2026-11-06: 2145)
     // 0101,1101  1 (merged)      | 1804-1433 | (unassigned; 0101=1804 on HorseTrough)
     // 0011  1    | 1116  | DAFFODIL_2_WATER_TROUGH (reclaimed 2026-09-01)
-    // 1011,0111,1111  1 (merged)      | 753,-3,-3 | (unassigned, saturates near 0)
+    // 1011,0111,1111  1 (merged)      | 753,-3,-3 | DAFFODIL_FLOW_TROUGH (1111; saturates near 0)
     if (cswDecodeValue >= 8233) {
       // 00000, solar off — FUN_1_FLOW
       digitalStablesData.currentFunctionValue = FUN_1_FLOW;
@@ -2802,7 +2803,11 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
       digitalStablesData.currentFunctionValue = DAFFODIL_2_WATER_TROUGH;
       usingSolarPower = false;
     } else if (cswDecodeValue >= 4933 && cswDecodeValue < 5679) {
-      // 1011/0111/1111, solar off — unassigned (merged, same reasoning as above)
+      // 1111, solar off — DAFFODIL_FLOW_TROUGH (2026-11-14). 1011 and 0111 read the same (merged
+      // band), so they select it too - leave them unused.
+      digitalStablesData.currentFunctionValue = DAFFODIL_FLOW_TROUGH;
+      attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
+      secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
       usingSolarPower = false;
     } else if (cswDecodeValue >= 4674 && cswDecodeValue < 4933) {
       // 00001, solar on — FUN_1_FLOW
@@ -2867,11 +2872,13 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
       // reclaimed 2026-09-01)
       digitalStablesData.currentFunctionValue = DAFFODIL_2_WATER_TROUGH;
       usingSolarPower = true;
-    } else if (cswDecodeValue >= 0 && cswDecodeValue < 934) {
-      // 10111/01111/11111, solar on — unassigned, saturates near 0 raw
-      usingSolarPower = true;
-    } else if (cswDecodeValue < 0) {
-      digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;
+    } else if (cswDecodeValue < 934) {
+      // 11111, solar on — DAFFODIL_FLOW_TROUGH (2026-11-14). Saturates near 0 raw (1111 and 0111
+      // measured -3, 1011 753), so negatives belong here too - this branch used to send < 0 to
+      // DAFFODIL_WATER_TROUGH, which is what 1111/0111 + solar actually booted as.
+      digitalStablesData.currentFunctionValue = DAFFODIL_FLOW_TROUGH;
+      attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
+      secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
       usingSolarPower = true;
     }
   } else {
@@ -2902,7 +2909,7 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
     // 1001  0    | 5177 @ ~4.36       | DAFFODIL_VIEWER (band estimated)
     // 0101,1101  0 (merged)      | ?-4814 @ ~4.36 | (unassigned)
     // 0011  0    | 4645 @ 4.367       | DAFFODIL_2_WATER_TROUGH (reclaimed 2026-09-01)
-    // 1011,0111,1111  0 (merged)      | 4450-3850 @ ~4.35 | (unassigned)
+    // 1011,0111,1111  0 (merged)      | 4450-3850 @ ~4.35 | DAFFODIL_FLOW_TROUGH (1111; 2026-11-14)
     // 1000  1    | 3621 @ 4.330       | FUN_2_FLOW  <- reads ABOVE 0000+solar, see quirk note
     // 0000  1    | 3198 @ 4.349       | FUN_1_FLOW
     // 0100  1    | 3197 @ 4.349       | FUN_1_FLOW_1_TANK  <- only ~1 count below 0000+solar
@@ -2915,7 +2922,7 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
     // 1001  1    | 1423 @ ~4.35       | DAFFODIL_VIEWER (band estimated)
     // 0101,1101  1 (merged)      | ?-907 @ ~4.35  | (unassigned)
     // 0011  1    | -2 @ 4.349         | DAFFODIL_2_WATER_TROUGH (bottom catch-all, reclaimed 2026-09-01)
-    // 1011,0111,1111  1 (merged)      | -2 @ ~4.35 | (unassigned, saturates near 0)
+    // 1011,0111,1111  1 (merged)      | -2 @ ~4.35 | (= 0011+solar: DAFFODIL_2_WATER_TROUGH; 11111 not decodable here)
     if (cswOutput >= 7587) {
       // 00000, solar off — FUN_1_FLOW
       digitalStablesData.currentFunctionValue = FUN_1_FLOW;
@@ -2981,7 +2988,10 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
       digitalStablesData.currentFunctionValue = DAFFODIL_2_WATER_TROUGH;
       usingSolarPower = false;
     } else if (cswOutput >= 4304 && cswOutput < 5206) {
-      // 1011/0111/1111, solar off — unassigned (merged)
+      // 1111, solar off — DAFFODIL_FLOW_TROUGH (2026-11-14; 1011/0111 merged, select it too)
+      digitalStablesData.currentFunctionValue = DAFFODIL_FLOW_TROUGH;
+      attachInterrupt(SENSOR_INPUT_1, pulseCounter, FALLING);
+      secretManager.readFlow1Name().toCharArray(digitalStablesData.sensor1name, sizeof(digitalStablesData.sensor1name));
       usingSolarPower = false;
     } else if (cswOutput >= 3929 && cswOutput < 4304) {
       // 10001, solar on — FUN_2_FLOW. Reads ABOVE 00001 (next band down) — the switch-1+solar
@@ -3047,7 +3057,8 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
     } else if (cswOutput >= 0 && cswOutput < 519) {
       // 00111 + 1011/0111/1111, solar on — 00111 is DAFFODIL_2_WATER_TROUGH (was
       // DAFFODIL_WATER_TROUGH, reclaimed 2026-09-01), but all four saturate to ~0 raw and are
-      // indistinguishable from each other here.
+      // indistinguishable from each other here. So 11111 (DAFFODIL_FLOW_TROUGH) can't be decoded
+      // with no battery - it boots as DAFFODIL_2_WATER_TROUGH.
       digitalStablesData.currentFunctionValue = DAFFODIL_2_WATER_TROUGH;
       usingSolarPower = true;
     } else if (cswOutput < 0) {
@@ -3079,6 +3090,7 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
       beginUltrasonic(ultrasonic1, SENSOR_INPUT_1);
       break;
     case DAFFODIL_WATER_TROUGH_TANK1:
+    case DAFFODIL_FLOW_TROUGH:  // pin 18 is flow meter 1 here
       beginUltrasonic(ultrasonic1, SENSOR_INPUT_2);
       break;
     case DAFFODIL_SONAR_TROUGH:
@@ -3813,6 +3825,10 @@ void readSensorData() {
       break;
     case DAFFODIL_2_WATER_TROUGH:
       // both troughs read above (ultrasonic1 pin18, ultrasonic2 pin33).
+      break;
+    case DAFFODIL_FLOW_TROUGH:
+      // flow meter 1 on pin18; the trough is the UART ultrasonic on pin 33, read above.
+      readFlowMeter1();
       break;
   }
 
@@ -5063,7 +5079,7 @@ void loop() {
         }
         drawTower(CRGB(red, green, blue), false);
 
-      } else if (fn == FUN_1_FLOW || fn == FUN_2_FLOW || fn == FUN_1_FLOW_1_TANK || fn == FUN_1_TANK || fn == FUN_2_TANK || fn == DAFFODIL_WATER_TROUGH_TANK1) {
+      } else if (fn == FUN_1_FLOW || fn == FUN_2_FLOW || fn == FUN_1_FLOW_1_TANK || fn == FUN_1_TANK || fn == FUN_2_TANK || fn == DAFFODIL_WATER_TROUGH_TANK1 || fn == DAFFODIL_FLOW_TROUGH) {
         // Sensor-slot modes: slot1 = pin18/sensor1, slot2 = pin33/sensor2. A single-slot mode
         // just shows slot1 with led4 lit. A two-slot mode alternates each display cycle between
         // slot1 (led4, top-right corner) and slot2 (led14, bottom-right corner) — same
@@ -5073,7 +5089,7 @@ void loop() {
         // 3 rows x 5 cols, plain row-major wiring — see drawFlowSymbol's comment) so the marker
         // can never overwrite the symbol's own status color the way led9 briefly did (confirmed
         // 2026-09-01).
-        bool twoSlots = (fn == FUN_2_FLOW || fn == FUN_2_TANK || fn == FUN_1_FLOW_1_TANK || fn == DAFFODIL_WATER_TROUGH_TANK1);
+        bool twoSlots = (fn == FUN_2_FLOW || fn == FUN_2_TANK || fn == FUN_1_FLOW_1_TANK || fn == DAFFODIL_WATER_TROUGH_TANK1 || fn == DAFFODIL_FLOW_TROUGH);
         bool slot2Now = twoSlots && showSensorSlot2;
         if (twoSlots) showSensorSlot2 = !showSensorSlot2;
         // Just showed slot1 of a two-slot mode - hold here so slot2 shows on the very next
@@ -5082,7 +5098,7 @@ void loop() {
 
         if (!slot2Now) {
           // slot 1
-          if (fn == FUN_1_FLOW || fn == FUN_2_FLOW || fn == FUN_1_FLOW_1_TANK) {
+          if (fn == FUN_1_FLOW || fn == FUN_2_FLOW || fn == FUN_1_FLOW_1_TANK || fn == DAFFODIL_FLOW_TROUGH) {
             drawFlowSymbol(flowStatusColor(digitalStablesData.flowRate));
           } else {
             // FUN_1_TANK, FUN_2_TANK, DAFFODIL_WATER_TROUGH_TANK1 — slot1 is always tank1
@@ -5098,7 +5114,7 @@ void loop() {
             drawTower(percentBucketColor(tankPercentFull(digitalStablesData.tank2PressurePsi, digitalStablesData.tank2HeightMeters)), true);
           } else if (fn == FUN_2_TANK) {
             drawTower(percentBucketColor(tankPercentFull(digitalStablesData.tank2PressurePsi, digitalStablesData.tank2HeightMeters)), true);
-          } else if (fn == DAFFODIL_WATER_TROUGH_TANK1) {
+          } else if (fn == DAFFODIL_WATER_TROUGH_TANK1 || fn == DAFFODIL_FLOW_TROUGH) {
             // slot2 here is the trough (UART ultrasonic on pin 33).
             CRGB c;
             if (digitalStablesData.measuredHeight >= (digitalStablesData.maximumScepticHeight - digitalStablesData.troughlevelminimumcm)) {
@@ -5503,6 +5519,8 @@ void loop() {
         functionname = "DAFFODIL_WATER_TROUGH";
       } else if (digitalStablesData.currentFunctionValue == DAFFODIL_SONAR_TROUGH) {
         functionname = "DAFFODIL_SONAR_TROUGH";
+      } else if (digitalStablesData.currentFunctionValue == DAFFODIL_FLOW_TROUGH) {
+        functionname = "DAFFODIL_FLOW_TROUGH";
       } else if (digitalStablesData.currentFunctionValue == DAFFODIL_TEMP_SOILMOISTURE) {
         functionname = "DAFFODIL_TEMP_SOILMOISTURE";
       } else if (digitalStablesData.currentFunctionValue == DAFFODIL_LIGHT_DETECTOR) {
@@ -5583,6 +5601,8 @@ void loop() {
         functionname = "DAFFODIL_WATER_TROUGH";
       } else if (digitalStablesData.currentFunctionValue == DAFFODIL_SONAR_TROUGH) {
         functionname = "DAFFODIL_SONAR_TROUGH";
+      } else if (digitalStablesData.currentFunctionValue == DAFFODIL_FLOW_TROUGH) {
+        functionname = "DAFFODIL_FLOW_TROUGH";
       } else if (digitalStablesData.currentFunctionValue == DAFFODIL_TEMP_SOILMOISTURE) {
         functionname = "DAFFODIL_TEMP_SOILMOISTURE";
       } else if (digitalStablesData.currentFunctionValue == DAFFODIL_LIGHT_DETECTOR) {

@@ -463,8 +463,24 @@ function showSensor2(){
 }
 
 function showDaffodil(){
-    $('#daffodil-sceptic-value').html(Math.round(currentData.scepticAvailablePercentage));
-    $('#daffodil-sceptic-units').html('%');
+    // scepticAvailablePercentage is no longer in GetWebData (it showed NaN). Once the level is set
+    // up, show the water depth (height - reading) and % of full depth; before that, the raw
+    // sensor-to-water distance.
+    var h = currentData.maximumScepticHeight, full = currentData.troughlevelmaximumcm;
+    if(currentData.measuredHeight <= 0){
+        $('#daffodil-sceptic-name').html('Water Level');
+        $('#daffodil-sceptic-value').html('--');
+        $('#daffodil-sceptic-units').html('no sensor reading');
+    }else if(h > 0){
+        var depth = h - currentData.measuredHeight;
+        $('#daffodil-sceptic-name').html('Water Level');
+        $('#daffodil-sceptic-value').html(full > 0 ? Math.round(depth * 100 / full) + '%' : Math.round(depth));
+        $('#daffodil-sceptic-units').html(full > 0 ? Math.round(depth) + ' cm deep, full = ' + Math.round(full) + ' cm' : 'cm deep');
+    }else{
+        $('#daffodil-sceptic-name').html('Water Distance');
+        $('#daffodil-sceptic-value').html(Math.round(currentData.measuredHeight));
+        $('#daffodil-sceptic-units').html('cm to water (tap the cog to set up)');
+    }
 
     $('#daffodil-temp-value').html(Math.round(currentData.outdoortemperature));
     $('#daffodil-temp-units').html('C');
@@ -685,14 +701,76 @@ $(document).on('click','#daffodil-sceptic-config-icon', function (){
     $('#sceptic-max-field').val(currentData.troughlevelmaximumcm);
     $('#sceptic-min-field').val(currentData.troughlevelminimumcm);
     $('#sceptic-height-field').val(currentData.maximumScepticHeight);
+    $('#trough-cur-dist').html(levelReadingOk() ? round1(currentData.measuredHeight) : 'no reading');
+    // Fill "water depth now" from the stored height, if there is one
+    var h = currentData.maximumScepticHeight;
+    $('#trough-current-depth').val(levelReadingOk() && h > 0 ? round1(h - currentData.measuredHeight) : '');
+    updateTroughPreview();
 });
 
+// Firmware semantics (Daffodil.ino LED code, viewerLevelColor): measuredHeight = sensor-to-water
+// distance; maximumScepticHeight = sensor-to-bottom distance; water depth = height - measured;
+// troughlevelminimumcm / troughlevelmaximumcm are water DEPTHS (red below min, blue above max).
+function round1(v){ return Math.round(v * 10) / 10; }
+function levelReadingOk(){ return currentData.measuredHeight > 0; }   // -99 = no sensor reading
+
+// Water depth now -> sensor to bottom (height = reading + depth)
+$(document).on('input','#trough-current-depth', function (){
+    var depth = parseFloat($(this).val());
+    if(levelReadingOk() && !isNaN(depth)) $('#sceptic-height-field').val(round1(currentData.measuredHeight + depth));
+    updateTroughPreview();
+});
+
+// Sensor to bottom -> water depth now
+$(document).on('input','#sceptic-height-field', function (){
+    var h = parseFloat($(this).val());
+    if(levelReadingOk() && !isNaN(h)) $('#trough-current-depth').val(round1(h - currentData.measuredHeight));
+    updateTroughPreview();
+});
+
+$(document).on('input','#sceptic-max-field, #sceptic-min-field', function (){
+    updateTroughPreview();
+});
+
+function updateTroughPreview(){
+    var h = parseFloat($('#sceptic-height-field').val());
+    var max = parseFloat($('#sceptic-max-field').val());
+    var min = parseFloat($('#sceptic-min-field').val());
+    if(!levelReadingOk()){
+        $('#trough-preview').html('No ultrasonic reading right now, so the current depth can\'t be worked out. You can still type the sensor-to-bottom distance yourself.');
+        return;
+    }
+    if(isNaN(h) || h <= 0){
+        $('#trough-preview').html('Type the water depth now (or the sensor-to-bottom distance) to see the level.');
+        return;
+    }
+    var depth = h - currentData.measuredHeight;
+    var txt = 'Water is <b>' + round1(depth) + ' cm</b> deep';
+    if(!isNaN(max) && max > 0) txt += ' = <b>' + Math.round(depth * 100 / max) + '% full</b>';
+    txt += '. The sensor is ' + round1(currentData.measuredHeight) + ' cm above the water and ' + round1(h) + ' cm above the bottom.';
+    if(!isNaN(max) && !isNaN(min)){
+        var led = depth < min ? 'red (low)' : depth > max ? 'blue (above full)' : 'green';
+        txt += ' LED: ' + led + '.';
+    }
+    if(!isNaN(max) && h - max < 5){
+        txt += '<br><b>Warning:</b> at full depth the water would be only ' + round1(h - max) + ' cm from the sensor, which is inside its blind zone.';
+    }
+    $('#trough-preview').html(txt);
+}
+
+// "Current" = the water depth right now (not the raw sensor distance)
 $(document).on('click','#set-sceptic-max-current', function (){
-    $('#sceptic-max-field').val(currentData.measuredHeight);
+    var d = parseFloat($('#trough-current-depth').val());
+    if(isNaN(d)){ alert('Enter the water depth now first (or the sensor-to-bottom distance).'); return false; }
+    $('#sceptic-max-field').val(d);
+    updateTroughPreview();
 });
 
 $(document).on('click','#set-sceptic-min-current', function (){
-     $('#sceptic-min-field').val(currentData.measuredHeight);
+    var d = parseFloat($('#trough-current-depth').val());
+    if(isNaN(d)){ alert('Enter the water depth now first (or the sensor-to-bottom distance).'); return false; }
+    $('#sceptic-min-field').val(d);
+    updateTroughPreview();
 });
 
 $(document).on('click','#sceptic-configure-cancel', function (){
@@ -704,18 +782,23 @@ $(document).on('click','#sceptic-configure-submit', function (){
    var max = parseFloat($('#sceptic-max-field').val());
    var min =  parseFloat($('#sceptic-min-field').val());
 
-    if(max<5 || min<5){
-        alert("Please input valid max and min");
+    if(isNaN(height) || isNaN(max) || isNaN(min)){
+        alert("Please fill in the sensor-to-bottom distance, full depth and low alarm depth");
         return false;
     }
 
-    if(max< min){
-        alert("Max has to be greater than min");
+    if(max<5 || min<0){
+        alert("Full depth must be at least 5 cm and the low alarm depth can't be negative");
         return false;
     }
 
-    if(height< max){
-        alert("Max has to be smaller than the height");
+    if(max<= min){
+        alert("Full depth has to be greater than the low alarm depth");
+        return false;
+    }
+
+    if(height<= max){
+        alert("The sensor-to-bottom distance has to be greater than the full depth (the sensor sits above the water)");
         return false;
     }
 
@@ -861,6 +944,10 @@ function refreshScreen(){
     }else if(currentData.currentFunctionValue==DAFFODIL_2_WATER_TROUGH){
         // 2nd trough sensor reading isn't implemented yet (pending hardware) - only trough 1's
         // existing config/display applies for now.
+        showDaffodil();
+    }else if(currentData.currentFunctionValue==DAFFODIL_FLOW_TROUGH){
+        // flow meter 1 on pin 18 + trough ultrasonic on pin 33
+        showSensor1();
         showDaffodil();
     }else if(currentData.currentFunctionValue==DAFFODIL_VIEWER){
         showViewer();
