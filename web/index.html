@@ -28,6 +28,8 @@
                     <h6 id="title" class="col-6" style="font-size: 24px;width:100%">System Info</h6>
                     <h6 style="font-size: 16px;width:30%;text-align:left;d-none">Serial #</h6>
                     <h6 id="serial-number" style="font-size: 16px;width:70%;"></h6>
+                    <h6 style="font-size: 16px;width:40%;text-align:left;">Operating Mode</h6>
+                    <h6 id="operating-mode" style="font-size: 16px;width:60%;text-align:right;"></h6>
                     <h6 style="font-size: 16px;width:70%;text-align:left;">Board Temperature:</h6>
                     <h6 id="temperature" style="font-size: 16px;width:30%;text-align:right;"></h6>
                     <h6 style="font-size: 16px;width:48%;text-align:left;">RTC Battery Vol</h6>
@@ -50,6 +52,8 @@
                         <h5>Config Switch Calibration</h5>
                         <h6 style="font-size: 14px;">Required after a battery replacement - the switch reading depends on the specific battery/boost-converter attached.</h6>
                         <button class="btn btn-warning" id="calibrate-csw-button" type="button" style="margin-top:10px;">Calibrate (switches must be at 00000)</button>
+                        <button class="btn btn-secondary" id="csw-data-button" type="button" style="margin-top:10px;">CSW Data</button>
+                        <pre id="csw-data-output" class="small d-none" style="margin-top:10px;white-space:pre-wrap;"></pre>
                     </div>
                 </div>
                 <div class="card-footer" style="margin-top:20px;">

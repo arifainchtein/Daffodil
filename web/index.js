@@ -728,6 +728,45 @@ $(document).on('click','#manual-time-submit', function (){
 // battery/boost-converter actually outputs (see cswReferenceRaw comment in
 // DaffodilWifiManager.cpp / the CalibrateCSWReference serial command in Daffodil.ino). Web
 // equivalent of running that serial command then resetting the device.
+// Function constants from DigitalStablesData.h, with the config switch position (switches 1-4;
+// switch 5 is solar) that selects each one - see CONFIG_SWITCH_FUNCTIONS.md.
+var OPERATING_MODES = {
+    1: ['1 Flow', '0000'], 2: ['2 Flows', '1000'], 3: ['1 Flow + 1 Tank', '0100'], 4: ['1 Tank', '1100'],
+    5: ['2 Tanks', '0010'], 6: ['Septic Tank', '1010'], 7: ['Water Trough', '0110'],
+    8: ['Temp & Soil Moisture', ''], 9: ['Light Detector', ''], 10: ['Voltage Monitor', ''],
+    11: ['Trough + Tank 1', '1110'], 12: ['2 Water Troughs', '0011'], 13: ['Trough + Water Temp', '0001'],
+    14: ['Viewer', '1001'], 15: ['Sonar Trough', '0101'], 16: ['Flow + Trough', '1111']
+};
+function operatingModeName(fv){
+    var m = OPERATING_MODES[fv];
+    if (!m) return 'Unknown (' + fv + ')';
+    return m[0] + ' (' + fv + (m[1] ? ', switch ' + m[1] : '') + ')';
+}
+
+// CSW Data: the serial printCSWData values, so the switch read can be checked from the web page.
+$(document).on('click','#csw-data-button', function (){
+    $.ajax({
+        type: "GET",
+        url: "/DaffodilServlet",
+        data:{formName:"GetCSWData"},
+        success: function (result) {
+            var d;
+            try { d = JSON.parse(result); } catch (e) { d = null; }
+            if (!d || d.functionName === undefined) {
+                $('#csw-data-output').text('This page needs newer Daffodil firmware - flash the latest release.');
+            } else {
+                var lines = [];
+                for (var k in d) lines.push(k + ' = ' + d[k]);
+                $('#csw-data-output').text(lines.join('\n'));
+            }
+            $('#csw-data-output').removeClass('d-none');
+        },
+        error: function(data){
+            $('#csw-data-output').text('Could not read the CSW data: ' + JSON.stringify(data)).removeClass('d-none');
+        }
+    });
+});
+
 $(document).on('click','#calibrate-csw-button', function (){
     if(!confirm("Set ALL config switches to OFF (00000, no solar) first, then press OK.\n\nThe device will reboot immediately to capture the calibration reading.")){
         return false;
@@ -951,6 +990,7 @@ function refreshScreen(){
     }
     
     $('#serial-number').html(currentData.serialnumber);
+    $('#operating-mode').text(operatingModeName(currentData.currentFunctionValue));
     $('#temperature').html( currentData.temperature + '&#8451;');
 
     $("#rtc-bat-volt").html((Math.round(currentData.rtcBatVolt * 100) / 100).toFixed(2));

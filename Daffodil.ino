@@ -3359,6 +3359,7 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
     digitalStablesData.operatingStatus = OPERATING_STATUS_NO_LED;
   }
   wifiManager.setPowerDataProvider(fillPowerData);
+  wifiManager.setCswDataProvider(fillCswData);
   viewerLoadConfig();  // Viewer function (switch 1001) - kept loaded in every mode, it's tiny
   wifiManager.setViewerDataProvider(fillViewerData);
   wifiManager.setViewerConfigSetter(viewerSetConfig);
@@ -3396,6 +3397,50 @@ void sendVitalSigns() {
 // Runs in the async_tcp task: reads digitalStablesData like generateWebData() does, the ledger
 // through latestSample() (its own lock) and the record copy under lastVitalSignsMux. The page
 // works out SOC from the voltage itself, with the Cerebellum's LiFePO4 table.
+// Name of a function constant (DigitalStablesData.h), for printCSWData, GenerateDSDReport and the
+// web page's CSW Data button.
+String functionNameFor(uint8_t fv) {
+  switch (fv) {
+    case FUN_1_FLOW: return "FUN_1_FLOW";
+    case FUN_2_FLOW: return "FUN_2_FLOW";
+    case FUN_1_FLOW_1_TANK: return "FUN_1_FLOW_1_TANK";
+    case FUN_1_TANK: return "FUN_1_TANK";
+    case FUN_2_TANK: return "FUN_2_TANK";
+    case DAFFODIL_SCEPTIC_TANK: return "DAFFODIL_SCEPTIC_TANK";
+    case DAFFODIL_WATER_TROUGH: return "DAFFODIL_WATER_TROUGH";
+    case DAFFODIL_TEMP_SOILMOISTURE: return "DAFFODIL_TEMP_SOILMOISTURE";
+    case DAFFODIL_LIGHT_DETECTOR: return "DAFFODIL_LIGHT_DETECTOR";
+    case VOLTAGE_MONITOR: return "VOLTAGE_MONITOR";
+    case DAFFODIL_WATER_TROUGH_TANK1: return "DAFFODIL_WATER_TROUGH_TANK1";
+    case DAFFODIL_2_WATER_TROUGH: return "DAFFODIL_2_WATER_TROUGH";
+    case DAFFODIL_WATER_TROUGH_WATER_TEMP: return "DAFFODIL_WATER_TROUGH_WATER_TEMP";
+    case DAFFODIL_VIEWER: return "DAFFODIL_VIEWER";
+    case DAFFODIL_SONAR_TROUGH: return "DAFFODIL_SONAR_TROUGH";
+    case DAFFODIL_FLOW_TROUGH: return "DAFFODIL_FLOW_TROUGH";
+  }
+  return "UNKNOWN (" + String(fv) + ")";
+}
+
+// The serial printCSWData values as JSON, for the web page's CSW Data button
+// (/DaffodilServlet?formName=GetCSWData, 2026-11-16) - so the switch read can be checked without a
+// serial connection. Runs in the async_tcp task; only reads values set once in setup().
+void fillCswData(JsonDocument &json) {
+  int32_t ref = secretManager.getCSWReference();
+  float scale = (ref > 0) ? (8326.0f / (float)ref) : 1.0f;
+  json["lastResetReason"] = resetReasonToString(lastResetReason);
+  json["rawCSWValue"] = rawCSWValue;
+  json["v50Voltage"] = digitalStablesData.v50Voltage;
+  json["noBatteryDetected"] = noBatteryDetected;
+  json["factor"] = factor;
+  json["cswOutput"] = cswOutput;
+  json["cswReferenceRaw"] = ref;
+  json["cswScaleFactor"] = scale;
+  json["cswDecodeValue"] = rawCSWValue * scale;
+  json["usingSolarPower"] = usingSolarPower;
+  json["currentFunctionValue"] = digitalStablesData.currentFunctionValue;
+  json["functionName"] = functionNameFor(digitalStablesData.currentFunctionValue);
+}
+
 void fillPowerData(JsonDocument &json) {
   unsigned long nowMs = millis();
   json["capacityMah"] = PP_CAPACITY_MAH;
@@ -5514,40 +5559,7 @@ void loop() {
         Serial.println("cswScaleFactor=" + String(_printCswScaleFactor, 4));
         Serial.println("cswDecodeValue at boot=" + String(rawCSWValue * _printCswScaleFactor) + " (this is what the battery-attached table actually compared against at boot time)");
       }
-      String functionname = "";
-      if (digitalStablesData.currentFunctionValue == FUN_1_FLOW) {
-        functionname = "FUN_1_FLOW";
-      } else if (digitalStablesData.currentFunctionValue == FUN_2_FLOW) {
-        functionname = "FUN_2_FLOW";
-      } else if (digitalStablesData.currentFunctionValue == FUN_1_FLOW_1_TANK) {
-        functionname = "FUN_1_FLOW_1_TANK";
-      } else if (digitalStablesData.currentFunctionValue == FUN_1_TANK) {
-        functionname = "FUN_1_TANK";
-      } else if (digitalStablesData.currentFunctionValue == FUN_2_TANK) {
-        functionname = "FUN_2_TANK";
-      } else if (digitalStablesData.currentFunctionValue == DAFFODIL_SCEPTIC_TANK) {
-        functionname = "DAFFODIL_SCEPTIC_TANK";
-      } else if (digitalStablesData.currentFunctionValue == DAFFODIL_WATER_TROUGH) {
-        functionname = "DAFFODIL_WATER_TROUGH";
-      } else if (digitalStablesData.currentFunctionValue == DAFFODIL_SONAR_TROUGH) {
-        functionname = "DAFFODIL_SONAR_TROUGH";
-      } else if (digitalStablesData.currentFunctionValue == DAFFODIL_FLOW_TROUGH) {
-        functionname = "DAFFODIL_FLOW_TROUGH";
-      } else if (digitalStablesData.currentFunctionValue == DAFFODIL_TEMP_SOILMOISTURE) {
-        functionname = "DAFFODIL_TEMP_SOILMOISTURE";
-      } else if (digitalStablesData.currentFunctionValue == DAFFODIL_LIGHT_DETECTOR) {
-        functionname = "DAFFODIL_LIGHT_DETECTOR";
-      } else if (digitalStablesData.currentFunctionValue == VOLTAGE_MONITOR) {
-        functionname = "VOLTAGE_MONITOR";
-      } else if (digitalStablesData.currentFunctionValue == DAFFODIL_WATER_TROUGH_TANK1) {
-        functionname = "DAFFODIL_WATER_TROUGH_TANK1";
-      } else if (digitalStablesData.currentFunctionValue == DAFFODIL_2_WATER_TROUGH) {
-        functionname = "DAFFODIL_2_WATER_TROUGH";
-      } else if (digitalStablesData.currentFunctionValue == DAFFODIL_WATER_TROUGH_WATER_TEMP) {
-        functionname = "DAFFODIL_WATER_TROUGH_WATER_TEMP";
-      } else if (digitalStablesData.currentFunctionValue == DAFFODIL_VIEWER) {
-        functionname = "DAFFODIL_VIEWER";
-      }
+      String functionname = functionNameFor(digitalStablesData.currentFunctionValue);
       Serial.println("Current Function Value: " + functionname);
       Serial.println("Ok-printCSWData");
       Serial.flush();
@@ -5596,40 +5608,7 @@ void loop() {
       Serial.println("");
 
       int cleardata = generalFunctions.getValue(command, '#', 1).toInt();
-      String functionname = "";
-      if (digitalStablesData.currentFunctionValue == FUN_1_FLOW) {
-        functionname = "FUN_1_FLOW";
-      } else if (digitalStablesData.currentFunctionValue == FUN_2_FLOW) {
-        functionname = "FUN_2_FLOW";
-      } else if (digitalStablesData.currentFunctionValue == FUN_1_FLOW_1_TANK) {
-        functionname = "FUN_1_FLOW_1_TANK";
-      } else if (digitalStablesData.currentFunctionValue == FUN_1_TANK) {
-        functionname = "FUN_1_TANK";
-      } else if (digitalStablesData.currentFunctionValue == FUN_2_TANK) {
-        functionname = "FUN_2_TANK";
-      } else if (digitalStablesData.currentFunctionValue == DAFFODIL_SCEPTIC_TANK) {
-        functionname = "DAFFODIL_SCEPTIC_TANK";
-      } else if (digitalStablesData.currentFunctionValue == DAFFODIL_WATER_TROUGH) {
-        functionname = "DAFFODIL_WATER_TROUGH";
-      } else if (digitalStablesData.currentFunctionValue == DAFFODIL_SONAR_TROUGH) {
-        functionname = "DAFFODIL_SONAR_TROUGH";
-      } else if (digitalStablesData.currentFunctionValue == DAFFODIL_FLOW_TROUGH) {
-        functionname = "DAFFODIL_FLOW_TROUGH";
-      } else if (digitalStablesData.currentFunctionValue == DAFFODIL_TEMP_SOILMOISTURE) {
-        functionname = "DAFFODIL_TEMP_SOILMOISTURE";
-      } else if (digitalStablesData.currentFunctionValue == DAFFODIL_LIGHT_DETECTOR) {
-        functionname = "DAFFODIL_LIGHT_DETECTOR";
-      } else if (digitalStablesData.currentFunctionValue == VOLTAGE_MONITOR) {
-        functionname = "VOLTAGE_MONITOR";
-      } else if (digitalStablesData.currentFunctionValue == DAFFODIL_WATER_TROUGH_TANK1) {
-        functionname = "DAFFODIL_WATER_TROUGH_TANK1";
-      } else if (digitalStablesData.currentFunctionValue == DAFFODIL_2_WATER_TROUGH) {
-        functionname = "DAFFODIL_2_WATER_TROUGH";
-      } else if (digitalStablesData.currentFunctionValue == DAFFODIL_WATER_TROUGH_WATER_TEMP) {
-        functionname = "DAFFODIL_WATER_TROUGH_WATER_TEMP";
-      } else if (digitalStablesData.currentFunctionValue == DAFFODIL_VIEWER) {
-        functionname = "DAFFODIL_VIEWER";
-      }
+      String functionname = functionNameFor(digitalStablesData.currentFunctionValue);
       Serial.println("Current Function Value: " + functionname);
       Serial.println("");
       Serial.println("");
