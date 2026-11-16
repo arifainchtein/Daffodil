@@ -8,7 +8,6 @@
 #include <PCF8563TimeManager.h>
 #include <SPI.h>
 #include <LoRa.h>
-#include <NewPing.h>  // DAFFODIL_SONAR_TROUGH - echo/trigger ultrasonic on the older boards (2026-11-10)
 #include <Esp32SecretManager.h>
 #include <FastLED.h>
 #include <DaffodilWifiManager.h>
@@ -139,8 +138,9 @@ CRGB leds[NUM_LEDS];
 //   DAFFODIL_2_WATER_TROUGH      pin18 ultrasonic -> measuredHeight, pin33 ultrasonic         -> measuredHeight2 (cm)
 //   DAFFODIL_SCEPTIC_TANK        pin18 ultrasonic -> measuredHeight
 //   DAFFODIL_WATER_TROUGH_TANK1  pin18 is tank1 pressure, so pin33 ultrasonic -> measuredHeight
-//   DAFFODIL_SONAR_TROUGH        echo/trigger ultrasonic, trigger 32 / echo 33 -> measuredHeight (see below)
-//   DAFFODIL_FLOW_TROUGH         pin18 ultrasonic -> measuredHeight, pin33 flow meter 1 -> flowRate/totalMilliLitres
+//   switch 0101 (FishTank)       runs as DAFFODIL_WATER_TROUGH_WATER_TEMP on the old pins: pin33 ultrasonic
+//                                -> measuredHeight, pin32 DS18B20 -> measuredHeight2 (°C) - see fishTankPins
+//   DAFFODIL_FLOW_TROUGH        pin18 ultrasonic -> measuredHeight, pin33 flow meter 1 -> flowRate/totalMilliLitres
 //                                (Clipsal UART box wiring; swapped 2026-11-16, v82 had them the other way round)
 #define ULTRASONIC_BAUD 9600
 #define ULTRASONIC_STALE_MS 5000  // no valid frame for this long -> -99
@@ -155,17 +155,20 @@ struct UartUltrasonic {
 UartUltrasonic ultrasonic1 = { &Serial2, false, { 0 }, 0, -99, 0 };  // measuredHeight
 UartUltrasonic ultrasonic2 = { &Serial1, false, { 0 }, 0, -99, 0 };  // measuredHeight2 (DAFFODIL_2_WATER_TROUGH)
 
-// DAFFODIL_SONAR_TROUGH (2026-11-10, switch 0101): a trough read by an echo/trigger ultrasonic
-// (HC-SR04 / JSN-SR04T in trigger mode) with trigger on 32 and echo on 33 - the wiring of the older
-// boards that ran DaffodilBuild14 (Pancho Build 15), e.g. the Chinampa Fish Tank. Same NewPing reading
-// that firmware did. Created only in this mode: NewPing's constructor drives its trigger pin, and
-// 32/33 have other uses on newer boards. 0 cm = no echo (out of range or no sensor), as DaffodilBuild14
-// sent it - Chinampa treats a measuredHeight of 0 as a sensor failure (alert 7) and stops the pump.
-#define SONAR_TRIGGER_PIN 32
-#define SONAR_ECHO_PIN 33
-#define SONAR_MAX_DISTANCE_CM 200
-#define SONAR_PINGS 5             // median of 5 (~150 ms)
-NewPing *sonar = nullptr;
+// Switch 0101 (2026-11-16): the Chinampa Fish Tank - Pancho (Wally) 15 + Daffodil 6, mains powered,
+// supercap, no battery. It used to be DAFFODIL_SONAR_TROUGH (echo/trigger ultrasonic via NewPing,
+// trigger 32 / echo 33); that sensor died, so it now uses the Clipsal box's UART ultrasonic + DS18B20
+// on the same two wires: UART ultrasonic TX on 33 (old echo), DS18B20 data on 32 (old trigger). It
+// reports DAFFODIL_WATER_TROUGH_WATER_TEMP (13) so the LED water-temp page, web app and Teleonome
+// all treat measuredHeight2 as °C. Daffodil Rev 6 level-shifts both pins like the newer boards do
+// for 18/33: GPIO_33 via Q1 (R5 4.7k to V33, R7 10k to V50 on the terminal side) and GPIO_32 via
+// Q2 (R6 4.7k to V33, R8 10k to V50). So a 5V UART TX is safe on 33 and the DS18B20 on 32 needs no
+// external pull-up - the same setup TopTank's probe uses on 33.
+// A missing ultrasonic reading is sent as 0, not -99: Chinampa treats a FISHTANK measuredHeight of
+// 0 as a sensor failure (alert 7) and stops the pump, as DaffodilBuild14's "no echo" did.
+#define FISHTANK_ULTRASONIC_PIN 33
+#define FISHTANK_WATER_TEMP_PIN 32
+bool fishTankPins = false;
 
 // TX-summary sampler. Must stay below the struct definitions: the IDE inserts its auto-prototypes
 // just above the first function in the sketch, so defining one earlier hides UartUltrasonic from them.
@@ -235,8 +238,9 @@ void daffodilLedgerMode(bool fastMode) {
 // bus separate from the board DS18B20 on pin 27. No external pull-up needed: the pin-33 terminal
 // already goes through the board's 2N7002 level shifter (Q1, R5 4.7k to V33 on the GPIO side,
 // R7 10k to V50 on the terminal side), so the probe runs off V50 and the 10k is the bus pull-up.
-OneWire waterOneWire(SENSOR_INPUT_2);
-DallasTemperature waterTempSensor(&waterOneWire);
+// On the FishTank (switch 0101) the probe is on pin 32 instead - see fishTankPins.
+OneWire *waterOneWire = nullptr;
+DallasTemperature *waterTempSensor = nullptr;
 bool waterTempStarted = false;
 
 #define OPERATING_STATUS_SLEEP 1
@@ -548,14 +552,6 @@ void beginUltrasonic(UartUltrasonic &u, int rxPin) {
 
 // Non-blocking: parses whatever frames arrived since the last call and returns the newest valid
 // distance in cm, or -99 if the UART isn't running or no valid frame for ULTRASONIC_STALE_MS.
-// DAFFODIL_SONAR_TROUGH's reading - see SONAR_TRIGGER_PIN. -99 when the mode isn't on.
-float readSonarCm() {
-  if (!sonar) return -99;
-  unsigned long us = sonar->ping_median(SONAR_PINGS);
-  if (us == 0) return 0;  // no echo
-  return us / (float)US_ROUNDTRIP_CM;
-}
-
 float readUltrasonicCm(UartUltrasonic &u) {
   if (!u.started) return -99;
   while (u.serial->available()) {
@@ -587,13 +583,18 @@ float readUltrasonicCm(UartUltrasonic &u) {
   return u.lastCm;
 }
 
-void beginWaterTemperature() {
-  waterTempSensor.begin();
-  waterTempSensor.setResolution(10);  // 0.25°C, ~190ms conversion
+void beginWaterTemperature(int pin) {
+  if (waterTempSensor) return;
+  // Created here, not as globals: OneWire's constructor sets up its pin, and 32/33 have other
+  // uses in other modes / on newer boards.
+  waterOneWire = new OneWire(pin);
+  waterTempSensor = new DallasTemperature(waterOneWire);
+  waterTempSensor->begin();
+  waterTempSensor->setResolution(10);  // 0.25°C, ~190ms conversion
   // One blocking conversion at boot so the first read isn't the DS18B20's 85°C power-on value.
-  waterTempSensor.setWaitForConversion(true);
-  waterTempSensor.requestTemperatures();
-  waterTempSensor.setWaitForConversion(false);
+  waterTempSensor->setWaitForConversion(true);
+  waterTempSensor->requestTemperatures();
+  waterTempSensor->setWaitForConversion(false);
   waterTempStarted = true;
 }
 
@@ -601,8 +602,8 @@ void beginWaterTemperature() {
 // -99 if the sensor is missing/disconnected.
 float readWaterTemperature() {
   if (!waterTempStarted) return -99;
-  float t = waterTempSensor.getTempCByIndex(0);
-  waterTempSensor.requestTemperatures();
+  float t = waterTempSensor->getTempCByIndex(0);
+  waterTempSensor->requestTemperatures();
   if (t == DEVICE_DISCONNECTED) return -99;  // -127; the legacy Dallas lib in the sketchbook has no DEVICE_DISCONNECTED_C
   return t;
 }
@@ -2794,9 +2795,10 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
       digitalStablesData.currentFunctionValue = DAFFODIL_VIEWER;
       usingSolarPower = false;
     } else if (cswDecodeValue >= 5906 && cswDecodeValue < 6300) {
-      // 0101/1101, solar off — DAFFODIL_SONAR_TROUGH (2026-11-10, was unassigned; 0101 and 1101
+      // 0101/1101, solar off — FishTank: WATER_TEMP on pins 33/32 (was DAFFODIL_SONAR_TROUGH 2026-11-10; 0101 and 1101
       // read the same, so both select it)
-      digitalStablesData.currentFunctionValue = DAFFODIL_SONAR_TROUGH;
+      digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH_WATER_TEMP;  // FishTank, old pins
+      fishTankPins = true;
       usingSolarPower = false;
     } else if (cswDecodeValue >= 5679 && cswDecodeValue < 5906) {
       // 00110, solar off — DAFFODIL_2_WATER_TROUGH (was a duplicate DAFFODIL_WATER_TROUGH slot,
@@ -2865,8 +2867,9 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
       digitalStablesData.currentFunctionValue = DAFFODIL_VIEWER;
       usingSolarPower = true;
     } else if (cswDecodeValue >= 1274 && cswDecodeValue < 1975) {
-      // 0101/1101, solar on — DAFFODIL_SONAR_TROUGH (2026-11-10, was unassigned)
-      digitalStablesData.currentFunctionValue = DAFFODIL_SONAR_TROUGH;
+      // 0101/1101, solar on — FishTank: WATER_TEMP on pins 33/32 (was DAFFODIL_SONAR_TROUGH 2026-11-10)
+      digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH_WATER_TEMP;  // FishTank, old pins
+      fishTankPins = true;
       usingSolarPower = true;
     } else if (cswDecodeValue >= 934 && cswDecodeValue < 1274) {
       // 00111, solar on — DAFFODIL_2_WATER_TROUGH (was a duplicate DAFFODIL_WATER_TROUGH slot,
@@ -2979,9 +2982,10 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
       digitalStablesData.currentFunctionValue = DAFFODIL_VIEWER;
       usingSolarPower = false;
     } else if (cswOutput >= 5427 && cswOutput < 5833) {
-      // 0101/1101, solar off — DAFFODIL_SONAR_TROUGH (2026-11-10, was unassigned; 0101 and 1101
+      // 0101/1101, solar off — FishTank: WATER_TEMP on pins 33/32 (was DAFFODIL_SONAR_TROUGH 2026-11-10; 0101 and 1101
       // read the same, so both select it)
-      digitalStablesData.currentFunctionValue = DAFFODIL_SONAR_TROUGH;
+      digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH_WATER_TEMP;  // FishTank, old pins
+      fishTankPins = true;
       usingSolarPower = false;
     } else if (cswOutput >= 5206 && cswOutput < 5427) {
       // 00110, solar off — DAFFODIL_2_WATER_TROUGH (was a duplicate DAFFODIL_WATER_TROUGH slot,
@@ -3052,8 +3056,9 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
       digitalStablesData.currentFunctionValue = DAFFODIL_VIEWER;
       usingSolarPower = true;
     } else if (cswOutput >= 519 && cswOutput < 1487) {
-      // 0101/1101, solar on — DAFFODIL_SONAR_TROUGH (2026-11-10, was unassigned)
-      digitalStablesData.currentFunctionValue = DAFFODIL_SONAR_TROUGH;
+      // 0101/1101, solar on — FishTank: WATER_TEMP on pins 33/32 (was DAFFODIL_SONAR_TROUGH 2026-11-10)
+      digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH_WATER_TEMP;  // FishTank, old pins
+      fishTankPins = true;
       usingSolarPower = true;
     } else if (cswOutput >= 0 && cswOutput < 519) {
       // 00111 + 1011/0111/1111, solar on — 00111 is DAFFODIL_2_WATER_TROUGH (was
@@ -3080,8 +3085,13 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
       beginUltrasonic(ultrasonic1, SENSOR_INPUT_1);
       break;
     case DAFFODIL_WATER_TROUGH_WATER_TEMP:
-      beginUltrasonic(ultrasonic1, SENSOR_INPUT_1);
-      beginWaterTemperature();
+      if (fishTankPins) {
+        beginUltrasonic(ultrasonic1, FISHTANK_ULTRASONIC_PIN);
+        beginWaterTemperature(FISHTANK_WATER_TEMP_PIN);
+      } else {
+        beginUltrasonic(ultrasonic1, SENSOR_INPUT_1);
+        beginWaterTemperature(SENSOR_INPUT_2);
+      }
       break;
     case DAFFODIL_2_WATER_TROUGH:
       beginUltrasonic(ultrasonic1, SENSOR_INPUT_1);
@@ -3095,9 +3105,6 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
       break;
     case DAFFODIL_FLOW_TROUGH:  // pin 33 is flow meter 1 here (Clipsal box wiring, 2026-11-16)
       beginUltrasonic(ultrasonic1, SENSOR_INPUT_1);
-      break;
-    case DAFFODIL_SONAR_TROUGH:
-      sonar = new NewPing(SONAR_TRIGGER_PIN, SONAR_ECHO_PIN, SONAR_MAX_DISTANCE_CM);
       break;
   }
 
@@ -3845,9 +3852,10 @@ void readSensorData() {
   }
   // -99 in every mode where setup() didn't start ultrasonic1 (see the pin table at the top).
   digitalStablesData.measuredHeight = readUltrasonicCm(ultrasonic1);
-  if (digitalStablesData.currentFunctionValue == DAFFODIL_SONAR_TROUGH) {
-    digitalStablesData.measuredHeight = readSonarCm();
-  } else if (digitalStablesData.currentFunctionValue == DAFFODIL_WATER_TROUGH_WATER_TEMP) {
+  if (fishTankPins && digitalStablesData.measuredHeight == -99) {
+    digitalStablesData.measuredHeight = 0;  // Chinampa's "sensor failed" value - see fishTankPins
+  }
+  if (digitalStablesData.currentFunctionValue == DAFFODIL_WATER_TROUGH_WATER_TEMP) {
     digitalStablesData.measuredHeight2 = readWaterTemperature();  // °C, not cm, in this mode
   } else if (digitalStablesData.currentFunctionValue == DAFFODIL_2_WATER_TROUGH) {
     digitalStablesData.measuredHeight2 = readUltrasonicCm(ultrasonic2);
