@@ -536,15 +536,17 @@ function showDaffodil(){
         $('#daffodil-sceptic-units').html('cm to water (tap the cog to set up)');
     }
 
-    $('#daffodil-temp-value').html(Math.round(currentData.outdoortemperature));
-    $('#daffodil-temp-units').html('C');
-    $('#daffodil-capacitor-value').html(currentData.batteryVoltage.toFixed(2) + ' / ' + (currentData.v50Voltage || 0).toFixed(2));
-    $('#daffodil-humidity-value').html(Math.round(currentData.outdoorhumidity));
-    $('#daffodil-humidity-units').html('C%');
     $('#daffodil-sceptic').removeClass('d-none').addClass('d-block');
-    $('#daffodil-temp').removeClass('d-none').addClass('d-block');
-    $('#daffodil-humidity').removeClass('d-none').addClass('d-block');
-    $('#daffodil-capacitor').removeClass('d-none').addClass('d-block');
+    // Temperature/humidity come from the I2C SHT sensor (0x44); the firmware sends
+    // outdoortemperature -99 (and humidity 0) when it isn't fitted, so leave both cards hidden then.
+    if (currentData.outdoortemperature !== -99) {
+        $('#daffodil-temp-value').html(Math.round(currentData.outdoortemperature));
+        $('#daffodil-temp-units').html('C');
+        $('#daffodil-humidity-value').html(Math.round(currentData.outdoorhumidity));
+        $('#daffodil-humidity-units').html('%');
+        $('#daffodil-temp').removeClass('d-none').addClass('d-block');
+        $('#daffodil-humidity').removeClass('d-none').addClass('d-block');
+    }
 }
 
 $(document).on('click','#system-info-icon', function (){
