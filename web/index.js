@@ -471,7 +471,7 @@ function showTank2(){
 function showSensor1(){
     $('#flow-sensor-1-name').html(currentData.flow1name);
     $('#flow-sensor-1-total-heading').html(currentData.flow1name + ' Volume');
-    $('#flow-sensor-1-value').html(currentData.flowrate);
+    $('#flow-sensor-1-value').html(Math.round(currentData.flowrate));
     $('#flow-sensor-1-units').html('liters/min');
     $('#flow-sensor-1').removeClass('d-none').addClass('d-block');
     
@@ -498,7 +498,7 @@ function showSensor2(){
     
         $('#flow-sensor-2-units').html('liters/min');
         $('#flow-sensor-2').removeClass('d-none').addClass('d-block');
-        $('#flow-sensor-2-value').html(currentData.flowrate2);
+        $('#flow-sensor-2-value').html(Math.round(currentData.flowrate2));
         $('#flow-sensor-2-total').removeClass('d-none').addClass('d-block');
     
         var mils = currentData.totalmilliLitres2;
