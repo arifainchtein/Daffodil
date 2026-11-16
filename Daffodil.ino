@@ -3080,6 +3080,14 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
   // digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;//DAFFODIL_SCEPTIC_TANK;
   //     usingSolarPower=false;
 
+  // FishTank on the normal mode-13 switch position (00010) also gets its old pins: on its
+  // supercap/no-battery board 01010 decodes as Viewer (that table's 0101 band is estimated).
+  if (digitalStablesData.currentFunctionValue == DAFFODIL_WATER_TROUGH_WATER_TEMP
+      && strncasecmp(digitalStablesData.devicename, "FISHTANK", 8) == 0) {
+    fishTankPins = true;
+  }
+  Serial.println(fishTankPins ? "sensor pins: FishTank (ultrasonic 33, water temp 32)" : "sensor pins: standard");
+
   switch (digitalStablesData.currentFunctionValue) {
     case DAFFODIL_WATER_TROUGH:
       beginUltrasonic(ultrasonic1, SENSOR_INPUT_1);
@@ -5560,6 +5568,7 @@ void loop() {
       Serial.println("noBatteryDetected=" + String(noBatteryDetected) + " (battery-attached path decodes on cswDecodeValue [rawCSWValue scaled by this device's CSW calibration], ignoring cswOutput/factor; no-battery path uses cswOutput/factor)");
       Serial.println("factor=" + String(factor));
       Serial.println("cswOutput=" + String(cswOutput));
+      Serial.println("fishTankPins=" + String(fishTankPins) + " (1 = ultrasonic on 33, water temp on 32)");
       {
         int32_t _printCswReferenceRaw = secretManager.getCSWReference();
         float _printCswScaleFactor = (_printCswReferenceRaw > 0) ? (8326.0f / (float)_printCswReferenceRaw) : 1.0f;
@@ -5612,6 +5621,7 @@ void loop() {
       Serial.println("noBatteryDetected=" + String(noBatteryDetected) + " (battery-attached path decodes on rawCSWValue directly, ignoring cswOutput/factor; no-battery path uses cswOutput/factor)");
       Serial.println("factor=" + String(factor));
       Serial.println("cswOutput=" + String(cswOutput));
+      Serial.println("fishTankPins=" + String(fishTankPins) + " (1 = ultrasonic on 33, water temp on 32)");
       Serial.println("");
       Serial.println("");
 
