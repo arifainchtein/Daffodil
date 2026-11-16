@@ -224,6 +224,11 @@
                             <option value="0.175">50mm</option>
                         </select></div>
                     <div class="input-group" style="margin-top:20px;"><span class="input-group-text">qFactor</span><input class="form-control" type="number" id="flow-sensor-1-qfactor-input" step="any"></div>
+                    <h6 style="margin-top:20px;">Calibrate qFactor</h6>
+                    <p class="small text-muted" style="margin:0;">Press Start, run a known amount of water through the meter (e.g. fill a 60 L tank), type the litres, press Finish. Timing doesn't matter.</p>
+                    <div class="input-group" style="margin-top:8px;"><span class="input-group-text">Litres</span><input class="form-control" type="number" step="any" id="flow-1-cal-litres"></div>
+                    <div class="btn-group" role="group" style="margin-top:8px;"><button class="btn btn-primary btn-sm" id="flow-1-cal-start" type="button" style="margin-right:10px">Start</button><button class="btn btn-primary btn-sm" id="flow-1-cal-finish" type="button" disabled>Finish</button></div>
+                    <div id="flow-1-cal-status" class="alert alert-secondary small" style="margin-top:8px;margin-bottom:0;">Not started.</div>
                 </div>
                 <div class="card-footer">
                     <div class="btn-group" role="group"><button class="btn btn-danger btn-sm" id="flow-sensor-1-configure-cancel" type="button" style="margin-right:20px">Cancel</button><button class="btn btn-success btn-sm" id="flow-sensor-1-configure-submit" type="button">Save</button></div>

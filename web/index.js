@@ -214,10 +214,64 @@ $(document).on('click','#flow-sensor-1-config-icon', function (){
 
 
 $(document).on('click','#flow-sensor-1-configure-cancel', function (){
+   flow1CalStop();
    refreshScreen();
 });
 
+// qFactor calibration from a known volume (2026-11-16). The firmware sends flow1pulses, its pulse
+// total since boot. flowRate (L/min) = pulses per second / qfactor, so for any run:
+// qfactor = pulses / (60 * litres), whatever the flow rate or how long it took.
+var flow1CalStartPulses = null;
+var flow1CalTimer = null;
+
+function flow1CalFetchPulses(){
+    var pulses = null;
+    $.ajax({ type: "GET", async: false, url: "/DaffodilServlet", data: {formName: "GetWebData"},
+        success: function (result) { currentData = JSON.parse(result); pulses = currentData.flow1pulses; } });
+    return (typeof pulses === 'number') ? pulses : null;
+}
+
+function flow1CalStop(){
+    if (flow1CalTimer) { clearInterval(flow1CalTimer); flow1CalTimer = null; }
+}
+
+$(document).on('click','#flow-1-cal-start', function (){
+    var p = flow1CalFetchPulses();
+    if (p === null) {
+        $('#flow-1-cal-status').text('This page needs newer Daffodil firmware - flash the latest release.');
+        return;
+    }
+    flow1CalStartPulses = p;
+    $('#flow-1-cal-finish').prop('disabled', false);
+    $('#flow-1-cal-status').text('Started. Run the water now. Pulses so far: 0');
+    flow1CalStop();
+    flow1CalTimer = setInterval(function (){
+        var now = flow1CalFetchPulses();
+        if (now !== null) $('#flow-1-cal-status').text('Running. Pulses so far: ' + (now - flow1CalStartPulses));
+    }, 2000);
+});
+
+$(document).on('click','#flow-1-cal-finish', function (){
+    var litres = parseFloat($('#flow-1-cal-litres').val());
+    if (!(litres > 0)) { $('#flow-1-cal-status').text('Type the litres you ran first.'); return; }
+    var now = flow1CalFetchPulses();
+    if (now === null || flow1CalStartPulses === null) return;
+    flow1CalStop();
+    var pulses = now - flow1CalStartPulses;
+    $('#flow-1-cal-finish').prop('disabled', true);
+    if (pulses <= 0) {
+        $('#flow-1-cal-status').text('No pulses counted - check the flow meter wiring, then press Start again.');
+        return;
+    }
+    var q = pulses / (60 * litres);
+    var qRounded = Math.round(q * 10000) / 10000;
+    $('#flow-sensor-1-qfactor-input').val(qRounded);
+    $('#flow-1-cal-status').text(pulses + ' pulses for ' + litres + ' L = ' + (Math.round(pulses / litres * 100) / 100) +
+        ' pulses per litre. qFactor ' + qRounded + ' is filled in above - press Save to keep it.');
+});
+
 $(document).on('click','#flow-sensor-1-configure-submit', function (){
+   flow1CalStop();
    var flow1Name = $('#flow-sensor-1-input-name').val();
    var qfactor1 =  $('#flow-sensor-1-qfactor-input').val();
    $.ajax({

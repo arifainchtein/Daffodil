@@ -3659,6 +3659,7 @@ void readFlowMeter1() {
   int pulseCount = flowMeterPulseCount;
   flowMeterPulseCount = 0;
   interrupts();
+  wifiManager.flow1PulseTotal += pulseCount;  // since boot, for the web page's qFactor calibration
 
   unsigned long now = millis();
   long elapsedMs = now - flowMeterPreviousMillis;
@@ -3667,7 +3668,10 @@ void readFlowMeter1() {
 
   float flowRate = (1000.0 / elapsedMs) * pulseCount / digitalStablesData.qfactor1;
   if (flowRate > 0) {
-    float flowMilliLitres = digitalStablesData.dataSamplingSec * (flowRate / 60) * 1000;
+    // Volume over the time the pulses were actually counted (elapsedMs), not dataSamplingSec:
+    // readSensorData() runs every 1 s tick (plus extra calls), so adding dataSamplingSec (10 s) of
+    // flow per call over-counted the total ~10x (Pool, 2026-11-16). This is pulses / qfactor / 60 L.
+    float flowMilliLitres = (elapsedMs / 1000.0) * (flowRate / 60) * 1000;
     digitalStablesData.totalMilliLitres += flowMilliLitres;
   }
   digitalStablesData.flowRate = flowRate;
@@ -3684,6 +3688,7 @@ void readFlowMeter2() {
   int pulseCount = flowMeterPulseCount2;
   flowMeterPulseCount2 = 0;
   interrupts();
+  wifiManager.flow2PulseTotal += pulseCount;
 
   unsigned long now = millis();
   long elapsedMs = now - flowMeterPreviousMillis2;
@@ -3692,7 +3697,10 @@ void readFlowMeter2() {
 
   float flowRate2 = (1000.0 / elapsedMs) * pulseCount / digitalStablesData.qfactor2;
   if (flowRate2 > 0) {
-    float flowMilliLitres2 = digitalStablesData.dataSamplingSec * (flowRate2 / 60) * 1000;
+    // Volume over the time the pulses were actually counted (elapsedMs), not dataSamplingSec:
+    // readSensorData() runs every 1 s tick (plus extra calls), so adding dataSamplingSec (10 s) of
+    // flow per call over-counted the total ~10x (Pool, 2026-11-16). This is pulses / qfactor / 60 L.
+    float flowMilliLitres2 = (elapsedMs / 1000.0) * (flowRate2 / 60) * 1000;
     digitalStablesData.totalMilliLitres2 += flowMilliLitres2;
   }
   digitalStablesData.flowRate2 = flowRate2;
