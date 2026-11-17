@@ -537,6 +537,13 @@ function showDaffodil(){
     }
 
     $('#daffodil-sceptic').removeClass('d-none').addClass('d-block');
+    // Mode 13 carries the water DS18B20 in measuredHeight2 (°C); -99 = probe not read.
+    if (currentData.currentFunctionValue == DAFFODIL_WATER_TROUGH_WATER_TEMP) {
+        var wt = currentData.measuredHeight2;
+        $('#daffodil-watertemp-value').html(wt === -99 ? '--' : (Math.round(wt * 10) / 10));
+        $('#daffodil-watertemp-units').html(wt === -99 ? 'no probe reading' : '&deg;C');
+        $('#daffodil-watertemp').removeClass('d-none').addClass('d-block');
+    }
     // Temperature/humidity come from the I2C SHT sensor (0x44); the firmware sends
     // outdoortemperature -99 (and humidity 0) when it isn't fitted, so leave both cards hidden then.
     if (currentData.outdoortemperature !== -99) {
@@ -954,7 +961,7 @@ function refreshData(){
          data:{formName:"GetWebData"},
          success: function (result) {
              currentData = JSON.parse(result);
-             
+             showRelayIcon();
          },
          error: function(data){
              console.log("solo:" + JSON.stringify(data));
@@ -1495,3 +1502,78 @@ $(document).on('click', '#viewer-save', function (){
         }
     });
 });
+
+//
+// Relay panel (2026-11-17, as Langley) - the R under the bolt. currentData.relay comes with
+// GetWebData: {on, strongDbm, hasBattery, heard, sent, strong, dup, dropped[, last, lastAction,
+// lastRssi, lastAgeSec]}. The R is green while relaying, grey when off. Refreshed every 5 s while open.
+//
+var relayTimer = null;
+
+function showRelayIcon(){
+    var r = currentData && currentData.relay;
+    $('#relay-icon-letter').css('color', r && r.on ? '#2e7d32' : '#6c757d');
+}
+
+function showRelayInfo(){
+    var r = currentData && currentData.relay;
+    if(!r){ $('#relay-status').html('This firmware has no relay'); return; }
+    $('#relay-switch').prop('checked', !!r.on);
+    if(!$('#relay-strong').data('touched')) $('#relay-strong').val(String(r.strongDbm));
+    $('#relay-status').html(r.on
+        ? '<b style="color:#2e7d32">ON</b> &middot; ' + r.sent + ' relayed, ' + r.strong + ' not relayed (strong), ' + r.dup + ' already relayed' + (r.dropped ? ', ' + r.dropped + ' dropped (queue full)' : '')
+        : '<b style="color:#6c757d">OFF</b>');
+    $('#relay-power').html(!r.on ? ''
+        : r.hasBattery ? '<span style="color:#c62828">On battery: relays only while awake, and every relayed packet costs battery</span>'
+        : 'On mains power: awake and relaying all the time');
+    var t = '';
+    if(r.last){
+        var ago = r.lastAgeSec < 60 ? r.lastAgeSec + ' s ago' : Math.round(r.lastAgeSec / 60) + ' min ago';
+        t = r.lastAction == 'strong'
+            ? '&#8856; <b>' + r.last + '</b> received but not relayed - strong signal (' + r.lastRssi + ' dBm) &middot; ' + ago
+            : '&#8594; <b>' + r.last + '</b> relayed (heard at ' + r.lastRssi + ' dBm) &middot; ' + ago;
+    }
+    $('#relay-ticker').html(t);
+}
+
+function loadRelayInfo(){
+    $.ajax({
+        type: "GET",
+        url: "/DaffodilServlet",
+        data: {formName: "GetWebData"},
+        success: function(result){ currentData = JSON.parse(result); showRelayIcon(); showRelayInfo(); },
+        error: function(){ $('#relay-status').html('<span style="color:#c62828">Cannot reach the Daffodil</span>'); }
+    });
+}
+
+function stopRelayInfo(){
+    if(relayTimer){ clearInterval(relayTimer); relayTimer = null; }
+}
+
+function setRelay(){
+    $.ajax({
+        type: "POST",
+        url: "/DaffodilServlet",
+        data: {formName: "SetRelay", on: $('#relay-switch').is(':checked') ? 1 : 0, dbm: $('#relay-strong').val()},
+        success: function(result){
+            $('#relay-strong').data('touched', false);
+            // applied from the sketch's loop(), so this answer may still show the old setting - read again shortly
+            currentData = JSON.parse(result);
+            setTimeout(loadRelayInfo, 700);
+        },
+        error: function(data){ alert("There was an error processing your request:" + JSON.stringify(data)); }
+    });
+}
+
+$(document).on('click', '#relay-info-icon', function(){
+    stopPowerInfo();
+    $('.display-module').removeClass('d-block').addClass('d-none');
+    $('#relay-info').removeClass('d-none').addClass('d-block');
+    showRelayInfo();
+    stopRelayInfo();
+    relayTimer = setInterval(loadRelayInfo, 5000);
+});
+$(document).on('change', '#relay-switch', setRelay);
+$(document).on('change', '#relay-strong', function(){ $(this).data('touched', true); setRelay(); });
+$(document).on('click', '#relay-info-close', function(){ stopRelayInfo(); refreshScreen(); });
+$(document).on('click', '#system-info-icon, #power-info-icon', stopRelayInfo);

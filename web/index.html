@@ -18,7 +18,7 @@
                 <div class="col-7" stylw="margin-top:80px;">
                     <h5 id="host-name" class="show-raw-data" style="font-size:24px;margin-top:20px"></h5>
                     <h6 id="time" style="font-size:16px"></h6>
-                </div><div class="col-1" style="display:flex;flex-direction:column;align-items:center;"><a id="system-info-icon" href="#"><i class="fas fa-cog text-primary" style="font-size: 24px;margin-left: 5px;padding-top: 20px;" onclick=""></i></a><a id="power-info-icon" href="#" title="Power"><i class="fas fa-bolt text-warning" style="font-size: 24px;margin-left: 5px;padding-top: 14px;"></i></a></div>
+                </div><div class="col-1" style="display:flex;flex-direction:column;align-items:center;"><a id="system-info-icon" href="#"><i class="fas fa-cog text-primary" style="font-size: 24px;margin-left: 5px;padding-top: 20px;" onclick=""></i></a><a id="power-info-icon" href="#" title="Power"><i class="fas fa-bolt text-warning" style="font-size: 24px;margin-left: 5px;padding-top: 14px;"></i></a><a id="relay-info-icon" href="#" title="Relay" style="text-decoration:none;"><span id="relay-icon-letter" style="display:inline-block;font-size:22px;font-weight:bold;margin-left:5px;padding-top:12px;color:#6c757d;">R</span></a></div>
             </div>
         </div>
         <hr>
@@ -78,6 +78,24 @@
                     <button class="btn btn-success" id="power-info-close" type="button">Close</button>
                 </div>
             </div>
+            <!-- Relay (2026-11-17, as Langley): resend packets from devices Annabelle can't hear well - the R under the bolt -->
+            <div id="relay-info" class="col-sm-12 col-md-3 col-lg-3 card display-module d-none" style="margin-bottom:10px;">
+                <div class="card-body" style="padding:10px;text-align:left;">
+                    <h6 style="font-size:24px;text-align:center;">Relay</h6>
+                    <div class="input-group" style="margin-bottom:10px;"><label class="form-label" style="margin-top:1px;margin-right:5px;">Off</label><label class="form-label switch" style="margin-top:-15px;"><input type="checkbox" id="relay-switch"><span class="slider round">&nbsp;&nbsp;</span></label><label class="form-label" style="margin-top:1px;margin-left:5px;">On</label></div>
+                    <div class="input-group" style="margin-bottom:10px;"><span class="input-group-text">Leave alone if heard above</span>
+                        <select class="form-select" id="relay-strong">
+                            <option value="-70">-70 dBm</option><option value="-80">-80 dBm</option><option value="-90">-90 dBm</option><option value="-100">-100 dBm</option><option value="0">relay everything</option>
+                        </select></div>
+                    <div id="relay-status" style="font-size:15px;"></div>
+                    <div id="relay-power" style="font-size:14px;margin-top:4px;"></div>
+                    <div id="relay-ticker" style="font-size:15px;color:#7048e8;margin-top:6px;"></div>
+                    <div style="font-size:12px;color:#6c757d;margin-top:8px;">This Daffodil resends the packets it hears from devices that are weak here (other Daffodils, Chinampa, Langley, their vital signs and link health), marked with its short name - Annabelle shows them "via ...", and the devices page shows a Relay badge on this Daffodil. Packets heard stronger than the limit are left alone: that device reaches Annabelle on its own. It relays only while awake, so it suits a Daffodil on mains power; on a battery it relays only in its awake windows.</div>
+                </div>
+                <div class="card-footer" style="margin-top:10px;">
+                    <button class="btn btn-success" id="relay-info-close" type="button">Close</button>
+                </div>
+            </div>
             <div id="wifi-info" class="col-sm-12 col-md-3 col-lg-3 card display-module" style="margin-bottom:10px;">
                 <div class="card-header d-inline-flex" style="padding:5px;"><span id="lora-logo" style="font-size:14px;margin:5px;padding-right:1px;">LoRa</span><span id="ds-upload" style="font-size:14px;margin:5px;padding-right:15px;">DS</span><span id="ssid-name" style="margin:5px;font-size:14px;padding-right:20px"></span><i class="fas fa-wifi text-primary" id="wifi-config-icon" style="font-size: 24px;margin-left:5px;padding-left:20px"></i></div>
                 <div class="card-body d-none"></div>
@@ -112,6 +130,14 @@
                 </div>
                 <h1 id="daffodil-temp-value" style="font-size:80px;">8.52</h1>
                 <h5 id="dafodil-temp-units" class="card-footer">&amp;deg;C</h5>
+            </div>
+            <!-- Water temperature: DAFFODIL_WATER_TROUGH_WATER_TEMP (13) sends the waterproof DS18B20 in measuredHeight2 (°C) -->
+            <div id="daffodil-watertemp" class="card display-module col-sm-12 col-md-3 col-lg-3 d-none" style="margin-bottom:20px;">
+                <div class="d-inline-flex card-header">
+                    <h4 id="daffodil-watertemp-name" class="col-sm-6" style="margin-left:60px;">Water Temp</h4>
+                </div>
+                <h1 id="daffodil-watertemp-value" style="font-size:80px;">--</h1>
+                <h5 id="daffodil-watertemp-units" class="card-footer">&deg;C</h5>
             </div>
             <div id="daffodil-humidity" class="card display-module col-sm-12 col-md-3 col-lg-3 d-none" style="margin-bottom:20px;">
                 <div class="d-inline-flex card-header">

@@ -21,6 +21,7 @@
 #include <DigitalStablesData.h>
 #include <ChinampaData.h>
 #include <LangleyData.h>  // Viewer shows Langley packets
+#include <LoRaRelay.h>  // relay (2026-11-17) - see the relay section
 #include "ViewerConfig.h"  // Viewer function (switch 1001)
 #include <WeatherForecastManager.h>
 #include <DigitalStablesDataSerializer.h>
@@ -793,6 +794,96 @@ size_t loraRxRead(uint8_t *dst, size_t len) {
 
 int loraRxByte() {
   return loraRxPos < loraRxLen ? loraRxBuf[loraRxPos++] : -1;
+}
+
+// =====================================================================================
+// Relay (2026-11-17) - the same LoRaRelay as Langley (see LoRaRelay.h). A Daffodil on mains (Pool)
+// is awake all the time, so it can resend the packets it hears from devices that are weak here,
+// stamping its deviceshortname into sentbyarray - Annabelle shows "via <shortname>". It only relays
+// while awake (loop()); unlike Langley it never stays awake for the relay, so a battery unit with
+// relay on relays in its awake windows only. Default: on with no battery (mains), off on battery;
+// once set (serial or web page) the choice is kept in Preferences ("relay"). relayStatus in every
+// packet = relay on, which Annabelle passes on (token 59) as Purpose "Relay Status" - the devices
+// "Relay" badge. Serial: Relay#1 / Relay#0 / Relay#1#<dBm> (strong-signal limit, 0 = relay
+// everything) / Relay (status).
+// =====================================================================================
+#define RELAY_PREFS "relay"
+LoRaRelay relay;
+
+bool relaySend(const uint8_t *bytes, size_t len) {
+  LoRa_txMode();
+  LoRa.beginPacket();
+  LoRa.write(bytes, len);
+  bool ok = LoRa.endPacket(false);
+  loraDio0Fired = false;  // that was TX done, not a packet
+  LoRa_rxMode();
+  return ok;
+}
+
+bool relayBusy() {
+  return LoRa.rssi() > -50;  // same test as performCAD()
+}
+
+// relayStatus goes out in every packet - kept in step with relay.on.
+void relaySyncStatus() {
+  digitalStablesData.relayStatus = relay.on ? 1 : 0;
+}
+
+// After hasBattery is known (the default depends on it) and the device names are loaded.
+void relaySetup() {
+  // stamps the shortname (e.g. "POOL"), else the first 8 characters of the device name
+  relay.begin(digitalStablesData.deviceshortname[0] ? digitalStablesData.deviceshortname : digitalStablesData.devicename, relaySend, relayBusy);
+  Preferences prefs;
+  prefs.begin(RELAY_PREFS, true);
+  relay.setOn(prefs.getBool("on", !hasBattery));
+  relay.strongDbm = prefs.getInt("dbm", LORA_RELAY_STRONG_DEFAULT);
+  prefs.end();
+  relaySyncStatus();
+}
+
+void relaySaveSettings() {
+  Preferences prefs;
+  prefs.begin(RELAY_PREFS, false);
+  prefs.putBool("on", relay.on);
+  prefs.putInt("dbm", relay.strongDbm);
+  prefs.end();
+  relaySyncStatus();
+}
+
+// The web page's Relay switch (DaffodilWifiManager SetRelay) runs in the async_tcp task: it only
+// leaves a request, applied and saved from loop() (relayApplyWebRequest).
+volatile bool relayWebPending = false;
+volatile bool relayWebOn = false;
+volatile int relayWebDbm = 1;  // 1 = keep the limit
+
+void relayStatusJson(JsonObject r) {
+  r["on"] = relay.on;
+  r["strongDbm"] = relay.strongDbm;
+  r["hasBattery"] = hasBattery;
+  r["heard"] = relay.heard;
+  r["sent"] = relay.sent;
+  r["strong"] = relay.strong;
+  r["dup"] = relay.dup;
+  r["dropped"] = relay.dropped;
+  if (relay.lastAt) {
+    r["last"] = relay.lastName;
+    r["lastAction"] = relay.lastAction == LORA_RELAY_STRONG ? "strong" : "relayed";
+    r["lastRssi"] = relay.lastRssi;
+    r["lastAgeSec"] = (millis() - relay.lastAt) / 1000;
+  }
+}
+
+void relayWebSet(bool on, int dbm) {
+  relayWebOn = on;
+  relayWebDbm = dbm;
+  relayWebPending = true;
+}
+
+void relayApplyWebRequest() {
+  if (!relayWebPending) return;
+  relayWebPending = false;
+  relay.applyCommand(relayWebOn ? "1" : "0", relayWebDbm == 1 ? String("") : String(relayWebDbm));
+  relaySaveSettings();
 }
 // =====================================================================================
 // Viewer (DAFFODIL_VIEWER, switch 1001) - see ViewerConfig.h for the config format.
@@ -1845,6 +1936,16 @@ bool wifiOnDemandActive() {
   return wifiOnDemandUntil != 0 && codeTimeNow() < (long)wifiOnDemandUntil;
 }
 
+// digitalStablesData.wifiStatus as DigitalStablesData.h defines it: 0=off, 1=AP, 2=STA no internet,
+// 3=STA+internet. wifiManager.getWifiStatus() is only a bool (WiFi up in either mode), so storing it
+// directly gave 0/1 and the direct upload, gated on a station with internet, never ran (2026-11-17).
+// Internet is the last checkInternetConnectionAvailable() result (or the last upload's outcome).
+uint8_t computeWifiStatus() {
+  if (!wifiManager.getWifiStatus()) return 0;
+  if (wifiManager.getAPStatus()) return 1;
+  return wifiManager.getInternetAvailable() ? 3 : 2;
+}
+
 // Active and the battery (under load) still above the floor.
 bool wifiOnDemandAllowed(float batteryVoltage) {
   return wifiOnDemandActive() && (!hasBattery || batteryVoltage >= WIFI_ON_DEMAND_FLOOR_V);
@@ -2676,6 +2777,7 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
   if (debug) Serial.print("noBatteryDetected=");
   if (debug) Serial.println(noBatteryDetected);
   hasBattery = !noBatteryDetected;
+  relaySetup();  // its default (on with no battery) needs hasBattery; sets relayStatus for every packet from here on
 
   // Per-device CSW scale correction. R2 (the ladder's pullup) is fed by DEVICE_POWER=V50, which
   // firmware has no direct way to measure — V50_I (read elsewhere) only tracks V50 when
@@ -3378,6 +3480,7 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
   viewerLoadConfig();  // Viewer function (switch 1001) - kept loaded in every mode, it's tiny
   wifiManager.setViewerDataProvider(fillViewerData);
   wifiManager.setViewerConfigSetter(viewerSetConfig);
+  wifiManager.setRelayHandlers(relayStatusJson, relayWebSet);
   if (debug) Serial.println(F("Finished Setup"));
 }
 
@@ -4101,7 +4204,7 @@ void restartWifi() {
   //    digitalWrite(WATCHDOG_WDI, LOW);
   if (debug) Serial.println("getting  stationmode=");
   bool stationmode = wifiManager.getStationMode();
-  digitalStablesData.wifiStatus = wifiManager.getWifiStatus();
+  digitalStablesData.wifiStatus = computeWifiStatus();
   //     digitalWrite(WATCHDOG_WDI, HIGH);
   //    delay(2);
   //    digitalWrite(WATCHDOG_WDI, LOW);
@@ -4582,6 +4685,7 @@ void loop() {
       loraRxLen = n;
       loraRxPos = 0;
       LoRa_rxMode();
+      if (n > 0) relay.note(loraRxBuf, n, loraRxRssi);  // the bytes as received - queued if it needs a relay
       if (n == sizeof(DeviceCommandRecord)) {
         // A command or Paula's ping: handled now, not on the 1 s tick (2026-11-03). loraRxBuf holds one
         // packet, and Annabelle answers a ping 150 ms after it - that answer replaced the ping before
@@ -4596,6 +4700,8 @@ void loop() {
     }
   }
   sendPendingLinkAck(false);  // Paula's ping, answered in this unit's slot (handlePing)
+  relay.service(loraDio0Fired);  // packets waiting to be relayed whose time has come
+  relayApplyWebRequest();        // the web page's Relay switch
   if (viewerCfgPending) {  // a new Viewer config from the web page or serial
     viewerCfg = viewerPendingCfg;
     viewerCfgPending = false;
@@ -5250,7 +5356,7 @@ void loop() {
           leds[11] = CRGB(0, 0, 255);
           leds[12] = CRGB(0, 0, 255);
           leds[13] = CRGB(0, 0, 255);
-          if (digitalStablesData.wifiStatus==2) {
+          if (digitalStablesData.wifiStatus == 3) {  // station + internet (was ==2, never true: 2026-11-17)
             leds[7] = CRGB(0, 0, 255);
           } else {
             leds[7] = CRGB(255, 0, 0);
@@ -5259,20 +5365,17 @@ void loop() {
           //
           //
 
-          if (digitalStablesData.wifiStatus==2) {
+          if (digitalStablesData.wifiStatus == 3) {  // station + internet
             if (dsUploadTimer.status()) {
-              // char secret[27];
-
-              String secret = "J5KFCNCPIRCTGT2UJUZFSMQK";
-              //                    leds[2] = CRGB(0, 255, 0);
-              //                    FastLED.show();
-              TOTP totp = TOTP(secret.c_str());
-              char totpCode[7];  // get 6 char code
+              // Sign with this device's own secret (SetSecret, NVS), like LoRa and the serial
+              // commands. It used a hardcoded secret, so the server could only verify one device.
               long timeVal = timeManager.getTimeForCodeGeneration(currentTimerRecord);
               if (debug) Serial.print("line 1153 timeVal=");
               if (debug) Serial.println(timeVal);
               digitalStablesData.secondsTime = timeVal;
-              long code = totp.gen_code(timeVal);
+              // generateCodeAt: no command-code history entry. DeviceUploadServlet checks it against
+              // this serial number's secret (ValidationClient.checkCode).
+              long code = secretManager.generateCodeAt(timeVal);
               if (debug) Serial.print("l;ine 1154 totp=");
               if (debug) Serial.println(code);
 
@@ -5296,7 +5399,7 @@ void loop() {
             // but internet is not available , check again if there is a reconnection
             if (initiatedWifi) wifiManager.checkInternetConnectionAvailable();  // never through an unstarted stack
 
-            digitalStablesData.wifiStatus = wifiManager.getWifiStatus();
+            digitalStablesData.wifiStatus = computeWifiStatus();
             if (debug) Serial.print("after rechecking digitalstable,wifiStatus=");
             if (debug) Serial.println(digitalStablesData.wifiStatus);
           }
@@ -5399,7 +5502,15 @@ void loop() {
 
   if (Serial.available() != 0) {
     String command = Serial.readString();
-    if (command.startsWith("Ping")) {
+    if (command.startsWith("Relay")) {
+      // Relay#1 / Relay#0 / Relay#1#<dBm> / Relay - see the relay section; kept across sleeps
+      relay.applyCommand(generalFunctions.getValue(command, '#', 1), generalFunctions.getValue(command, '#', 2));
+      relaySaveSettings();
+      Serial.print("RELAY ");
+      relay.printJson(Serial);
+      Serial.println();
+      Serial.println(F("Ok-Relay"));
+    } else if (command.startsWith("Ping")) {
       Serial.println(F("Ok-Ping"));
     } else if (command.startsWith("debug")) {
       int debugv = generalFunctions.getValue(command, '#', 1).toInt();
