@@ -90,7 +90,7 @@
                     <div id="relay-status" style="font-size:15px;"></div>
                     <div id="relay-power" style="font-size:14px;margin-top:4px;"></div>
                     <div id="relay-ticker" style="font-size:15px;color:#7048e8;margin-top:6px;"></div>
-                    <div style="font-size:12px;color:#6c757d;margin-top:8px;">This Daffodil resends the packets it hears from devices that are weak here (other Daffodils, Chinampa, Langley, their vital signs and link health), marked with its short name - Annabelle shows them "via ...", and the devices page shows a Relay badge on this Daffodil. Packets heard stronger than the limit are left alone: that device reaches Annabelle on its own. It relays only while awake, so it suits a Daffodil on mains power; on a battery it relays only in its awake windows.</div>
+                    <div style="font-size:12px;color:#6c757d;margin-top:8px;">This Daffodil resends the packets it hears from devices that are weak here (other Daffodils, Chinampa, Langley, their vital signs and link health), marked with its short name - Annabelle shows them "via ...", and the devices page shows a Relay badge on this Daffodil. Packets heard stronger than the limit are left alone: that device reaches Annabelle on its own. It relays only while awake, so it suits a Daffodil on wall power (5th switch off); a solar one (5th switch on) relays only in its awake windows. Off until turned on here.</div>
                 </div>
                 <div class="card-footer" style="margin-top:10px;">
                     <button class="btn btn-success" id="relay-info-close" type="button">Close</button>
@@ -159,6 +159,7 @@
                 </div>
                 <h1 id="flow-sensor-1-total-value" style="font-size:80px;">2545</h1>
                 <h5 id="flow-sensor-1-total-units" class="card-footer">liters</h5>
+                <button id="flow-sensor-1-total-reset" class="btn btn-outline-secondary btn-sm flow-total-reset" data-sensor="1" type="button" style="margin:0 auto 10px auto">Reset</button>
             </div>
             <div id="flow-sensor-2" class="card display-module col-sm-12 col-md-3 col-lg-3 d-none" style="margin-bottom:20px;">
                 <div class="d-inline-flex card-header">
@@ -173,6 +174,7 @@
                 </div>
                 <h1 id="flow-sensor-2-total-value" style="font-size:80px;">2545</h1>
                 <h5 id="flow-sensor-2-total-units" class="card-footer">liters</h5>
+                <button id="flow-sensor-2-total-reset" class="btn btn-outline-secondary btn-sm flow-total-reset" data-sensor="2" type="button" style="margin:0 auto 10px auto">Reset</button>
             </div>
             <div id="tank-sensor-1" class="card display-module col-sm-12 col-md-3 col-lg-3 d-none" style="margin-bottom:20px;">
                 <div class="d-inline-flex card-header">

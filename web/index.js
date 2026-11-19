@@ -292,6 +292,31 @@ $(document).on('click','#flow-sensor-1-configure-submit', function (){
  });
 
 
+ // Volume card Reset (2026-11-19): zeroes that meter's total (totalLiters / totalLiters2).
+ // The device applies it from loop(), so read the data again shortly after.
+ $(document).on('click', '.flow-total-reset', function (){
+    var sensor = $(this).data('sensor');
+    var name = $('#flow-sensor-' + sensor + '-total-heading').text();
+    if (!confirm('Reset ' + name + ' to 0?')) return;
+    var btn = $(this).prop('disabled', true);
+    $.ajax({
+        type: "POST",
+        url: "/DaffodilServlet",
+        data: {formName: "ResetFlowTotal", sensor: sensor},
+        success: function (){
+            setTimeout(function (){
+                $.ajax({ type: "GET", url: "/DaffodilServlet", data: {formName: "GetWebData"},
+                    success: function (result){ currentData = JSON.parse(result); refreshScreen(); },
+                    complete: function (){ btn.prop('disabled', false); } });
+            }, 1500);
+        },
+        error: function (data){
+            btn.prop('disabled', false);
+            alert("There was an error processing your request:" + JSON.stringify(data));
+        }
+    });
+ });
+
  //
  // end of flow sensor 1
  //
@@ -477,19 +502,15 @@ function showSensor1(){
     
     $('#flow-sensor-1-total').removeClass('d-none').addClass('d-block');
 
-    var mils = currentData.totalmilliLitres;
-    if(mils>10000){
-        
-        $('#flow-sensor-1-total-value').html((Math.round(mils ) / 1000).toFixed(0));
-        $('#flow-sensor-1-total-units').html('liters');
-    }else if(mils>1000){
-        
-        $('#flow-sensor-1-total-value').html((Math.round(mils ) / 1000).toFixed(2));
-        $('#flow-sensor-1-total-units').html('liters');
-    }else{
-        $('#flow-sensor-1-total-value').html(mils);
-        $('#flow-sensor-1-total-units').html('milliliters');
-    }
+    var liters = currentData.totalLiters;  // litres since 2026-11-19 (was totalmilliLitres, mL)
+    $('#flow-sensor-1-total-value').html(flowTotalText(liters));
+    $('#flow-sensor-1-total-units').html('liters');
+}
+
+// Flow total in litres: whole litres from 10 L up, 2 decimals below.
+function flowTotalText(liters){
+    if (!(liters >= 0)) return '-';
+    return liters >= 10 ? liters.toFixed(0) : liters.toFixed(2);
 }
 
 function showSensor2(){
@@ -501,19 +522,9 @@ function showSensor2(){
         $('#flow-sensor-2-value').html(Math.round(currentData.flowrate2));
         $('#flow-sensor-2-total').removeClass('d-none').addClass('d-block');
     
-        var mils = currentData.totalmilliLitres2;
-        if(mils>10000){
-            
-            $('#flow-sensor-2-total-value').html((Math.round(mils ) / 1000).toFixed(0));
-            $('#flow-sensor-2-total-units').html('liters');
-        }else if(mils>1000){
-            
-            $('#flow-sensor-2-total-value').html((Math.round(mils ) / 1000).toFixed(2));
-            $('#flow-sensor-2-total-units').html('liters');
-        }else{
-            $('#flow-sensor-2-total-value').html(mils);
-            $('#flow-sensor-2-total-units').html('milliliters');
-        }
+        var liters = currentData.totalLiters2;  // litres since 2026-11-19 (was totalmilliLitres, mL)
+        $('#flow-sensor-2-total-value').html(flowTotalText(liters));
+        $('#flow-sensor-2-total-units').html('liters');
 }
 
 function showDaffodil(){
@@ -1505,7 +1516,7 @@ $(document).on('click', '#viewer-save', function (){
 
 //
 // Relay panel (2026-11-17, as Langley) - the R under the bolt. currentData.relay comes with
-// GetWebData: {on, strongDbm, hasBattery, heard, sent, strong, dup, dropped[, last, lastAction,
+// GetWebData: {on, strongDbm, usingSolarPower, heard, sent, strong, dup, dropped[, last, lastAction,
 // lastRssi, lastAgeSec]}. The R is green while relaying, grey when off. Refreshed every 5 s while open.
 //
 var relayTimer = null;
@@ -1524,8 +1535,8 @@ function showRelayInfo(){
         ? '<b style="color:#2e7d32">ON</b> &middot; ' + r.sent + ' relayed, ' + r.strong + ' not relayed (strong), ' + r.dup + ' already relayed' + (r.dropped ? ', ' + r.dropped + ' dropped (queue full)' : '')
         : '<b style="color:#6c757d">OFF</b>');
     $('#relay-power').html(!r.on ? ''
-        : r.hasBattery ? '<span style="color:#c62828">On battery: relays only while awake, and every relayed packet costs battery</span>'
-        : 'On mains power: awake and relaying all the time');
+        : r.usingSolarPower ? '<span style="color:#c62828">Solar (5th switch on): sleeps on the solar schedule, so it relays only while awake, and every relayed packet costs battery</span>'
+        : 'Wall power (5th switch off): awake and relaying all the time');
     var t = '';
     if(r.last){
         var ago = r.lastAgeSec < 60 ? r.lastAgeSec + ' s ago' : Math.round(r.lastAgeSec / 60) + ' min ago';

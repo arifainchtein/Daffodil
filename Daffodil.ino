@@ -56,7 +56,8 @@
 #define LED_CONTROL 23
 #define TPL5010_DONE 25
 #define SLEEP_SWITCH_26 26
-#define TEMPERATURE 27
+#define CHARGER_STAT 27    // GPIO27 -> Wally header pin 10 -> Daffodil R31 (33k) -> MCP73123 STAT (Wally18+)
+#define MCP9808_ADDR 0x18  // Wally18+ board temperature (replaces the DS18B20), A0-A2 to GND
 #define OP_MODE 34
 #define SENSOR_INPUT_2 33
 #define SENSOR_INPUT_1 18
@@ -141,7 +142,7 @@ CRGB leds[NUM_LEDS];
 //   DAFFODIL_WATER_TROUGH_TANK1  pin18 is tank1 pressure, so pin33 ultrasonic -> measuredHeight
 //   switch 0101 (FishTank)       runs as DAFFODIL_WATER_TROUGH_WATER_TEMP on the old pins: pin33 ultrasonic
 //                                -> measuredHeight, pin32 DS18B20 -> measuredHeight2 (°C) - see fishTankPins
-//   DAFFODIL_FLOW_TROUGH        pin18 ultrasonic -> measuredHeight, pin33 flow meter 1 -> flowRate/totalMilliLitres
+//   DAFFODIL_FLOW_TROUGH        pin18 ultrasonic -> measuredHeight, pin33 flow meter 1 -> flowRate/totalLiters
 //                                (Clipsal UART box wiring; swapped 2026-11-16, v82 had them the other way round)
 #define ULTRASONIC_BAUD 9600
 #define ULTRASONIC_STALE_MS 5000  // no valid frame for this long -> -99
@@ -236,7 +237,7 @@ void daffodilLedgerMode(bool fastMode) {
 }
 
 // Waterproof DS18B20 water temperature on pin 33 (DAFFODIL_WATER_TROUGH_WATER_TEMP only), its own OneWire
-// bus separate from the board DS18B20 on pin 27. No external pull-up needed: the pin-33 terminal
+// bus. No external pull-up needed: the pin-33 terminal
 // already goes through the board's 2N7002 level shifter (Q1, R5 4.7k to V33 on the GPIO side,
 // R7 10k to V50 on the terminal side), so the probe runs off V50 and the 10k is the bus pull-up.
 // On the FishTank (switch 0101) the probe is on pin 32 instead - see fishTankPins.
@@ -294,9 +295,6 @@ BH1750 lightMeter;
 
 ADS1115 ADS(0x48);
 volatile bool RDY = false;
-
-OneWire oneWire(TEMPERATURE);
-DallasTemperature tempSensor(&oneWire);
 
 Timer viewTimer(3);
 Timer remoteMonitorTimer(5);
@@ -509,7 +507,7 @@ bool foundBH1750 = false;
 bool foundINA219 = false;
 bool foundINA219Solar = false;  // Wally 0x45 panel/USB current sensor — optional, may be absent on unverified/older Wally boards
 bool PCF8563T = false;
-bool foundDS18B20 = false;
+bool foundMCP9808 = false;  // Wally18+ board temperature at 0x18. Older Wallys (DS18B20 on GPIO27) are no longer supported: board temperature reads -99
 
 //
 // watchdog
@@ -800,8 +798,10 @@ int loraRxByte() {
 // Relay (2026-11-17) - the same LoRaRelay as Langley (see LoRaRelay.h). A Daffodil on mains (Pool)
 // is awake all the time, so it can resend the packets it hears from devices that are weak here,
 // stamping its deviceshortname into sentbyarray - Annabelle shows "via <shortname>". It only relays
-// while awake (loop()); unlike Langley it never stays awake for the relay, so a battery unit with
-// relay on relays in its awake windows only. Default: on with no battery (mains), off on battery;
+// while awake (loop()); unlike Langley it never stays awake for the relay, so a solar unit with
+// relay on relays in its awake windows only. Every Daffodil has a battery, charged from a panel or
+// the wall. Off until it is turned on, per unit (Ari: a manual switch) - it suits wall power (5th
+// switch off: awake all the time);
 // once set (serial or web page) the choice is kept in Preferences ("relay"). relayStatus in every
 // packet = relay on, which Annabelle passes on (token 59) as Purpose "Relay Status" - the devices
 // "Relay" badge. Serial: Relay#1 / Relay#0 / Relay#1#<dBm> (strong-signal limit, 0 = relay
@@ -829,13 +829,13 @@ void relaySyncStatus() {
   digitalStablesData.relayStatus = relay.on ? 1 : 0;
 }
 
-// After hasBattery is known (the default depends on it) and the device names are loaded.
+// After the config switch is decoded and the device names are loaded.
 void relaySetup() {
   // stamps the shortname (e.g. "POOL"), else the first 8 characters of the device name
   relay.begin(digitalStablesData.deviceshortname[0] ? digitalStablesData.deviceshortname : digitalStablesData.devicename, relaySend, relayBusy);
   Preferences prefs;
   prefs.begin(RELAY_PREFS, true);
-  relay.setOn(prefs.getBool("on", !hasBattery));
+  relay.setOn(prefs.getBool("on", false));  // off until turned on (Ari 2026-11-17: a manual switch per unit)
   relay.strongDbm = prefs.getInt("dbm", LORA_RELAY_STRONG_DEFAULT);
   prefs.end();
   relaySyncStatus();
@@ -859,7 +859,7 @@ volatile int relayWebDbm = 1;  // 1 = keep the limit
 void relayStatusJson(JsonObject r) {
   r["on"] = relay.on;
   r["strongDbm"] = relay.strongDbm;
-  r["hasBattery"] = hasBattery;
+  r["usingSolarPower"] = usingSolarPower;  // 5th switch: solar schedule (sleeps) vs wall power (awake)
   r["heard"] = relay.heard;
   r["sent"] = relay.sent;
   r["strong"] = relay.strong;
@@ -2211,9 +2211,9 @@ bool usbJumperFitted() {
 // Packs the boot-time I2C found* flags - sent as VitalSignsRecord.i2cDeviceMask (was
 // DIAGNOSTIC_TYPE_I2C_STATUS). DS18B20 is OneWire, not I2C, and is deliberately excluded:
 //   bit0=lcd(0x03) bit1=temp(0x40) bit2=ADS1115(0x48) bit3=BH1750(0x23)
-//   bit4=INA219 battery(0x41) bit5=PCF8563T(0x51) bit6=INA219 solar(0x45) bit7=reserved
+//   bit4=INA219 battery(0x41) bit5=PCF8563T(0x51) bit6=INA219 solar(0x45) bit7=MCP9808(0x18, Wally18+)
 uint8_t buildI2CStatusMask() {
-  uint8_t mask = 0;  // bit7 reserved — DS18B20 is OneWire, not I2C, deliberately excluded here
+  uint8_t mask = 0;  // DS18B20 is OneWire, not I2C, deliberately excluded here
   if (foundlcd)         mask |= 0x01;
   if (foundtemp)        mask |= 0x02;
   if (foundADS)         mask |= 0x04;
@@ -2221,6 +2221,7 @@ uint8_t buildI2CStatusMask() {
   if (foundINA219)      mask |= 0x10;
   if (PCF8563T)         mask |= 0x20;
   if (foundINA219Solar) mask |= 0x40;
+  if (foundMCP9808)     mask |= 0x80;
   return mask;
 }
 
@@ -2590,6 +2591,9 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
       } else if (address == 35) {  // 0x23
         foundBH1750 = true;
         if (debug) Serial.println("foundBH1750");
+      } else if (address == MCP9808_ADDR) {
+        foundMCP9808 = mcp9808Present();
+        if (debug) Serial.println(foundMCP9808 ? "foundMCP9808" : "0x18 is not an MCP9808");
       }
 
       nDevices++;
@@ -2777,7 +2781,6 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
   if (debug) Serial.print("noBatteryDetected=");
   if (debug) Serial.println(noBatteryDetected);
   hasBattery = !noBatteryDetected;
-  relaySetup();  // its default (on with no battery) needs hasBattery; sets relayStatus for every packet from here on
 
   // Per-device CSW scale correction. R2 (the ladder's pullup) is fed by DEVICE_POWER=V50, which
   // firmware has no direct way to measure — V50_I (read elsewhere) only tracks V50 when
@@ -3178,6 +3181,7 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
   Serial.print("currentFunctionValue=");
   // if (debug)
    Serial.println(digitalStablesData.currentFunctionValue);
+  relaySetup();  // sets relayStatus for every packet from here on
 
   // digitalStablesData.currentFunctionValue = DAFFODIL_WATER_TROUGH;//DAFFODIL_SCEPTIC_TANK;
   //     usingSolarPower=false;
@@ -3233,14 +3237,11 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
     digitalStablesData.operatingStatus = OPERATING_STATUS_FULL_MODE;
   }
 
-  tempSensor.begin();
-  tempSensor.setWaitForConversion(false);  // Don't block during conversion
-  tempSensor.setResolution(9);
+  pinMode(CHARGER_STAT, INPUT);  // no pull: the D1/R27 LED path pulls it up when STAT is released
 
   // uint8_t address[8];
   DeviceSerial::fill(digitalStablesData.serialnumberarray);  // the efuse MAC, not the DS18B20 ID (2026-10-30)
   serialNumber = DeviceSerial::toString(digitalStablesData.serialnumberarray);  // was never set (the loop below is commented out)
-  foundDS18B20 = tempSensor.getDeviceCount() > 0;
   //  for (uint8_t i = 0; i < 8; i++)
   //  {
   //    serialNumber += String(digitalStablesData.serialnumberarray[i], HEX);
@@ -3329,11 +3330,12 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
   // Encode all device status into opMode byte (bit 1 updated each tick in loop, bit 0 in
   // readSensorData() so every packet carries the current USB jumper state).
   digitalStablesData.opMode = (opmode       ? 0x01 : 0x00)  // bit0 = USB programming jumper fitted
+                             | (secondsSinceLastWeatherData < 1860 ? 0x02 : 0x00)  // bit1 = weather fresh (restoreWeatherFreshness ran above), so the wake packet is right
                              | (foundINA219  ? 0x04 : 0x00)
                              | (foundBH1750  ? 0x08 : 0x00)
                              | (foundADS     ? 0x10 : 0x00)
                              | (PCF8563T     ? 0x20 : 0x00)
-                             | (foundDS18B20 ? 0x40 : 0x00)
+                             | (foundMCP9808 ? 0x40 : 0x00)  // board temperature sensor (MCP9808)
                              | (foundtemp    ? 0x80 : 0x00);
 
   dsUploadTimer.start();
@@ -3482,15 +3484,6 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
   wifiManager.setViewerConfigSetter(viewerSetConfig);
   wifiManager.setRelayHandlers(relayStatusJson, relayWebSet);
   if (debug) Serial.println(F("Finished Setup"));
-}
-
-void sleepDS18B20() {  // Put OneWire bus in high impedance state pinMode(ONE_WIRE_BUS, INPUT);
-
-  // Force DS18B20 to stop any conversion
-  oneWire.reset();
-  oneWire.skip();
-  oneWire.write(0x44);  // Start conversion command
-  oneWire.reset();      // Reset to stop conversion
 }
 
 
@@ -3770,7 +3763,6 @@ void goToSleep() {
   // 5. Shut down remaining peripherals
   btStop();
   ADS.setMode(1);  // ADS1115 power-down mode
-  sleepDS18B20();
 
   // 6. Configure SPI pins to safe states to prevent leakage into sensors
   pinMode(MISO, INPUT_PULLDOWN);
@@ -3815,7 +3807,7 @@ void handleWakeInterrupt() {
 // Flow meter 1 — SENSOR_INPUT_1 (pin 18), pulses counted by pulseCounter(). In DAFFODIL_FLOW_TROUGH
 // pulseCounter is attached to pin 33 instead (Clipsal box wiring) - same counter, same fields.
 // Same convention as the sibling Rosie/Gloria/Pancho boards: pulses/sec scaled by qfactor1
-// gives L/min, then converted to mL and accumulated for this sampling interval.
+// gives L/min, then the litres for this sampling interval are added to totalLiters.
 //
 void readFlowMeter1() {
   noInterrupts();
@@ -3834,8 +3826,8 @@ void readFlowMeter1() {
     // Volume over the time the pulses were actually counted (elapsedMs), not dataSamplingSec:
     // readSensorData() runs every 1 s tick (plus extra calls), so adding dataSamplingSec (10 s) of
     // flow per call over-counted the total ~10x (Pool, 2026-11-16). This is pulses / qfactor / 60 L.
-    float flowMilliLitres = (elapsedMs / 1000.0) * (flowRate / 60) * 1000;
-    digitalStablesData.totalMilliLitres += flowMilliLitres;
+    float flowLiters = (elapsedMs / 1000.0) * (flowRate / 60);
+    digitalStablesData.totalLiters += flowLiters;
   }
   digitalStablesData.flowRate = flowRate;
   if (debug) Serial.print("flow1 pulses=");
@@ -3845,7 +3837,7 @@ void readFlowMeter1() {
 }
 
 // Flow meter 2 — SENSOR_INPUT_2 (pin 33), pulses counted by pulseCounter2(). Same math as
-// readFlowMeter1() against qfactor2/totalMilliLitres2.
+// readFlowMeter1() against qfactor2/totalLiters2.
 void readFlowMeter2() {
   noInterrupts();
   int pulseCount = flowMeterPulseCount2;
@@ -3863,8 +3855,8 @@ void readFlowMeter2() {
     // Volume over the time the pulses were actually counted (elapsedMs), not dataSamplingSec:
     // readSensorData() runs every 1 s tick (plus extra calls), so adding dataSamplingSec (10 s) of
     // flow per call over-counted the total ~10x (Pool, 2026-11-16). This is pulses / qfactor / 60 L.
-    float flowMilliLitres2 = (elapsedMs / 1000.0) * (flowRate2 / 60) * 1000;
-    digitalStablesData.totalMilliLitres2 += flowMilliLitres2;
+    float flowLiters2 = (elapsedMs / 1000.0) * (flowRate2 / 60);
+    digitalStablesData.totalLiters2 += flowLiters2;
   }
   digitalStablesData.flowRate2 = flowRate2;
   if (debug) Serial.print("flow2 pulses=");
@@ -3927,9 +3919,12 @@ void readSensorData() {
     }
   }
 
-  tempSensor.requestTemperatures();  // 1-Wire, not I2C - outside the lock (blocks ~750 ms)
-  float tempC = tempSensor.getTempCByIndex(0);
-  digitalStablesData.temperature = tempC;
+  {
+    InaLock lock;
+    float tempC = foundMCP9808 ? readMCP9808() : NAN;
+    digitalStablesData.temperature = isnan(tempC) ? -99 : tempC;  // -99 = no board sensor, as the water temp
+  }
+  digitalStablesData.chargerStatus = readChargerStatus();
   {
     InaLock lock;
     readI2CTemp();
@@ -4400,10 +4395,13 @@ void drawLora(int status) {
     leds[i] = CRGB(0, 0, 0);
   }
   if (status == 1) {
-    leds[1] = CRGB(0, 255, 0);
-    leds[6] = CRGB(0, 255, 0);
-    leds[11] = CRGB(0, 255, 0);
-    leds[12] = CRGB(0, 255, 0);
+    // LoRa working: blue while the relay is on (this unit resends other devices' packets), green
+    // when it is off (2026-11-17). A failed send stays red (status 0) either way.
+    CRGB ok = relay.on ? CRGB(0, 0, 255) : CRGB(0, 255, 0);
+    leds[1] = ok;
+    leds[6] = ok;
+    leds[11] = ok;
+    leds[12] = ok;
     // leds[13] = CRGB(0, 255, 0);
   } else if (status == 2) {
     leds[1] = CRGB(255, 255, 0);
@@ -4601,6 +4599,42 @@ void drawTemperatureValue(float value, uint8_t red, uint8_t green, uint8_t blue)
 
   FastLED.show();
 }
+// MCP9808 (Wally18+ board temperature) - same register reads as Paula2.
+bool mcp9808Present() {
+  Wire.beginTransmission(MCP9808_ADDR);
+  Wire.write(0x06);  // manufacturer ID register, reads 0x0054
+  if (Wire.endTransmission() != 0) return false;
+  if (Wire.requestFrom((uint8_t)MCP9808_ADDR, (uint8_t)2) != 2) return false;
+  uint16_t id = (Wire.read() << 8) | Wire.read();
+  return id == 0x0054;
+}
+
+float readMCP9808() {
+  Wire.beginTransmission(MCP9808_ADDR);
+  Wire.write(0x05);  // ambient temperature register
+  if (Wire.endTransmission() != 0) return NAN;
+  if (Wire.requestFrom((uint8_t)MCP9808_ADDR, (uint8_t)2) != 2) return NAN;
+  uint8_t upper = Wire.read() & 0x1F;
+  uint8_t lower = Wire.read();
+  float celsius = (upper & 0x0F) * 16.0f + lower / 16.0f;
+  if (upper & 0x10) celsius -= 256.0f;
+  return celsius;
+}
+
+// DigitalStablesData.chargerStatus: 0 = unknown, 1 = not charging, 2 = charging.
+// Needs a Wally18+ (GPIO27 on header pin 10) and a Daffodil with R31 from the MCP73123 STAT pin.
+// STAT is open-drain: LOW while charging, released when charge is complete or there is no input,
+// and then the D1/R27 LED path pulls the line up towards V50_I. With no solar/USB input that pull
+// is gone and the pin floats, so below CHARGER_MIN_INPUT_V it is reported as not charging without
+// reading the pin. v50Voltage is V50_I on the new Daffodil (ADS1115 ch3, see setup()).
+// An old Daffodil (no R31) on a Wally18+ leaves GPIO27 floating and reports noise.
+#define CHARGER_MIN_INPUT_V 3.5
+uint8_t readChargerStatus() {
+  if (!foundMCP9808) return 0;
+  if (digitalStablesData.v50Voltage < CHARGER_MIN_INPUT_V) return 1;
+  return digitalRead(CHARGER_STAT) == LOW ? 2 : 1;
+}
+
 void readI2CTemp() {
   float temperature = 0;
 
@@ -4702,6 +4736,13 @@ void loop() {
   sendPendingLinkAck(false);  // Paula's ping, answered in this unit's slot (handlePing)
   relay.service(loraDio0Fired);  // packets waiting to be relayed whose time has come
   relayApplyWebRequest();        // the web page's Relay switch
+  if (wifiManager.flowTotalResetRequest) {  // the Volume card's Reset button (ResetFlowTotal), 2026-11-19
+    uint8_t r = wifiManager.flowTotalResetRequest;
+    wifiManager.flowTotalResetRequest &= ~r;  // only the bits handled here - a newer press stays set
+    if (r & 0x01) digitalStablesData.totalLiters = 0;
+    if (r & 0x02) digitalStablesData.totalLiters2 = 0;
+    if (debug) Serial.printf("flow total reset from the web page: %s%s\n", (r & 1) ? "flow 1 " : "", (r & 2) ? "flow 2" : "");
+  }
   if (viewerCfgPending) {  // a new Viewer config from the web page or serial
     viewerCfg = viewerPendingCfg;
     viewerCfgPending = false;
@@ -4815,6 +4856,13 @@ void loop() {
 
     dscount = dsUploadTimer.tick();
     HourlySolarPowerData hourlySolarPowerData = solarInfo->calculateActualPower(currentTimerRecord);
+    // opMode bit 1 = weather forecast fresh (< 31 min), every tick in every mode. It used to be set
+    // only inside the solar daylight branch below, so wall-power units (Pool, PipeSplit) always
+    // reported "Weather not received" on Annabelle and solar units froze it at night (2026-11-19).
+    if (secondsSinceLastWeatherData < 1860)
+      digitalStablesData.opMode |=  0x02;
+    else
+      digitalStablesData.opMode &= ~0x02;
     if (usingSolarPower) {
       if (hourlySolarPowerData.efficiency * 100 > digitalStablesData.minimumEfficiencyForLed) {
         digitalWrite(LED_CONTROL, HIGH);
@@ -4862,11 +4910,6 @@ void loop() {
           bool cloudy = (v50iSaysCloudy || panelCurrentSaysCloudy || (forecastSaysCloudy && !liveConfirmsSun))
                         && !batteryChargingConfirmsSun;
           digitalStablesData.operatingStatus = cloudy ? OPERATING_STATUS_CLOUDY : OPERATING_STATUS_FULL_MODE;
-          // Update bit 1 (weather freshness) — all other bits set once in setup.
-          if (secondsSinceLastWeatherData < 1860)
-            digitalStablesData.opMode |=  0x02;
-          else
-            digitalStablesData.opMode &= ~0x02;
         }
         turnOffWifi = (hourlySolarPowerData.efficiency * 100 < digitalStablesData.minimumEfficiencyForWifi) && wifistatus;
       } else {
@@ -5054,8 +5097,11 @@ void loop() {
     // minimumInitWifiVoltage for numberSecondsWithMinimumWifiVoltageForStartWifi). Without it,
     // the minimumWifiVoltage shutoff above stopped WiFi and this restarted it on every loop pass
     // whenever the battery sat below 3.28V — the AP restart loop seen on HorseTrough 2026-11-06.
+    // The explicit-"off" hold applies here too: without it Annabelle's "Turn WiFi off" was undone on
+    // the next pass on every wall-power unit (PipeSplit stayed status 1 after "off", 2026-11-19).
     turnOnWifi = !wifistatus
-              && (!hasBattery || currentSecondsWithWifiVoltage >= numberSecondsWithMinimumWifiVoltageForStartWifi);
+              && (!hasBattery || currentSecondsWithWifiVoltage >= numberSecondsWithMinimumWifiVoltageForStartWifi)
+              && codeTimeNow() >= (long)wifiAutoSuppressedUntil;  // not right after an explicit "off"
   } else {
     turnOnWifi = (hourlySolarPowerData.efficiency * 100 > digitalStablesData.minimumEfficiencyForWifi)
               && (currentSecondsWithWifiVoltage >= numberSecondsWithMinimumWifiVoltageForStartWifi)
