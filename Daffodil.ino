@@ -136,6 +136,7 @@ CRGB leds[NUM_LEDS];
 //
 // Pin use per mode (no DigitalStablesData change — slot 2 reuses measuredHeight2):
 //   DAFFODIL_WATER_TROUGH        pin18 ultrasonic -> measuredHeight
+//                                (device named SumpTrough: pin33 ultrasonic - see sumpPins)
 //   DAFFODIL_WATER_TROUGH_WATER_TEMP pin18 ultrasonic -> measuredHeight, pin33 DS18B20 water temp -> measuredHeight2 (°C)
 //   DAFFODIL_2_WATER_TROUGH      pin18 ultrasonic -> measuredHeight, pin33 ultrasonic         -> measuredHeight2 (cm)
 //   DAFFODIL_SCEPTIC_TANK        pin18 ultrasonic -> measuredHeight
@@ -171,6 +172,14 @@ UartUltrasonic ultrasonic2 = { &Serial1, false, { 0 }, 0, -99, 0 };  // measured
 #define FISHTANK_ULTRASONIC_PIN 33
 #define FISHTANK_WATER_TEMP_PIN 32
 bool fishTankPins = false;
+
+// The Chinampa Sump (2026-11-28): the same hardware as the FishTank (Wally 15 + Daffodil Rev 6, mains,
+// supercap). Rev 6's sensor terminals are GPIO32/GPIO33 only - pin 18 has no terminal - so on
+// DAFFODIL_WATER_TROUGH (switch 0110, a measured band in the no-battery table) a device named
+// SumpTrough reads its UART ultrasonic on 33 instead of 18. measuredHeight stays -99 on no reading:
+// Chinampa turns a sump -99 into 0 (alert 8) itself. Chinampa pulls this data over the Sump's soft AP
+// (GET /DaffodilServlet?formName=GetWebData) because its LoRa packets rarely reach Chinampa.
+bool sumpPins = false;
 
 // TX-summary sampler. Must stay below the struct definitions: the IDE inserts its auto-prototypes
 // just above the first function in the sketch, so defining one earlier hides UartUltrasonic from them.
@@ -3192,11 +3201,18 @@ if (debug) Serial.println( timeManager.printTimeToSerial(  currentTimerRecord));
       && strncasecmp(digitalStablesData.devicename, "FISHTANK", 8) == 0) {
     fishTankPins = true;
   }
-  Serial.println(fishTankPins ? "sensor pins: FishTank (ultrasonic 33, water temp 32)" : "sensor pins: standard");
+  // The Sump (Rev 6, no pin-18 terminal) - see sumpPins
+  if (digitalStablesData.currentFunctionValue == DAFFODIL_WATER_TROUGH
+      && strncasecmp(digitalStablesData.devicename, "SUMPTROUGH", 10) == 0) {
+    sumpPins = true;
+  }
+  Serial.println(fishTankPins ? "sensor pins: FishTank (ultrasonic 33, water temp 32)"
+                 : sumpPins   ? "sensor pins: Sump (ultrasonic 33)"
+                              : "sensor pins: standard");
 
   switch (digitalStablesData.currentFunctionValue) {
     case DAFFODIL_WATER_TROUGH:
-      beginUltrasonic(ultrasonic1, SENSOR_INPUT_1);
+      beginUltrasonic(ultrasonic1, sumpPins ? FISHTANK_ULTRASONIC_PIN : SENSOR_INPUT_1);
       break;
     case DAFFODIL_WATER_TROUGH_WATER_TEMP:
       if (fishTankPins) {
@@ -5726,6 +5742,7 @@ void loop() {
       Serial.println("factor=" + String(factor));
       Serial.println("cswOutput=" + String(cswOutput));
       Serial.println("fishTankPins=" + String(fishTankPins) + " (1 = ultrasonic on 33, water temp on 32)");
+      Serial.println("sumpPins=" + String(sumpPins) + " (1 = trough ultrasonic on 33, the Sump)");
       {
         int32_t _printCswReferenceRaw = secretManager.getCSWReference();
         float _printCswScaleFactor = (_printCswReferenceRaw > 0) ? (8326.0f / (float)_printCswReferenceRaw) : 1.0f;
@@ -5779,6 +5796,7 @@ void loop() {
       Serial.println("factor=" + String(factor));
       Serial.println("cswOutput=" + String(cswOutput));
       Serial.println("fishTankPins=" + String(fishTankPins) + " (1 = ultrasonic on 33, water temp on 32)");
+      Serial.println("sumpPins=" + String(sumpPins) + " (1 = trough ultrasonic on 33, the Sump)");
       Serial.println("");
       Serial.println("");
 
